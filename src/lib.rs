@@ -1,8 +1,13 @@
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        let result = 2 + 2;
-        assert_eq!(result, 4);
-    }
-}
+// SPDX-License-Identifier: GPL-2.0
+// Copyright 2022 Google LLC
+// Author: Ard Biesheuvel <ardb@google.com>
+
+#![no_std]
+
+pub mod paging;
+pub mod idmap;
+
+extern crate alloc;
+
+#[macro_use]
+extern crate bitflags;

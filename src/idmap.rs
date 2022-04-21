@@ -11,10 +11,11 @@ pub struct IdMap {
 }
 
 impl Translation for IdMap {
-    fn virtual_to_physical(va: &VirtualAddress) -> PhysicalAddress {
+    fn virtual_to_physical(va: VirtualAddress) -> PhysicalAddress {
         PhysicalAddress(va.0)
     }
-    fn physical_to_virtual(pa: &PhysicalAddress) -> VirtualAddress {
+
+    fn physical_to_virtual(pa: PhysicalAddress) -> VirtualAddress {
         VirtualAddress(pa.0)
     }
 }

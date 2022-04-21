@@ -23,10 +23,11 @@ pub const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
 
 pub const BITS_PER_LEVEL: usize = PAGE_SHIFT - 3;
 
-#[derive(PartialEq, PartialOrd)]
+#[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub struct VirtualAddress(pub usize);
 pub struct MemoryRegion(Range<VirtualAddress>);
 
+#[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub struct PhysicalAddress(pub usize);
 
 // An implementation of this trait needs to be provided to the mapping
@@ -34,8 +35,8 @@ pub struct PhysicalAddress(pub usize);
 // be converted into virtual addresses that can be used to access their
 // contents from the code
 pub trait Translation {
-    fn virtual_to_physical(va: &VirtualAddress) -> PhysicalAddress;
-    fn physical_to_virtual(pa: &PhysicalAddress) -> VirtualAddress;
+    fn virtual_to_physical(va: VirtualAddress) -> PhysicalAddress;
+    fn physical_to_virtual(pa: PhysicalAddress) -> VirtualAddress;
 }
 
 impl MemoryRegion {
@@ -45,12 +46,15 @@ impl MemoryRegion {
                 ..VirtualAddress(align_up!(end, PAGE_SIZE)),
         )
     }
-    pub fn start(&self) -> &VirtualAddress {
-        &self.0.start
+
+    pub fn start(&self) -> VirtualAddress {
+        self.0.start
     }
-    pub fn end(&self) -> &VirtualAddress {
-        &self.0.end
+
+    pub fn end(&self) -> VirtualAddress {
+        self.0.end
     }
+
     pub fn len(&self) -> usize {
         self.0.end.0 - self.0.start.0
     }
@@ -219,19 +223,19 @@ impl Descriptor {
         return self.is_valid() && (self.0 & Attributes::TABLE_OR_PAGE.bits()) != 0;
     }
 
-    fn set(&mut self, pa: &PhysicalAddress, flags: Attributes) {
+    fn set(&mut self, pa: PhysicalAddress, flags: Attributes) {
         self.0 = pa.0 | flags.valid().bits();
     }
 
     fn subtable<T: Translation>(&self) -> &mut PageTable {
-        let va = T::physical_to_virtual(&self.output_address());
+        let va = T::physical_to_virtual(self.output_address());
         unsafe { &mut *(va.0 as *mut PageTable) }
     }
 }
 
 impl PageTable {
     pub fn to_physical<T: Translation>(&self) -> PhysicalAddress {
-        T::virtual_to_physical(&VirtualAddress(self as *const _ as usize))
+        T::virtual_to_physical(VirtualAddress(self as *const _ as usize))
     }
 
     fn get_entry_mut(&mut self, va: usize, level: usize) -> &mut Descriptor {
@@ -252,12 +256,12 @@ impl PageTable {
                 // Rather than leak the entire subhierarchy, only put down
                 // a block mapping if the region is not already covered by
                 // a table mapping
-                entry.set(&pa, flags.accessed());
+                entry.set(pa, flags.accessed());
             } else {
                 if !entry.is_table() {
                     let old = *entry;
-                    let page = T::virtual_to_physical(&get_zeroed_page());
-                    entry.set(&page, Attributes::TABLE_OR_PAGE);
+                    let page = T::virtual_to_physical(get_zeroed_page());
+                    entry.set(page, Attributes::TABLE_OR_PAGE);
                     if old.is_valid() {
                         let gran = PAGE_SIZE << ((3 - level) * BITS_PER_LEVEL);
                         // Old was a valid block entry, so we need to split it

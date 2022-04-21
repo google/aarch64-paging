@@ -25,7 +25,7 @@ impl IdMap {
     pub fn new(asid: usize, rootlevel: usize) -> IdMap {
         IdMap {
             root: RootTable::new(rootlevel),
-            asid: asid,
+            asid,
         }
     }
 

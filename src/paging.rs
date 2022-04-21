@@ -72,7 +72,7 @@ impl RootTable {
                 // on the stack and copying into the box
                 Box::<PageTable>::from_raw(get_zeroed_page().0 as *mut _)
             },
-            level: level,
+            level,
         }
     }
 
@@ -210,7 +210,7 @@ impl Descriptor {
     }
 
     fn is_table(self) -> bool {
-        return self.is_valid() && (self.0 & Attributes::TABLE_OR_PAGE.bits()) != 0;
+        self.is_valid() && (self.0 & Attributes::TABLE_OR_PAGE.bits()) != 0
     }
 
     fn set(&mut self, pa: PhysicalAddress, flags: Attributes) {

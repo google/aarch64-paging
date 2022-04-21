@@ -1,6 +1,6 @@
-// SPDX-License-Identifier: GPL-2.0
-// Copyright 2022 Google LLC
-// Author: Ard Biesheuvel <ardb@google.com>
+// Copyright 2022 The aarch64-paging Authors.
+// This project is dual-licensed under Apache 2.0 and MIT terms.
+// See LICENSE-APACHE and LICENSE-MIT for details.
 
 #[cfg(target_arch = "aarch64")]
 use core::arch::asm;

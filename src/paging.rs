@@ -146,44 +146,6 @@ bitflags! {
     }
 }
 
-#[allow(dead_code)]
-impl Attributes {
-    pub fn user(mut self) -> Self {
-        self.insert(Attributes::USER);
-        self
-    }
-
-    pub fn read_only(mut self) -> Self {
-        self.insert(Attributes::READ_ONLY);
-        self
-    }
-
-    pub fn non_global(mut self) -> Self {
-        self.insert(Attributes::NON_GLOBAL);
-        self
-    }
-
-    pub fn execute_disable(mut self) -> Self {
-        self.insert(Attributes::EXECUTE_NEVER);
-        self
-    }
-
-    fn valid(mut self) -> Self {
-        self.insert(Attributes::VALID);
-        self
-    }
-
-    fn accessed(mut self) -> Self {
-        self.insert(Attributes::ACCESSED);
-        self
-    }
-
-    fn page(mut self) -> Self {
-        self.insert(Attributes::TABLE_OR_PAGE);
-        self
-    }
-}
-
 #[derive(Debug)]
 #[repr(C, align(4096))]
 pub struct PageTable {
@@ -214,7 +176,7 @@ impl Descriptor {
     }
 
     fn set(&mut self, pa: PhysicalAddress, flags: Attributes) {
-        self.0 = pa.0 | flags.valid().bits();
+        self.0 = pa.0 | (flags | Attributes::VALID).bits();
     }
 
     fn subtable<T: Translation>(&self) -> &mut PageTable {
@@ -246,7 +208,11 @@ impl PageTable {
 
     fn map_range<T: Translation>(&mut self, range: &MemoryRegion, flags: Attributes, level: usize) {
         assert!(level <= 3);
-        let flags = if level == 3 { flags.page() } else { flags };
+        let flags = if level == 3 {
+            flags | Attributes::TABLE_OR_PAGE
+        } else {
+            flags
+        };
         let mut pa = T::virtual_to_physical(range.start());
 
         for chunk in range.split(level) {
@@ -256,7 +222,7 @@ impl PageTable {
                 // Rather than leak the entire subhierarchy, only put down
                 // a block mapping if the region is not already covered by
                 // a table mapping
-                entry.set(pa, flags.accessed());
+                entry.set(pa, flags | Attributes::ACCESSED);
             } else {
                 if !entry.is_table() {
                     let old = *entry;

@@ -2,8 +2,12 @@
 name = "aarch64_paging"
 version = "0.1.0"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+license = "MIT OR Apache-2.0"
+description = "A library to manipulate AArch64 VMSA EL1 page tables."
+authors = ["Ard Biesheuvel <ardb@google.com>", "Andrew Walbran <qwandor@google.com>"]
+repository = "https://github.com/google/aarch64_paging"
+keywords = ["arm", "aarch64", "cortex-a", "vmsa", "pagetable"]
+categories = ["embedded", "no-std", "hardware-support"]
 
 [dependencies]
 bitflags = "1.3"

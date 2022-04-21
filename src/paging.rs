@@ -21,10 +21,9 @@ pub struct MemoryRegion(Range<VirtualAddress>);
 #[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub struct PhysicalAddress(pub usize);
 
-// An implementation of this trait needs to be provided to the mapping
-// routines, so that the physical addresses used in the page tables can
-// be converted into virtual addresses that can be used to access their
-// contents from the code
+/// An implementation of this trait needs to be provided to the mapping routines, so that the
+/// physical addresses used in the page tables can be converted into virtual addresses that can be
+/// used to access their contents from the code.
 pub trait Translation {
     fn virtual_to_physical(va: VirtualAddress) -> PhysicalAddress;
     fn physical_to_virtual(pa: PhysicalAddress) -> VirtualAddress;
@@ -77,13 +76,12 @@ impl RootTable {
         }
     }
 
-    // Recursively maps a range into the pagetable hierarchy starting
-    // at the root level
+    /// Recursively maps a range into the pagetable hierarchy starting at the root level.
     pub fn map_range<T: Translation>(&mut self, range: &MemoryRegion, flags: Attributes) {
         self.table.map_range::<T>(range, flags, self.level);
     }
 
-    // Returns the physical address of the root table
+    /// Returns the physical address of the root table.
     pub fn to_physical<T: Translation>(&self) -> PhysicalAddress {
         self.table.to_physical::<T>()
     }
@@ -123,7 +121,7 @@ impl MemoryRegion {
         }
     }
 
-    // Whether this region can be mapped at 'level' using block mappings only
+    /// Returns whether this region can be mapped at 'level' using block mappings only.
     fn is_block(&self, level: usize) -> bool {
         let gran = PAGE_SIZE << ((3 - level) * BITS_PER_LEVEL);
         (self.0.start.0 | self.0.end.0) & (gran - 1) == 0

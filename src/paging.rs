@@ -228,20 +228,7 @@ impl Debug for Descriptor {
 impl<T: Translation> Debug for PageTable<T> {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
         writeln!(f)?;
-        let mut i = 0;
-        while i < self.entries.len() {
-            if self.entries[i].0 == 0 {
-                let first_zero = i;
-                while i < self.entries.len() && self.entries[i].0 == 0 {
-                    i += 1;
-                }
-                writeln!(f, "{}-{}: 0", first_zero, i - 1)?;
-            } else {
-                writeln!(f, "{}: {:?}", i, self.entries[i])?;
-                i += 1;
-            }
-        }
-        Ok(())
+        self.fmt_indented(f, 0)
     }
 }
 
@@ -298,6 +285,30 @@ impl<T: Translation> PageTable<T> {
             }
             pa.0 += chunk.len();
         }
+    }
+
+    fn fmt_indented(&self, f: &mut Formatter, indentation: usize) -> Result<(), fmt::Error> {
+        let mut i = 0;
+        while i < self.entries.len() {
+            if self.entries[i].0 == 0 {
+                let first_zero = i;
+                while i < self.entries.len() && self.entries[i].0 == 0 {
+                    i += 1;
+                }
+                if i - 1 == first_zero {
+                    writeln!(f, "{:indentation$}{}: 0", "", first_zero)?;
+                } else {
+                    writeln!(f, "{:indentation$}{}-{}: 0", "", first_zero, i - 1)?;
+                }
+            } else {
+                writeln!(f, "{:indentation$}{}: {:?}", "", i, self.entries[i])?;
+                if let Some(subtable) = self.entries[i].subtable::<T>() {
+                    subtable.fmt_indented(f, indentation + 2)?;
+                }
+                i += 1;
+            }
+        }
+        Ok(())
     }
 }
 

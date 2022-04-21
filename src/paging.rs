@@ -25,6 +25,8 @@ pub const BITS_PER_LEVEL: usize = PAGE_SHIFT - 3;
 
 #[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub struct VirtualAddress(pub usize);
+
+#[derive(Clone, Eq, PartialEq)]
 pub struct MemoryRegion(Range<VirtualAddress>);
 
 #[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]

@@ -4,7 +4,7 @@
 
 use alloc::boxed::Box;
 use core::alloc::Layout;
-use core::fmt::{self, Debug, Formatter};
+use core::fmt::{self, Debug, Display, Formatter};
 use core::ops::Range;
 
 pub const PAGE_SHIFT: usize = 12;
@@ -15,11 +15,23 @@ pub const BITS_PER_LEVEL: usize = PAGE_SHIFT - 3;
 #[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub struct VirtualAddress(pub usize);
 
+impl Display for VirtualAddress {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        write!(f, "{:#016x}", self.0)
+    }
+}
+
 #[derive(Clone, Eq, PartialEq)]
 pub struct MemoryRegion(Range<VirtualAddress>);
 
 #[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub struct PhysicalAddress(pub usize);
+
+impl Display for PhysicalAddress {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        write!(f, "{:#016x}", self.0)
+    }
+}
 
 /// An implementation of this trait needs to be provided to the mapping routines, so that the
 /// physical addresses used in the page tables can be converted into virtual addresses that can be
@@ -146,7 +158,6 @@ bitflags! {
     }
 }
 
-#[derive(Debug)]
 #[repr(C, align(4096))]
 pub struct PageTable {
     entries: [Descriptor; 1 << BITS_PER_LEVEL],
@@ -205,8 +216,28 @@ impl Descriptor {
 impl Debug for Descriptor {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
         write!(f, "{:#016x}", self.0)?;
-        if self.is_valid() {
-            write!(f, " ({:?})", self.flags())?;
+        if let (Some(flags), Some(address)) = (self.flags(), self.output_address()) {
+            write!(f, " ({}, {:?})", address, flags)?;
+        }
+        Ok(())
+    }
+}
+
+impl Debug for PageTable {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        writeln!(f)?;
+        let mut i = 0;
+        while i < self.entries.len() {
+            if self.entries[i].0 == 0 {
+                let first_zero = i;
+                while i < self.entries.len() && self.entries[i].0 == 0 {
+                    i += 1;
+                }
+                writeln!(f, "{}-{}: 0", first_zero, i - 1)?;
+            } else {
+                writeln!(f, "{}: {:?}", i, self.entries[i])?;
+                i += 1;
+            }
         }
         Ok(())
     }

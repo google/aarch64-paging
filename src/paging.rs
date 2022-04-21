@@ -215,11 +215,11 @@ impl Descriptor {
         }
     }
 
-    fn is_valid(&self) -> bool {
+    fn is_valid(self) -> bool {
         (self.0 & Attributes::VALID.bits()) != 0
     }
 
-    fn is_table(&self) -> bool {
+    fn is_table(self) -> bool {
         return self.is_valid() && (self.0 & Attributes::TABLE_OR_PAGE.bits()) != 0;
     }
 

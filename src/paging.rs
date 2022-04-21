@@ -7,18 +7,6 @@ use core::alloc::Layout;
 use core::fmt::{self, Debug, Formatter};
 use core::ops::Range;
 
-macro_rules! align_down {
-    ($value:expr, $alignment:expr) => {
-        ($value) & !($alignment - 1)
-    };
-}
-
-macro_rules! align_up {
-    ($value:expr, $alignment:expr) => {
-        (($value - 1) | ($alignment - 1)) + 1
-    };
-}
-
 pub const PAGE_SHIFT: usize = 12;
 pub const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
 
@@ -45,8 +33,7 @@ pub trait Translation {
 impl MemoryRegion {
     pub const fn new(start: usize, end: usize) -> MemoryRegion {
         MemoryRegion(
-            VirtualAddress(align_down!(start, PAGE_SIZE))
-                ..VirtualAddress(align_up!(end, PAGE_SIZE)),
+            VirtualAddress(align_down(start, PAGE_SIZE))..VirtualAddress(align_up(end, PAGE_SIZE)),
         )
     }
 
@@ -281,8 +268,8 @@ impl PageTable {
                         let gran = PAGE_SIZE << ((3 - level) * BITS_PER_LEVEL);
                         // Old was a valid block entry, so we need to split it
                         // Recreate the entire block in the newly added table
-                        let a = align_down!(chunk.0.start.0, gran);
-                        let b = align_up!(chunk.0.end.0, gran);
+                        let a = align_down(chunk.0.start.0, gran);
+                        let b = align_up(chunk.0.end.0, gran);
                         entry.subtable::<T>().map_range::<T>(
                             &MemoryRegion::new(a, b),
                             old.flags(),
@@ -297,4 +284,12 @@ impl PageTable {
             pa.0 += chunk.len();
         }
     }
+}
+
+const fn align_down(value: usize, alignment: usize) -> usize {
+    value & !(alignment - 1)
+}
+
+const fn align_up(value: usize, alignment: usize) -> usize {
+    ((value - 1) | (alignment - 1)) + 1
 }

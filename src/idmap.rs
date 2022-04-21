@@ -2,8 +2,9 @@
 // Copyright 2022 Google LLC
 // Author: Ard Biesheuvel <ardb@google.com>
 
-use crate::paging::*;
+#[cfg(target_arch = "aarch64")]
 use core::arch::asm;
+use crate::paging::*;
 
 #[derive(Debug)]
 pub struct IdMap {
@@ -29,6 +30,7 @@ impl IdMap {
         }
     }
 
+    #[cfg(target_arch = "aarch64")]
     pub fn activate(&self) {
         unsafe {
             // inline asm is unsafe
@@ -41,6 +43,7 @@ impl IdMap {
         }
     }
 
+    #[cfg(target_arch = "aarch64")]
     pub fn deactivate(&self) {
         unsafe {
             // inline asm is unsafe
@@ -58,6 +61,7 @@ impl IdMap {
         }
     }
 
+    #[cfg(target_arch = "aarch64")]
     pub fn map_range(&mut self, range: &MemoryRegion, flags: Attributes) {
         self.root.map_range(range, flags);
         unsafe {
@@ -68,6 +72,7 @@ impl IdMap {
 
 impl Drop for IdMap {
     fn drop(&mut self) {
+        #[cfg(target_arch = "aarch64")]
         self.deactivate();
     }
 }

@@ -246,11 +246,11 @@ impl PageTable {
                     let page = T::virtual_to_physical(get_zeroed_page());
                     entry.set(page, Attributes::TABLE_OR_PAGE);
                     if let Some(old_flags) = old.flags() {
-                        let gran = PAGE_SIZE << ((3 - level) * BITS_PER_LEVEL);
+                        let granularity = PAGE_SIZE << ((3 - level) * BITS_PER_LEVEL);
                         // Old was a valid block entry, so we need to split it
                         // Recreate the entire block in the newly added table
-                        let a = align_down(chunk.0.start.0, gran);
-                        let b = align_up(chunk.0.end.0, gran);
+                        let a = align_down(chunk.0.start.0, granularity);
+                        let b = align_up(chunk.0.end.0, granularity);
                         // We just made it into a table so subtable can't return None.
                         entry.subtable::<T>().unwrap().map_range::<T>(
                             &MemoryRegion::new(a, b),

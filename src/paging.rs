@@ -157,13 +157,21 @@ pub struct PageTable {
 pub struct Descriptor(usize);
 
 impl Descriptor {
-    fn output_address(&self) -> PhysicalAddress {
-        PhysicalAddress(self.0 & (!(PAGE_SIZE - 1) & !(0xffff << 48)))
+    fn output_address(&self) -> Option<PhysicalAddress> {
+        if self.is_valid() {
+            Some(PhysicalAddress(
+                self.0 & (!(PAGE_SIZE - 1) & !(0xffff << 48)),
+            ))
+        } else {
+            None
+        }
     }
 
-    fn flags(self) -> Attributes {
-        Attributes {
-            bits: self.0 & ((PAGE_SIZE - 1) | (0xffff << 48)),
+    fn flags(self) -> Option<Attributes> {
+        if self.is_valid() {
+            Attributes::from_bits(self.0 & ((PAGE_SIZE - 1) | (0xffff << 48)))
+        } else {
+            None
         }
     }
 
@@ -172,16 +180,25 @@ impl Descriptor {
     }
 
     fn is_table(self) -> bool {
-        self.is_valid() && (self.0 & Attributes::TABLE_OR_PAGE.bits()) != 0
+        if let Some(flags) = self.flags() {
+            flags.contains(Attributes::TABLE_OR_PAGE)
+        } else {
+            false
+        }
     }
 
     fn set(&mut self, pa: PhysicalAddress, flags: Attributes) {
         self.0 = pa.0 | (flags | Attributes::VALID).bits();
     }
 
-    fn subtable<T: Translation>(&self) -> &mut PageTable {
-        let va = T::physical_to_virtual(self.output_address());
-        unsafe { &mut *(va.0 as *mut PageTable) }
+    fn subtable<T: Translation>(&self) -> Option<&mut PageTable<T>> {
+        if self.is_table() {
+            if let Some(output_address) = self.output_address() {
+                let va = T::physical_to_virtual(output_address);
+                return Some(unsafe { &mut *(va.0 as *mut PageTable<T>) });
+            }
+        }
+        None
     }
 }
 
@@ -228,21 +245,24 @@ impl PageTable {
                     let old = *entry;
                     let page = T::virtual_to_physical(get_zeroed_page());
                     entry.set(page, Attributes::TABLE_OR_PAGE);
-                    if old.is_valid() {
+                    if let Some(old_flags) = old.flags() {
                         let gran = PAGE_SIZE << ((3 - level) * BITS_PER_LEVEL);
                         // Old was a valid block entry, so we need to split it
                         // Recreate the entire block in the newly added table
                         let a = align_down(chunk.0.start.0, gran);
                         let b = align_up(chunk.0.end.0, gran);
-                        entry.subtable::<T>().map_range::<T>(
+                        // We just made it into a table so subtable can't return None.
+                        entry.subtable::<T>().unwrap().map_range::<T>(
                             &MemoryRegion::new(a, b),
-                            old.flags(),
+                            old_flags,
                             level + 1,
                         );
                     }
                 }
+                // Either the entry was a table or it is now, so subtable can't return None.
                 entry
                     .subtable::<T>()
+                    .unwrap()
                     .map_range::<T>(&chunk, flags, level + 1);
             }
             pa.0 += chunk.len();

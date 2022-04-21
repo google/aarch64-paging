@@ -4,8 +4,8 @@
 
 #![no_std]
 
-pub mod paging;
 pub mod idmap;
+pub mod paging;
 
 extern crate alloc;
 

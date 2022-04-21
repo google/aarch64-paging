@@ -2,9 +2,9 @@
 // Copyright 2022 Google LLC
 // Author: Ard Biesheuvel <ardb@google.com>
 
-use core::ops::Range;
-use core::alloc::Layout;
 use alloc::boxed::Box;
+use core::alloc::Layout;
+use core::ops::Range;
 
 macro_rules! align_down {
     ($value:expr, $alignment:expr) => {
@@ -41,7 +41,8 @@ pub trait Translation {
 impl MemoryRegion {
     pub fn new(start: usize, end: usize) -> MemoryRegion {
         MemoryRegion(
-            VirtualAddress(align_down!(start, PAGE_SIZE))..VirtualAddress(align_up!(end, PAGE_SIZE))
+            VirtualAddress(align_down!(start, PAGE_SIZE))
+                ..VirtualAddress(align_up!(end, PAGE_SIZE)),
         )
     }
     pub fn start(&self) -> &VirtualAddress {
@@ -57,9 +58,7 @@ impl MemoryRegion {
 
 fn get_zeroed_page() -> VirtualAddress {
     let layout = Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap();
-    let page = unsafe {
-        alloc::alloc::alloc_zeroed(layout)
-    };
+    let page = unsafe { alloc::alloc::alloc_zeroed(layout) };
     if page.is_null() {
         panic!("Out of memory!");
     }
@@ -106,9 +105,14 @@ impl Iterator for ChunkedIterator<'_> {
 
     fn next(&mut self) -> Option<MemoryRegion> {
         if !self.range.0.contains(&VirtualAddress(self.start)) {
-            return None
+            return None;
         }
-        let end = self.range.0.end.0.min((self.start | (self.granularity - 1)) + 1);
+        let end = self
+            .range
+            .0
+            .end
+            .0
+            .min((self.start | (self.granularity - 1)) + 1);
         let c = MemoryRegion::new(self.start, end);
         self.start = end;
         Some(c)
@@ -203,7 +207,7 @@ impl Descriptor {
 
     fn flags(self) -> Attributes {
         Attributes {
-            bits: self.0 & ((PAGE_SIZE - 1) | (0xffff << 48))
+            bits: self.0 & ((PAGE_SIZE - 1) | (0xffff << 48)),
         }
     }
 
@@ -212,8 +216,7 @@ impl Descriptor {
     }
 
     fn is_table(&self) -> bool {
-        return self.is_valid() &&
-            (self.0 & Attributes::TABLE_OR_PAGE.bits()) != 0
+        return self.is_valid() && (self.0 & Attributes::TABLE_OR_PAGE.bits()) != 0;
     }
 
     fn set(&mut self, pa: &PhysicalAddress, flags: Attributes) {
@@ -261,11 +264,16 @@ impl PageTable {
                         // Recreate the entire block in the newly added table
                         let a = align_down!(chunk.0.start.0, gran);
                         let b = align_up!(chunk.0.end.0, gran);
-                        entry.subtable::<T>()
-                            .map_range::<T>(&MemoryRegion::new(a, b), old.flags(), level + 1);
+                        entry.subtable::<T>().map_range::<T>(
+                            &MemoryRegion::new(a, b),
+                            old.flags(),
+                            level + 1,
+                        );
                     }
                 }
-                entry.subtable::<T>().map_range::<T>(&chunk, flags, level + 1);
+                entry
+                    .subtable::<T>()
+                    .map_range::<T>(&chunk, flags, level + 1);
             }
             pa.0 += chunk.len();
         }

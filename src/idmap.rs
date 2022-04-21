@@ -28,7 +28,8 @@ impl IdMap {
     }
 
     pub fn activate(&self) {
-        unsafe { // inline asm is unsafe
+        unsafe {
+            // inline asm is unsafe
             asm!(
                 "msr   ttbr0_el1, {ttbrval}",
                 "isb",
@@ -39,7 +40,8 @@ impl IdMap {
     }
 
     pub fn deactivate(&self) {
-        unsafe { // inline asm is unsafe
+        unsafe {
+            // inline asm is unsafe
             asm!(
                 "adrp  {ttbrval}, idmap",
                 "msr   ttbr0_el1, {ttbrval}",
@@ -56,7 +58,9 @@ impl IdMap {
 
     pub fn map_range(&mut self, range: &MemoryRegion, flags: Attributes) {
         self.root.map_range::<Self>(range, flags);
-        unsafe { asm!("dsb ishst"); }
+        unsafe {
+            asm!("dsb ishst");
+        }
     }
 }
 

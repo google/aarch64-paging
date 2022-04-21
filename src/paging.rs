@@ -5,6 +5,7 @@
 use alloc::boxed::Box;
 use core::alloc::Layout;
 use core::fmt::{self, Debug, Display, Formatter};
+use core::marker::PhantomData;
 use core::ops::Range;
 
 pub const PAGE_SHIFT: usize = 12;
@@ -71,31 +72,31 @@ fn get_zeroed_page() -> VirtualAddress {
 }
 
 #[derive(Debug)]
-pub struct RootTable {
-    table: Box<PageTable>,
+pub struct RootTable<T: Translation> {
+    table: Box<PageTable<T>>,
     level: usize,
 }
 
-impl RootTable {
-    pub fn new(level: usize) -> RootTable {
+impl<T: Translation> RootTable<T> {
+    pub fn new(level: usize) -> Self {
         RootTable {
             table: unsafe {
                 // We need to use from_raw() here to avoid allocating
                 // on the stack and copying into the box
-                Box::<PageTable>::from_raw(get_zeroed_page().0 as *mut _)
+                Box::<PageTable<T>>::from_raw(get_zeroed_page().0 as *mut _)
             },
             level,
         }
     }
 
     /// Recursively maps a range into the pagetable hierarchy starting at the root level.
-    pub fn map_range<T: Translation>(&mut self, range: &MemoryRegion, flags: Attributes) {
-        self.table.map_range::<T>(range, flags, self.level);
+    pub fn map_range(&mut self, range: &MemoryRegion, flags: Attributes) {
+        self.table.map_range(range, flags, self.level);
     }
 
     /// Returns the physical address of the root table.
-    pub fn to_physical<T: Translation>(&self) -> PhysicalAddress {
-        self.table.to_physical::<T>()
+    pub fn to_physical(&self) -> PhysicalAddress {
+        self.table.to_physical()
     }
 }
 
@@ -159,8 +160,9 @@ bitflags! {
 }
 
 #[repr(C, align(4096))]
-pub struct PageTable {
+pub struct PageTable<T> {
     entries: [Descriptor; 1 << BITS_PER_LEVEL],
+    _phantom_data: PhantomData<T>,
 }
 
 #[derive(Clone, Copy)]
@@ -223,7 +225,7 @@ impl Debug for Descriptor {
     }
 }
 
-impl Debug for PageTable {
+impl<T: Translation> Debug for PageTable<T> {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
         writeln!(f)?;
         let mut i = 0;
@@ -243,8 +245,8 @@ impl Debug for PageTable {
     }
 }
 
-impl PageTable {
-    pub fn to_physical<T: Translation>(&self) -> PhysicalAddress {
+impl<T: Translation> PageTable<T> {
+    pub fn to_physical(&self) -> PhysicalAddress {
         T::virtual_to_physical(VirtualAddress(self as *const _ as usize))
     }
 
@@ -254,7 +256,7 @@ impl PageTable {
         &mut self.entries[index]
     }
 
-    fn map_range<T: Translation>(&mut self, range: &MemoryRegion, flags: Attributes, level: usize) {
+    fn map_range(&mut self, range: &MemoryRegion, flags: Attributes, level: usize) {
         assert!(level <= 3);
         let mut pa = T::virtual_to_physical(range.start());
 
@@ -281,7 +283,7 @@ impl PageTable {
                         let a = align_down(chunk.0.start.0, granularity);
                         let b = align_up(chunk.0.end.0, granularity);
                         // We just made it into a table so subtable can't return None.
-                        entry.subtable::<T>().unwrap().map_range::<T>(
+                        entry.subtable::<T>().unwrap().map_range(
                             &MemoryRegion::new(a, b),
                             old_flags,
                             level + 1,
@@ -292,7 +294,7 @@ impl PageTable {
                 entry
                     .subtable::<T>()
                     .unwrap()
-                    .map_range::<T>(&chunk, flags, level + 1);
+                    .map_range(&chunk, flags, level + 1);
             }
             pa.0 += chunk.len();
         }

@@ -7,7 +7,7 @@ use core::arch::asm;
 
 #[derive(Debug)]
 pub struct IdMap {
-    root: RootTable,
+    root: RootTable<IdMap>,
     asid: usize,
 }
 
@@ -35,7 +35,7 @@ impl IdMap {
             asm!(
                 "msr   ttbr0_el1, {ttbrval}",
                 "isb",
-                ttbrval = in(reg) self.root.to_physical::<Self>().0 | (self.asid << 48),
+                ttbrval = in(reg) self.root.to_physical().0 | (self.asid << 48),
                 options(preserves_flags),
             );
         }
@@ -59,7 +59,7 @@ impl IdMap {
     }
 
     pub fn map_range(&mut self, range: &MemoryRegion, flags: Attributes) {
-        self.root.map_range::<Self>(range, flags);
+        self.root.map_range(range, flags);
         unsafe {
             asm!("dsb ishst");
         }

@@ -4,6 +4,7 @@
 
 use alloc::boxed::Box;
 use core::alloc::Layout;
+use core::fmt::{self, Debug, Formatter};
 use core::ops::Range;
 
 macro_rules! align_down {
@@ -71,6 +72,7 @@ fn get_zeroed_page() -> VirtualAddress {
     VirtualAddress(page as usize)
 }
 
+#[derive(Debug)]
 pub struct RootTable {
     table: Box<PageTable>,
     level: usize,
@@ -197,6 +199,7 @@ impl Attributes {
     }
 }
 
+#[derive(Debug)]
 #[repr(C, align(4096))]
 pub struct PageTable {
     entries: [Descriptor; 1 << BITS_PER_LEVEL],
@@ -232,6 +235,16 @@ impl Descriptor {
     fn subtable<T: Translation>(&self) -> &mut PageTable {
         let va = T::physical_to_virtual(self.output_address());
         unsafe { &mut *(va.0 as *mut PageTable) }
+    }
+}
+
+impl Debug for Descriptor {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        write!(f, "{:#016x}", self.0)?;
+        if self.is_valid() {
+            write!(f, " ({:?})", self.flags())?;
+        }
+        Ok(())
     }
 }
 

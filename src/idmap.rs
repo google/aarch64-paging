@@ -5,6 +5,7 @@
 use crate::paging::*;
 use core::arch::asm;
 
+#[derive(Debug)]
 pub struct IdMap {
     root: RootTable,
     asid: usize,

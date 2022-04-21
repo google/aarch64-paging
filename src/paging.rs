@@ -43,22 +43,22 @@ pub trait Translation {
 }
 
 impl MemoryRegion {
-    pub fn new(start: usize, end: usize) -> MemoryRegion {
+    pub const fn new(start: usize, end: usize) -> MemoryRegion {
         MemoryRegion(
             VirtualAddress(align_down!(start, PAGE_SIZE))
                 ..VirtualAddress(align_up!(end, PAGE_SIZE)),
         )
     }
 
-    pub fn start(&self) -> VirtualAddress {
+    pub const fn start(&self) -> VirtualAddress {
         self.0.start
     }
 
-    pub fn end(&self) -> VirtualAddress {
+    pub const fn end(&self) -> VirtualAddress {
         self.0.end
     }
 
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.0.end.0 - self.0.start.0
     }
 }

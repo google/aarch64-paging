@@ -225,17 +225,15 @@ impl PageTable {
 
     fn map_range<T: Translation>(&mut self, range: &MemoryRegion, flags: Attributes, level: usize) {
         assert!(level <= 3);
-        let flags = if level == 3 {
-            flags | Attributes::TABLE_OR_PAGE
-        } else {
-            flags
-        };
         let mut pa = T::virtual_to_physical(range.start());
 
         for chunk in range.split(level) {
             let entry = self.get_entry_mut(chunk.0.start.0, level);
 
-            if level == 3 || (chunk.is_block(level) && !entry.is_table()) {
+            if level == 3 {
+                // Put down a page mapping.
+                entry.set(pa, flags | Attributes::ACCESSED | Attributes::TABLE_OR_PAGE);
+            } else if chunk.is_block(level) && !entry.is_table() {
                 // Rather than leak the entire subhierarchy, only put down
                 // a block mapping if the region is not already covered by
                 // a table mapping

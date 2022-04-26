@@ -11,7 +11,7 @@ use core::fmt::{self, Debug, Display, Formatter};
 use core::marker::PhantomData;
 use core::ops::Range;
 
-pub const PAGE_SHIFT: usize = 12;
+const PAGE_SHIFT: usize = 12;
 
 /// The page size in bytes assumed by this library, 4 KiB.
 pub const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
@@ -177,7 +177,7 @@ bitflags! {
 
 /// A single level of a page table.
 #[repr(C, align(4096))]
-pub struct PageTable<T> {
+struct PageTable<T> {
     entries: [Descriptor; 1 << BITS_PER_LEVEL],
     _phantom_data: PhantomData<T>,
 }
@@ -191,7 +191,7 @@ pub struct PageTable<T> {
 ///   - A pointer to a lower level pagetable, if it is not in the lowest level page table.
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub struct Descriptor(usize);
+struct Descriptor(usize);
 
 impl Descriptor {
     fn output_address(&self) -> Option<PhysicalAddress> {

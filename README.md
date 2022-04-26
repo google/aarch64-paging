@@ -1,7 +1,7 @@
 # aarch64 page table manipulation
 
-[![crates.io page](https://img.shields.io/crates/v/aarch64_paging.svg)](https://crates.io/crates/aarch64_paging)
-[![docs.rs page](https://docs.rs/aarch64_paging/badge.svg)](https://docs.rs/aarch64_paging)
+[![crates.io page](https://img.shields.io/crates/v/aarch64-paging.svg)](https://crates.io/crates/aarch64-paging)
+[![docs.rs page](https://docs.rs/aarch64-paging/badge.svg)](https://docs.rs/aarch64-paging)
 
 This crate provides a library to manipulate EL1 page tables conforming to the AArch64 Virtual Memory
 System Architecture.

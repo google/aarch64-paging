@@ -62,9 +62,9 @@ impl IdMap {
         }
     }
 
-    #[cfg(target_arch = "aarch64")]
     pub fn map_range(&mut self, range: &MemoryRegion, flags: Attributes) {
         self.root.map_range(range, flags);
+        #[cfg(target_arch = "aarch64")]
         unsafe {
             asm!("dsb ishst");
         }

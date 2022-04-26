@@ -9,6 +9,7 @@ use crate::paging::*;
 #[derive(Debug)]
 pub struct IdMap {
     root: RootTable<IdMap>,
+    #[allow(unused)]
     asid: usize,
 }
 

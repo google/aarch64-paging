@@ -2,6 +2,9 @@
 // This project is dual-licensed under Apache 2.0 and MIT terms.
 // See LICENSE-APACHE and LICENSE-MIT for details.
 
+//! Generic aarch64 page table manipulation functionality which doesn't assume anything about how
+//! addresses are mapped.
+
 use alloc::boxed::Box;
 use core::alloc::Layout;
 use core::fmt::{self, Debug, Display, Formatter};
@@ -9,10 +12,13 @@ use core::marker::PhantomData;
 use core::ops::Range;
 
 pub const PAGE_SHIFT: usize = 12;
+
+/// The page size in bytes assumed by this library, 4 KiB.
 pub const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
 
 pub const BITS_PER_LEVEL: usize = PAGE_SHIFT - 3;
 
+/// An aarch64 virtual address, the input type of a stage 1 page table.
 #[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub struct VirtualAddress(pub usize);
 
@@ -22,9 +28,12 @@ impl Display for VirtualAddress {
     }
 }
 
+/// A range of virtual addresses which may be mapped in a page table.
 #[derive(Clone, Eq, PartialEq)]
 pub struct MemoryRegion(Range<VirtualAddress>);
 
+/// An aarch64 physical address or intermediate physical address, the output type of a stage 1 page
+/// table.
 #[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub struct PhysicalAddress(pub usize);
 
@@ -43,6 +52,10 @@ pub trait Translation {
 }
 
 impl MemoryRegion {
+    /// Constructs a new `MemoryRegion` for the given range of virtual addresses.
+    ///
+    /// The start is inclusive and the end is exclusive. Both will be aligned to the [`PAGE_SIZE`],
+    /// with the start being rounded down and the end being rounded up.
     pub const fn new(start: usize, end: usize) -> MemoryRegion {
         MemoryRegion(
             VirtualAddress(align_down(start, PAGE_SIZE))..VirtualAddress(align_up(end, PAGE_SIZE)),
@@ -71,6 +84,7 @@ fn get_zeroed_page() -> VirtualAddress {
     VirtualAddress(page as usize)
 }
 
+/// A complete hierarchy of page tables including all levels.
 #[derive(Debug)]
 pub struct RootTable<T: Translation> {
     table: Box<PageTable<T>>,
@@ -78,6 +92,7 @@ pub struct RootTable<T: Translation> {
 }
 
 impl<T: Translation> RootTable<T> {
+    /// Creates a new page table starting at the given root level.
     pub fn new(level: usize) -> Self {
         RootTable {
             table: unsafe {
@@ -94,7 +109,7 @@ impl<T: Translation> RootTable<T> {
         self.table.map_range(range, flags, self.level);
     }
 
-    /// Returns the physical address of the root table.
+    /// Returns the physical address of the root table in memory.
     pub fn to_physical(&self) -> PhysicalAddress {
         self.table.to_physical()
     }
@@ -142,6 +157,7 @@ impl MemoryRegion {
 }
 
 bitflags! {
+    /// Attribute bits for a mapping in a page table.
     pub struct Attributes: usize {
         const VALID         = 1 << 0;
         const TABLE_OR_PAGE = 1 << 1;
@@ -159,12 +175,20 @@ bitflags! {
     }
 }
 
+/// A single level of a page table.
 #[repr(C, align(4096))]
 pub struct PageTable<T> {
     entries: [Descriptor; 1 << BITS_PER_LEVEL],
     _phantom_data: PhantomData<T>,
 }
 
+/// An entry in a page table.
+///
+/// A descriptor may be:
+///   - Invalid, i.e. the virtual address range is unmapped
+///   - A page mapping, if it is in the lowest level page table.
+///   - A block mapping, if it is not in the lowest level page table.
+///   - A pointer to a lower level pagetable, if it is not in the lowest level page table.
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct Descriptor(usize);
@@ -233,6 +257,7 @@ impl<T: Translation> Debug for PageTable<T> {
 }
 
 impl<T: Translation> PageTable<T> {
+    /// Returns the physical address of this page table in memory.
     pub fn to_physical(&self) -> PhysicalAddress {
         T::virtual_to_physical(VirtualAddress(self as *const _ as usize))
     }

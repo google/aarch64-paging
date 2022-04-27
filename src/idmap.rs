@@ -10,11 +10,55 @@ use crate::paging::*;
 
 /// Manages a level 1 page-table using identity mapping, where every virtual address is either
 /// unmapped or mapped to the identical IPA.
+///
+/// Mappings should be added with [`map_range`](Self::map_range) before calling
+/// [`activate`](Self::activate) to start using the new page table. To make changes which may
+/// require break-before-make semantics you must first call [`deactivate`](Self::deactivate) to
+/// switch back to a previous static page table, and then `activate` again after making the desired
+/// changes.
+///
+/// # Example
+///
+/// ```
+/// use aarch64_paging::{
+///     idmap::IdMap,
+///     paging::{Attributes, MemoryRegion},
+/// };
+///
+/// const ASID: usize = 1;
+/// const ROOT_LEVEL: usize = 1;
+///
+/// // Create a new page table with identity mapping.
+/// let mut idmap = IdMap::new(ASID, ROOT_LEVEL);
+/// // Map a 2 MiB region of memory as read-write.
+/// idmap.map_range(
+///     &MemoryRegion::new(0x80200000, 0x80400000),
+///     Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::EXECUTE_NEVER,
+/// );
+/// // Set `TTBR0_EL1` to activate the page table.
+/// # #[cfg(target_arch = "aarch64")]
+/// idmap.activate();
+///
+/// // Write something to the memory...
+///
+/// // Restore `TTBR0_EL1` to its earlier value while we modify the page table.
+/// # #[cfg(target_arch = "aarch64")]
+/// idmap.deactivate();
+/// // Now change the mapping to read-only and executable.
+/// idmap.map_range(
+///     &MemoryRegion::new(0x80200000, 0x80400000),
+///     Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::READ_ONLY,
+/// );
+/// # #[cfg(target_arch = "aarch64")]
+/// idmap.activate();
+/// ```
 #[derive(Debug)]
 pub struct IdMap {
     root: RootTable<IdMap>,
     #[allow(unused)]
     asid: usize,
+    #[allow(unused)]
+    previous_ttbr: Option<usize>,
 }
 
 impl Translation for IdMap {
@@ -33,41 +77,56 @@ impl IdMap {
         IdMap {
             root: RootTable::new(rootlevel),
             asid,
+            previous_ttbr: None,
         }
     }
 
-    /// Activates the page table by setting `TTBR_EL1` to point to it.
+    /// Activates the page table by setting `TTBR0_EL1` to point to it, and saves the previous value
+    /// of `TTBR0_EL1` so that it may later be restored by [`deactivate`](Self::deactivate).
+    ///
+    /// Panics if a previous value of `TTBR0_EL1` is already saved and not yet used by a call to
+    /// `deactivate`.
     #[cfg(target_arch = "aarch64")]
-    pub fn activate(&self) {
+    pub fn activate(&mut self) {
+        assert!(self.previous_ttbr.is_none());
+
+        let mut previous_ttbr;
         unsafe {
             // inline asm is unsafe
             asm!(
+                "mrs   {previous_ttbr}, ttbr0_el1",
                 "msr   ttbr0_el1, {ttbrval}",
                 "isb",
                 ttbrval = in(reg) self.root.to_physical().0 | (self.asid << 48),
+                previous_ttbr = out(reg) previous_ttbr,
                 options(preserves_flags),
             );
         }
+        self.previous_ttbr = Some(previous_ttbr);
     }
 
-    /// Deactivates the page table, by setting `TTBR_EL1` to point to a statically configured
-    /// `idmap` instead, and invalidating the TLB for this page table's configured ASID.
+    /// Deactivates the page table, by setting `TTBR0_EL1` back to the value it had before
+    /// [`activate`](Self::activate) was called, and invalidating the TLB for this page table's
+    /// configured ASID.
+    ///
+    /// Panics if there is no saved `TTRB0_EL1` value because `activate` has not previously been
+    /// called.
     #[cfg(target_arch = "aarch64")]
-    pub fn deactivate(&self) {
+    pub fn deactivate(&mut self) {
         unsafe {
             // inline asm is unsafe
             asm!(
-                "adrp  {ttbrval}, idmap",
                 "msr   ttbr0_el1, {ttbrval}",
                 "isb",
                 "tlbi  aside1, {asid}",
                 "dsb   nsh",
                 "isb",
                 asid = in(reg) self.asid << 48,
-                ttbrval = lateout(reg) _,
+                ttbrval = in(reg) self.previous_ttbr.unwrap(),
                 options(preserves_flags),
             );
         }
+        self.previous_ttbr = None;
     }
 
     /// Maps the given range of virtual addresses to the identical physical addresses with the given
@@ -88,7 +147,9 @@ impl IdMap {
 
 impl Drop for IdMap {
     fn drop(&mut self) {
-        #[cfg(target_arch = "aarch64")]
-        self.deactivate();
+        if self.previous_ttbr.is_some() {
+            #[cfg(target_arch = "aarch64")]
+            self.deactivate();
+        }
     }
 }

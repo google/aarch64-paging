@@ -310,7 +310,9 @@ impl<T: Translation> PageTable<T> {
                 // a table mapping.
                 entry.set(pa, flags | Attributes::ACCESSED);
             } else {
-                if !entry.is_table() {
+                let subtable = if let Some(subtable) = entry.subtable::<T>() {
+                    subtable
+                } else {
                     let old = *entry;
                     let subtable = Box::leak(PageTable::<T>::new());
                     if let Some(old_flags) = old.flags() {
@@ -322,12 +324,9 @@ impl<T: Translation> PageTable<T> {
                         subtable.map_range(&MemoryRegion::new(a, b), old_flags, level + 1);
                     }
                     entry.set(subtable.to_physical(), Attributes::TABLE_OR_PAGE);
-                }
-                // Either the entry was a table or it is now, so subtable can't return None.
-                entry
-                    .subtable::<T>()
-                    .unwrap()
-                    .map_range(&chunk, flags, level + 1);
+                    subtable
+                };
+                subtable.map_range(&chunk, flags, level + 1);
             }
             pa.0 += chunk.len();
         }

@@ -5,7 +5,10 @@
 //! Generic aarch64 page table manipulation functionality which doesn't assume anything about how
 //! addresses are mapped.
 
-use alloc::boxed::Box;
+use alloc::{
+    alloc::{alloc_zeroed, handle_alloc_error},
+    boxed::Box,
+};
 use bitflags::bitflags;
 use core::alloc::Layout;
 use core::fmt::{self, Debug, Display, Formatter};
@@ -22,6 +25,18 @@ pub const BITS_PER_LEVEL: usize = PAGE_SHIFT - 3;
 /// An aarch64 virtual address, the input type of a stage 1 page table.
 #[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub struct VirtualAddress(pub usize);
+
+impl<T> From<*const T> for VirtualAddress {
+    fn from(pointer: *const T) -> Self {
+        Self(pointer as usize)
+    }
+}
+
+impl<T> From<*mut T> for VirtualAddress {
+    fn from(pointer: *mut T) -> Self {
+        Self(pointer as usize)
+    }
+}
 
 impl Display for VirtualAddress {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
@@ -76,15 +91,6 @@ impl MemoryRegion {
     }
 }
 
-fn get_zeroed_page() -> VirtualAddress {
-    let layout = Layout::from_size_align(PAGE_SIZE, PAGE_SIZE).unwrap();
-    let page = unsafe { alloc::alloc::alloc_zeroed(layout) };
-    if page.is_null() {
-        panic!("Out of memory!");
-    }
-    VirtualAddress(page as usize)
-}
-
 /// A complete hierarchy of page tables including all levels.
 #[derive(Debug)]
 pub struct RootTable<T: Translation> {
@@ -96,11 +102,7 @@ impl<T: Translation> RootTable<T> {
     /// Creates a new page table starting at the given root level.
     pub fn new(level: usize) -> Self {
         RootTable {
-            table: unsafe {
-                // We need to use from_raw() here to avoid allocating
-                // on the stack and copying into the box
-                Box::<PageTable<T>>::from_raw(get_zeroed_page().0 as *mut _)
-            },
+            table: PageTable::new(),
             level,
         }
     }
@@ -257,10 +259,33 @@ impl<T: Translation> Debug for PageTable<T> {
     }
 }
 
+/// Allocates appropriately aligned heap space for a `T` and zeroes it.
+fn allocate_zeroed<T>() -> *mut T {
+    let layout = Layout::new::<T>();
+    // Safe because we know the layout has non-zero size.
+    let pointer = unsafe { alloc_zeroed(layout) };
+    if pointer.is_null() {
+        handle_alloc_error(layout);
+    }
+    pointer as *mut T
+}
+
 impl<T: Translation> PageTable<T> {
+    /// Allocates a new, zeroed, appropriately-aligned page table on the heap.
+    pub fn new() -> Box<Self> {
+        // Safe because the pointer has been allocated with the appropriate layout by the global
+        // allocator, and the memory is zeroed which is valid initialisation for a PageTable.
+        unsafe {
+            // We need to use Box::from_raw here rather than Box::new to avoid allocating on the
+            // stack and copying to the heap.
+            // TODO: Use Box::new_zeroed().assume_init() once it is stable.
+            Box::from_raw(allocate_zeroed())
+        }
+    }
+
     /// Returns the physical address of this page table in memory.
     pub fn to_physical(&self) -> PhysicalAddress {
-        T::virtual_to_physical(VirtualAddress(self as *const _ as usize))
+        T::virtual_to_physical(VirtualAddress::from(self as *const Self))
     }
 
     fn get_entry_mut(&mut self, va: usize, level: usize) -> &mut Descriptor {
@@ -287,21 +312,16 @@ impl<T: Translation> PageTable<T> {
             } else {
                 if !entry.is_table() {
                     let old = *entry;
-                    let page = T::virtual_to_physical(get_zeroed_page());
-                    entry.set(page, Attributes::TABLE_OR_PAGE);
+                    let subtable = Box::leak(PageTable::<T>::new());
                     if let Some(old_flags) = old.flags() {
                         let granularity = PAGE_SIZE << ((3 - level) * BITS_PER_LEVEL);
                         // Old was a valid block entry, so we need to split it.
                         // Recreate the entire block in the newly added table.
                         let a = align_down(chunk.0.start.0, granularity);
                         let b = align_up(chunk.0.end.0, granularity);
-                        // We just made it into a table so subtable can't return None.
-                        entry.subtable::<T>().unwrap().map_range(
-                            &MemoryRegion::new(a, b),
-                            old_flags,
-                            level + 1,
-                        );
+                        subtable.map_range(&MemoryRegion::new(a, b), old_flags, level + 1);
                     }
+                    entry.set(subtable.to_physical(), Attributes::TABLE_OR_PAGE);
                 }
                 // Either the entry was a table or it is now, so subtable can't return None.
                 entry

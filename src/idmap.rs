@@ -92,7 +92,9 @@ impl IdMap {
 
         let mut previous_ttbr;
         unsafe {
-            // inline asm is unsafe
+            // Safe because we trust that self.root.to_physical() returns a valid physical address
+            // of a page table, and the `Drop` implementation will reset `TTRB0_EL1` before it
+            // becomes invalid.
             asm!(
                 "mrs   {previous_ttbr}, ttbr0_el1",
                 "msr   ttbr0_el1, {ttbrval}",
@@ -114,7 +116,8 @@ impl IdMap {
     #[cfg(target_arch = "aarch64")]
     pub fn deactivate(&mut self) {
         unsafe {
-            // inline asm is unsafe
+            // Safe because this just restores the previously saved value of `TTBR0_EL1`, which must
+            // have been valid.
             asm!(
                 "msr   ttbr0_el1, {ttbrval}",
                 "isb",
@@ -140,6 +143,7 @@ impl IdMap {
         self.root.map_range(range, flags);
         #[cfg(target_arch = "aarch64")]
         unsafe {
+            // Safe because this is just a memory barrier.
             asm!("dsb ishst");
         }
     }

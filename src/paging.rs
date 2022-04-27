@@ -6,6 +6,7 @@
 //! addresses are mapped.
 
 use alloc::boxed::Box;
+use bitflags::bitflags;
 use core::alloc::Layout;
 use core::fmt::{self, Debug, Display, Formatter};
 use core::marker::PhantomData;

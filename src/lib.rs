@@ -42,6 +42,3 @@ pub mod idmap;
 pub mod paging;
 
 extern crate alloc;
-
-#[macro_use]
-extern crate bitflags;

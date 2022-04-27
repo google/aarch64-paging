@@ -282,7 +282,7 @@ impl<T: Translation> PageTable<T> {
             } else if chunk.is_block(level) && !entry.is_table() {
                 // Rather than leak the entire subhierarchy, only put down
                 // a block mapping if the region is not already covered by
-                // a table mapping
+                // a table mapping.
                 entry.set(pa, flags | Attributes::ACCESSED);
             } else {
                 if !entry.is_table() {
@@ -291,8 +291,8 @@ impl<T: Translation> PageTable<T> {
                     entry.set(page, Attributes::TABLE_OR_PAGE);
                     if let Some(old_flags) = old.flags() {
                         let granularity = PAGE_SIZE << ((3 - level) * BITS_PER_LEVEL);
-                        // Old was a valid block entry, so we need to split it
-                        // Recreate the entire block in the newly added table
+                        // Old was a valid block entry, so we need to split it.
+                        // Recreate the entire block in the newly added table.
                         let a = align_down(chunk.0.start.0, granularity);
                         let b = align_up(chunk.0.end.0, granularity);
                         // We just made it into a table so subtable can't return None.

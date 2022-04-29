@@ -92,6 +92,11 @@ impl MemoryRegion {
     pub const fn len(&self) -> usize {
         self.0.end.0 - self.0.start.0
     }
+
+    /// Returns whether the memory region contains exactly 0 bytes.
+    pub const fn is_empty(&self) -> bool {
+        self.0.start.0 == self.0.end.0
+    }
 }
 
 /// A complete hierarchy of page tables including all levels.

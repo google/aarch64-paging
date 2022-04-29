@@ -78,14 +78,17 @@ impl MemoryRegion {
         )
     }
 
+    /// Returns the first virtual address of the memory range.
     pub const fn start(&self) -> VirtualAddress {
         self.0.start
     }
 
+    /// Returns the first virtual address after the memory range.
     pub const fn end(&self) -> VirtualAddress {
         self.0.end
     }
 
+    /// Returns the length of the memory region in bytes.
     pub const fn len(&self) -> usize {
         self.0.end.0 - self.0.start.0
     }

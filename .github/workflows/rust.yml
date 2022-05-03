@@ -16,6 +16,7 @@ jobs:
       - name: Install aarch64 toolchain
         uses: actions-rs/toolchain@v1
         with:
+          toolchain: stable
           target: aarch64-unknown-none
       - name: Build
         run: cargo build

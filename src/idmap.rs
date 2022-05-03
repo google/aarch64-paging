@@ -4,9 +4,11 @@
 
 //! Functionality for managing page tables with identity mapping.
 
+use crate::paging::{
+    Attributes, MemoryRegion, PhysicalAddress, RootTable, Translation, VirtualAddress,
+};
 #[cfg(target_arch = "aarch64")]
 use core::arch::asm;
-use crate::paging::*;
 
 /// Manages a level 1 page-table using identity mapping, where every virtual address is either
 /// unmapped or mapped to the identical IPA.

@@ -188,7 +188,7 @@ bitflags! {
 
 /// A single level of a page table.
 #[repr(C, align(4096))]
-struct PageTable<T> {
+struct PageTable<T: Translation> {
     entries: [Descriptor; 1 << BITS_PER_LEVEL],
     _phantom_data: PhantomData<T>,
 }
@@ -362,6 +362,20 @@ impl<T: Translation> PageTable<T> {
             }
         }
         Ok(())
+    }
+}
+
+impl<T: Translation> Drop for PageTable<T> {
+    fn drop(&mut self) {
+        for entry in self.entries {
+            if let Some(subtable) = entry.subtable::<T>() {
+                // Safe because the subtable was allocated by `PageTable::new` with the global
+                // allocator and appropriate layout.
+                unsafe {
+                    drop(Box::from_raw(subtable));
+                }
+            }
+        }
     }
 }
 

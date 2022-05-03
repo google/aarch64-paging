@@ -13,6 +13,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
+      - name: Install aarch64 toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          target: aarch64-unknown-none
       - name: Build
         run: cargo build
       - name: Build for aarch64

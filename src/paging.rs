@@ -17,9 +17,14 @@ use core::ops::Range;
 
 const PAGE_SHIFT: usize = 12;
 
+/// The pagetable level at which all entries are page mappings.
+const LEAF_LEVEL: usize = 3;
+
 /// The page size in bytes assumed by this library, 4 KiB.
 pub const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
 
+/// The number of address bits resolved in one level of page table lookup. This is a function of the
+/// page size.
 pub const BITS_PER_LEVEL: usize = PAGE_SHIFT - 3;
 
 /// An aarch64 virtual address, the input type of a stage 1 page table.
@@ -57,6 +62,12 @@ impl Display for PhysicalAddress {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
         write!(f, "{:#016x}", self.0)
     }
+}
+
+/// Returns the size in bytes of the address space covered by a single entry in the page table at
+/// the given level.
+fn granularity_at_level(level: usize) -> usize {
+    PAGE_SIZE << ((LEAF_LEVEL - level) * BITS_PER_LEVEL)
 }
 
 /// An implementation of this trait needs to be provided to the mapping routines, so that the
@@ -155,14 +166,14 @@ impl MemoryRegion {
     fn split(&self, level: usize) -> ChunkedIterator {
         ChunkedIterator {
             range: self,
-            granularity: PAGE_SIZE << ((3 - level) * BITS_PER_LEVEL),
+            granularity: granularity_at_level(level),
             start: self.0.start.0,
         }
     }
 
     /// Returns whether this region can be mapped at 'level' using block mappings only.
     fn is_block(&self, level: usize) -> bool {
-        let gran = PAGE_SIZE << ((3 - level) * BITS_PER_LEVEL);
+        let gran = granularity_at_level(level);
         (self.0.start.0 | self.0.end.0) & (gran - 1) == 0
     }
 }
@@ -297,19 +308,19 @@ impl<T: Translation> PageTable<T> {
     }
 
     fn get_entry_mut(&mut self, va: usize, level: usize) -> &mut Descriptor {
-        let shift = PAGE_SHIFT + (3 - level) * BITS_PER_LEVEL;
+        let shift = PAGE_SHIFT + (LEAF_LEVEL - level) * BITS_PER_LEVEL;
         let index = (va >> shift) % (1 << BITS_PER_LEVEL);
         &mut self.entries[index]
     }
 
     fn map_range(&mut self, range: &MemoryRegion, flags: Attributes, level: usize) {
-        assert!(level <= 3);
+        assert!(level <= LEAF_LEVEL);
         let mut pa = T::virtual_to_physical(range.start());
 
         for chunk in range.split(level) {
             let entry = self.get_entry_mut(chunk.0.start.0, level);
 
-            if level == 3 {
+            if level == LEAF_LEVEL {
                 // Put down a page mapping.
                 entry.set(pa, flags | Attributes::ACCESSED | Attributes::TABLE_OR_PAGE);
             } else if chunk.is_block(level) && !entry.is_table() {
@@ -324,7 +335,7 @@ impl<T: Translation> PageTable<T> {
                     let old = *entry;
                     let subtable = Box::leak(PageTable::<T>::new());
                     if let Some(old_flags) = old.flags() {
-                        let granularity = PAGE_SIZE << ((3 - level) * BITS_PER_LEVEL);
+                        let granularity = granularity_at_level(level);
                         // Old was a valid block entry, so we need to split it.
                         // Recreate the entire block in the newly added table.
                         let a = align_down(chunk.0.start.0, granularity);

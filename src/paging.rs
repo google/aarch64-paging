@@ -119,7 +119,14 @@ pub struct RootTable<T: Translation> {
 
 impl<T: Translation> RootTable<T> {
     /// Creates a new page table starting at the given root level.
+    ///
+    /// The level must be between 0 and 3; level -1 (for 52-bit addresses with LPA2) is not
+    /// currently supported by this library. The value of `TCR_EL1.T0SZ` must be set appropriately
+    /// to match.
     pub fn new(level: usize) -> Self {
+        if level > LEAF_LEVEL {
+            panic!("Invalid root table level {}.", level);
+        }
         RootTable {
             table: PageTable::new(),
             level,

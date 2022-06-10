@@ -4,8 +4,9 @@
 
 //! Functionality for managing page tables with identity mapping.
 
-use crate::paging::{
-    Attributes, MemoryRegion, PhysicalAddress, RootTable, Translation, VirtualAddress,
+use crate::{
+    paging::{Attributes, MemoryRegion, PhysicalAddress, RootTable, Translation, VirtualAddress},
+    AddressRangeError,
 };
 #[cfg(target_arch = "aarch64")]
 use core::arch::asm;
@@ -141,13 +142,18 @@ impl IdMap {
     /// change that may require break-before-make per the architecture must be made while the page
     /// table is inactive. Mapping a previously unmapped memory range may be done while the page
     /// table is active.
-    pub fn map_range(&mut self, range: &MemoryRegion, flags: Attributes) {
-        self.root.map_range(range, flags);
+    pub fn map_range(
+        &mut self,
+        range: &MemoryRegion,
+        flags: Attributes,
+    ) -> Result<(), AddressRangeError> {
+        self.root.map_range(range, flags)?;
         #[cfg(target_arch = "aarch64")]
         unsafe {
             // Safe because this is just a memory barrier.
             asm!("dsb ishst");
         }
+        Ok(())
     }
 }
 
@@ -171,27 +177,65 @@ mod tests {
     fn map_valid() {
         // A single byte at the start of the address space.
         let mut idmap = IdMap::new(1, 1);
-        idmap.map_range(&MemoryRegion::new(0, 1), Attributes::NORMAL);
+        assert_eq!(
+            idmap.map_range(&MemoryRegion::new(0, 1), Attributes::NORMAL),
+            Ok(())
+        );
 
         // Two pages at the start of the address space.
         let mut idmap = IdMap::new(1, 1);
-        idmap.map_range(&MemoryRegion::new(0, PAGE_SIZE * 2), Attributes::NORMAL);
+        assert_eq!(
+            idmap.map_range(&MemoryRegion::new(0, PAGE_SIZE * 2), Attributes::NORMAL),
+            Ok(())
+        );
 
         // A single byte at the end of the address space.
         let mut idmap = IdMap::new(1, 1);
-        idmap.map_range(
-            &MemoryRegion::new(
-                MAX_ADDRESS_FOR_ROOT_LEVEL_1 - 1,
-                MAX_ADDRESS_FOR_ROOT_LEVEL_1,
+        assert_eq!(
+            idmap.map_range(
+                &MemoryRegion::new(
+                    MAX_ADDRESS_FOR_ROOT_LEVEL_1 - 1,
+                    MAX_ADDRESS_FOR_ROOT_LEVEL_1
+                ),
+                Attributes::NORMAL
             ),
-            Attributes::NORMAL,
+            Ok(())
         );
 
         // The entire valid address space.
         let mut idmap = IdMap::new(1, 1);
-        idmap.map_range(
-            &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
-            Attributes::NORMAL,
+        assert_eq!(
+            idmap.map_range(
+                &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
+                Attributes::NORMAL
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn map_out_of_range() {
+        let mut idmap = IdMap::new(1, 1);
+
+        // One byte, just past the edge of the valid range.
+        assert_eq!(
+            idmap.map_range(
+                &MemoryRegion::new(
+                    MAX_ADDRESS_FOR_ROOT_LEVEL_1,
+                    MAX_ADDRESS_FOR_ROOT_LEVEL_1 + 1,
+                ),
+                Attributes::NORMAL
+            ),
+            Err(AddressRangeError)
+        );
+
+        // From 0 to just past the valid range.
+        assert_eq!(
+            idmap.map_range(
+                &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1 + 1,),
+                Attributes::NORMAL
+            ),
+            Err(AddressRangeError)
         );
     }
 }

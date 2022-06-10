@@ -42,3 +42,6 @@ pub mod idmap;
 pub mod paging;
 
 extern crate alloc;
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct AddressRangeError;

@@ -5,6 +5,7 @@
 //! Generic aarch64 page table manipulation functionality which doesn't assume anything about how
 //! addresses are mapped.
 
+use crate::AddressRangeError;
 use alloc::alloc::{alloc_zeroed, handle_alloc_error};
 use bitflags::bitflags;
 use core::alloc::Layout;
@@ -141,9 +142,26 @@ impl<T: Translation> RootTable<T> {
         }
     }
 
+    /// Returns the size in bytes of the virtual address space which can be mapped in this page
+    /// table.
+    ///
+    /// This is a function of the chosen root level.
+    pub fn size(&self) -> usize {
+        granularity_at_level(self.table.level) << BITS_PER_LEVEL
+    }
+
     /// Recursively maps a range into the pagetable hierarchy starting at the root level.
-    pub fn map_range(&mut self, range: &MemoryRegion, flags: Attributes) {
+    pub fn map_range(
+        &mut self,
+        range: &MemoryRegion,
+        flags: Attributes,
+    ) -> Result<(), AddressRangeError> {
+        if range.end().0 > self.size() {
+            return Err(AddressRangeError);
+        }
+
         self.table.map_range(range, flags);
+        Ok(())
     }
 
     /// Returns the physical address of the root table in memory.

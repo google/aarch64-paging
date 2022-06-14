@@ -13,7 +13,9 @@ use bitflags::bitflags;
 use core::alloc::Layout;
 use core::fmt::{self, Debug, Display, Formatter};
 use core::marker::PhantomData;
+use core::mem::forget;
 use core::ops::Range;
+use core::ptr::null_mut;
 
 const PAGE_SHIFT: usize = 12;
 
@@ -125,8 +127,7 @@ impl MemoryRegion {
 /// A complete hierarchy of page tables including all levels.
 #[derive(Debug)]
 pub struct RootTable<T: Translation> {
-    table: Box<PageTable<T>>,
-    level: usize,
+    table: PageTableWithLevel<T>,
 }
 
 impl<T: Translation> RootTable<T> {
@@ -140,19 +141,18 @@ impl<T: Translation> RootTable<T> {
             panic!("Invalid root table level {}.", level);
         }
         RootTable {
-            table: PageTable::new(),
-            level,
+            table: PageTableWithLevel::new(level),
         }
     }
 
     /// Recursively maps a range into the pagetable hierarchy starting at the root level.
     pub fn map_range(&mut self, range: &MemoryRegion, flags: Attributes) {
-        self.table.map_range(range, flags, self.level);
+        self.table.map_range(range, flags);
     }
 
     /// Returns the physical address of the root table in memory.
     pub fn to_physical(&self) -> PhysicalAddress {
-        self.table.to_physical()
+        self.table.table.to_physical()
     }
 }
 
@@ -216,6 +216,95 @@ bitflags! {
     }
 }
 
+struct PageTableWithLevel<T: Translation> {
+    table: Box<PageTable<T>>,
+    level: usize,
+}
+
+impl<T: Translation> PageTableWithLevel<T> {
+    fn new(level: usize) -> Self {
+        assert!(level <= LEAF_LEVEL);
+        Self {
+            table: PageTable::new(),
+            level,
+        }
+    }
+
+    unsafe fn from_raw(table: *mut PageTable<T>, level: usize) -> Self {
+        assert!(level <= LEAF_LEVEL);
+        Self {
+            table: Box::from_raw(table),
+            level,
+        }
+    }
+
+    fn get_entry_mut(&mut self, va: usize) -> &mut Descriptor {
+        let shift = PAGE_SHIFT + (LEAF_LEVEL - self.level) * BITS_PER_LEVEL;
+        let index = (va >> shift) % (1 << BITS_PER_LEVEL);
+        &mut self.table.entries[index]
+    }
+
+    fn map_range(&mut self, range: &MemoryRegion, flags: Attributes) {
+        let mut pa = T::virtual_to_physical(range.start());
+        let level = self.level;
+
+        for chunk in range.split(level) {
+            let entry = self.get_entry_mut(chunk.0.start.0);
+
+            if level == LEAF_LEVEL {
+                // Put down a page mapping.
+                entry.set(pa, flags | Attributes::ACCESSED | Attributes::TABLE_OR_PAGE);
+            } else if chunk.is_block(level) && !entry.is_table_or_page() {
+                // Rather than leak the entire subhierarchy, only put down
+                // a block mapping if the region is not already covered by
+                // a table mapping.
+                entry.set(pa, flags | Attributes::ACCESSED);
+            } else {
+                let mut subtable = if let Some(subtable) = entry.subtable::<T>(level) {
+                    unsafe { Self::from_raw(subtable, level + 1) }
+                } else {
+                    let old = *entry;
+                    let mut subtable = Self::new(level + 1);
+                    if let Some(old_flags) = old.flags() {
+                        let granularity = granularity_at_level(level);
+                        // Old was a valid block entry, so we need to split it.
+                        // Recreate the entire block in the newly added table.
+                        let a = align_down(chunk.0.start.0, granularity);
+                        let b = align_up(chunk.0.end.0, granularity);
+                        subtable.map_range(&MemoryRegion::new(a, b), old_flags);
+                    }
+                    entry.set(subtable.table.to_physical(), Attributes::TABLE_OR_PAGE);
+                    subtable
+                };
+                subtable.map_range(&chunk, flags);
+                // Prevent the subtable from being dropped.
+                forget(subtable);
+            }
+            pa.0 += chunk.len();
+        }
+    }
+}
+
+impl<T: Translation> Debug for PageTableWithLevel<T> {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        writeln!(f, "PageTableWithLevel {{ level: {}, table:", self.level)?;
+        self.table.as_ref().fmt_indented(f, 0, self.level)?;
+        write!(f, "}}")
+    }
+}
+
+impl<T: Translation> Drop for PageTableWithLevel<T> {
+    fn drop(&mut self) {
+        for entry in self.table.entries {
+            if let Some(subtable) = entry.subtable::<T>(self.level) {
+                // Safe because the subtable was allocated by `PageTable::new` with the global
+                // allocator and appropriate layout.
+                unsafe { drop(PageTableWithLevel::from_raw(subtable, self.level + 1)) }
+            }
+        }
+    }
+}
+
 /// A single level of a page table.
 #[repr(C, align(4096))]
 struct PageTable<T: Translation> {
@@ -257,7 +346,7 @@ impl Descriptor {
         (self.0 & Attributes::VALID.bits()) != 0
     }
 
-    fn is_table(self) -> bool {
+    fn is_table_or_page(self) -> bool {
         if let Some(flags) = self.flags() {
             flags.contains(Attributes::TABLE_OR_PAGE)
         } else {
@@ -269,11 +358,13 @@ impl Descriptor {
         self.0 = pa.0 | (flags | Attributes::VALID).bits();
     }
 
-    fn subtable<T: Translation>(&self) -> Option<&mut PageTable<T>> {
-        if self.is_table() {
+    fn subtable<T: Translation>(&self, level: usize) -> Option<&mut PageTable<T>> {
+        if level != LEAF_LEVEL && self.is_table_or_page() {
             if let Some(output_address) = self.output_address() {
                 let va = T::physical_to_virtual(output_address);
-                return Some(unsafe { &mut *(va.0 as *mut PageTable<T>) });
+                let ptr = va.0 as *mut PageTable<T>;
+                assert_ne!(ptr, null_mut());
+                return Some(unsafe { &mut *(ptr) });
             }
         }
         None
@@ -287,13 +378,6 @@ impl Debug for Descriptor {
             write!(f, " ({}, {:?})", address, flags)?;
         }
         Ok(())
-    }
-}
-
-impl<T: Translation> Debug for PageTable<T> {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        writeln!(f)?;
-        self.fmt_indented(f, 0)
     }
 }
 
@@ -326,51 +410,12 @@ impl<T: Translation> PageTable<T> {
         T::virtual_to_physical(VirtualAddress::from(self as *const Self))
     }
 
-    fn get_entry_mut(&mut self, va: usize, level: usize) -> &mut Descriptor {
-        let shift = PAGE_SHIFT + (LEAF_LEVEL - level) * BITS_PER_LEVEL;
-        let index = (va >> shift) % (1 << BITS_PER_LEVEL);
-        &mut self.entries[index]
-    }
-
-    fn map_range(&mut self, range: &MemoryRegion, flags: Attributes, level: usize) {
-        assert!(level <= LEAF_LEVEL);
-        let mut pa = T::virtual_to_physical(range.start());
-
-        for chunk in range.split(level) {
-            let entry = self.get_entry_mut(chunk.0.start.0, level);
-
-            if level == LEAF_LEVEL {
-                // Put down a page mapping.
-                entry.set(pa, flags | Attributes::ACCESSED | Attributes::TABLE_OR_PAGE);
-            } else if chunk.is_block(level) && !entry.is_table() {
-                // Rather than leak the entire subhierarchy, only put down
-                // a block mapping if the region is not already covered by
-                // a table mapping.
-                entry.set(pa, flags | Attributes::ACCESSED);
-            } else {
-                let subtable = if let Some(subtable) = entry.subtable::<T>() {
-                    subtable
-                } else {
-                    let old = *entry;
-                    let subtable = Box::leak(PageTable::<T>::new());
-                    if let Some(old_flags) = old.flags() {
-                        let granularity = granularity_at_level(level);
-                        // Old was a valid block entry, so we need to split it.
-                        // Recreate the entire block in the newly added table.
-                        let a = align_down(chunk.0.start.0, granularity);
-                        let b = align_up(chunk.0.end.0, granularity);
-                        subtable.map_range(&MemoryRegion::new(a, b), old_flags, level + 1);
-                    }
-                    entry.set(subtable.to_physical(), Attributes::TABLE_OR_PAGE);
-                    subtable
-                };
-                subtable.map_range(&chunk, flags, level + 1);
-            }
-            pa.0 += chunk.len();
-        }
-    }
-
-    fn fmt_indented(&self, f: &mut Formatter, indentation: usize) -> Result<(), fmt::Error> {
+    fn fmt_indented(
+        &self,
+        f: &mut Formatter,
+        indentation: usize,
+        level: usize,
+    ) -> Result<(), fmt::Error> {
         let mut i = 0;
         while i < self.entries.len() {
             if self.entries[i].0 == 0 {
@@ -385,27 +430,13 @@ impl<T: Translation> PageTable<T> {
                 }
             } else {
                 writeln!(f, "{:indentation$}{}: {:?}", "", i, self.entries[i])?;
-                if let Some(subtable) = self.entries[i].subtable::<T>() {
-                    subtable.fmt_indented(f, indentation + 2)?;
+                if let Some(subtable) = self.entries[i].subtable::<T>(level) {
+                    subtable.fmt_indented(f, indentation + 2, level + 1)?;
                 }
                 i += 1;
             }
         }
         Ok(())
-    }
-}
-
-impl<T: Translation> Drop for PageTable<T> {
-    fn drop(&mut self) {
-        for entry in self.entries {
-            if let Some(subtable) = entry.subtable::<T>() {
-                // Safe because the subtable was allocated by `PageTable::new` with the global
-                // allocator and appropriate layout.
-                unsafe {
-                    drop(Box::from_raw(subtable));
-                }
-            }
-        }
     }
 }
 

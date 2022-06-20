@@ -159,3 +159,39 @@ impl Drop for IdMap {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::paging::PAGE_SIZE;
+
+    const MAX_ADDRESS_FOR_ROOT_LEVEL_1: usize = 1 << 39;
+
+    #[test]
+    fn map_valid() {
+        // A single byte at the start of the address space.
+        let mut idmap = IdMap::new(1, 1);
+        idmap.map_range(&MemoryRegion::new(0, 1), Attributes::NORMAL);
+
+        // Two pages at the start of the address space.
+        let mut idmap = IdMap::new(1, 1);
+        idmap.map_range(&MemoryRegion::new(0, PAGE_SIZE * 2), Attributes::NORMAL);
+
+        // A single byte at the end of the address space.
+        let mut idmap = IdMap::new(1, 1);
+        idmap.map_range(
+            &MemoryRegion::new(
+                MAX_ADDRESS_FOR_ROOT_LEVEL_1 - 1,
+                MAX_ADDRESS_FOR_ROOT_LEVEL_1,
+            ),
+            Attributes::NORMAL,
+        );
+
+        // The entire valid address space.
+        let mut idmap = IdMap::new(1, 1);
+        idmap.map_range(
+            &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
+            Attributes::NORMAL,
+        );
+    }
+}

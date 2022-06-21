@@ -40,7 +40,13 @@ impl<T> From<*mut T> for VirtualAddress {
 
 impl Display for VirtualAddress {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        write!(f, "{:#016x}", self.0)
+        write!(f, "{:#018x}", self.0)
+    }
+}
+
+impl Debug for VirtualAddress {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        write!(f, "VirtualAddress({})", self)
     }
 }
 
@@ -55,7 +61,13 @@ pub struct PhysicalAddress(pub usize);
 
 impl Display for PhysicalAddress {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        write!(f, "{:#016x}", self.0)
+        write!(f, "{:#018x}", self.0)
+    }
+}
+
+impl Debug for PhysicalAddress {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        write!(f, "PhysicalAddress({})", self)
     }
 }
 

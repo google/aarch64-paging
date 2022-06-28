@@ -83,6 +83,14 @@ impl Debug for PhysicalAddress {
     }
 }
 
+impl Sub for PhysicalAddress {
+    type Output = usize;
+
+    fn sub(self, other: Self) -> Self::Output {
+        self.0 - other.0
+    }
+}
+
 /// Returns the size in bytes of the address space covered by a single entry in the page table at
 /// the given level.
 fn granularity_at_level(level: usize) -> usize {
@@ -520,6 +528,23 @@ mod tests {
     fn subtract_virtual_address_overflow() {
         let low = VirtualAddress(0x12);
         let high = VirtualAddress(0x1234);
+
+        // This would overflow, so should panic.
+        let _ = low - high;
+    }
+
+    #[test]
+    fn subtract_physical_address() {
+        let low = PhysicalAddress(0x12);
+        let high = PhysicalAddress(0x1234);
+        assert_eq!(high - low, 0x1222);
+    }
+
+    #[test]
+    #[should_panic]
+    fn subtract_physical_address_overflow() {
+        let low = PhysicalAddress(0x12);
+        let high = PhysicalAddress(0x1234);
 
         // This would overflow, so should panic.
         let _ = low - high;

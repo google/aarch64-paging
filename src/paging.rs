@@ -121,6 +121,18 @@ impl MemoryRegion {
     }
 }
 
+impl Display for MemoryRegion {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        write!(f, "{}..{}", self.0.start, self.0.end)
+    }
+}
+
+impl Debug for MemoryRegion {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        Display::fmt(self, f)
+    }
+}
+
 /// A complete hierarchy of page tables including all levels.
 #[derive(Debug)]
 pub struct RootTable<T: Translation> {
@@ -462,4 +474,23 @@ const fn align_down(value: usize, alignment: usize) -> usize {
 
 const fn align_up(value: usize, alignment: usize) -> usize {
     ((value - 1) | (alignment - 1)) + 1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::{format, string::ToString};
+
+    #[test]
+    fn display_memory_region() {
+        let region = MemoryRegion::new(0x1234, 0x56789);
+        assert_eq!(
+            &region.to_string(),
+            "0x0000000000001000..0x0000000000057000"
+        );
+        assert_eq!(
+            &format!("{:?}", region),
+            "0x0000000000001000..0x0000000000057000"
+        );
+    }
 }

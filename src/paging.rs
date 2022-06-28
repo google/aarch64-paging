@@ -121,6 +121,12 @@ impl MemoryRegion {
     }
 }
 
+impl From<Range<VirtualAddress>> for MemoryRegion {
+    fn from(range: Range<VirtualAddress>) -> Self {
+        Self::new(range.start.0, range.end.0)
+    }
+}
+
 impl Display for MemoryRegion {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
         write!(f, "{}..{}", self.0.start, self.0.end)

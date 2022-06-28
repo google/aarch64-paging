@@ -11,7 +11,7 @@ use bitflags::bitflags;
 use core::alloc::Layout;
 use core::fmt::{self, Debug, Display, Formatter};
 use core::marker::PhantomData;
-use core::ops::Range;
+use core::ops::{Range, Sub};
 use core::ptr::NonNull;
 
 const PAGE_SHIFT: usize = 12;
@@ -51,6 +51,14 @@ impl Display for VirtualAddress {
 impl Debug for VirtualAddress {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
         write!(f, "VirtualAddress({})", self)
+    }
+}
+
+impl Sub for VirtualAddress {
+    type Output = usize;
+
+    fn sub(self, other: Self) -> Self::Output {
+        self.0 - other.0
     }
 }
 
@@ -498,5 +506,22 @@ mod tests {
             &format!("{:?}", region),
             "0x0000000000001000..0x0000000000057000"
         );
+    }
+
+    #[test]
+    fn subtract_virtual_address() {
+        let low = VirtualAddress(0x12);
+        let high = VirtualAddress(0x1234);
+        assert_eq!(high - low, 0x1222);
+    }
+
+    #[test]
+    #[should_panic]
+    fn subtract_virtual_address_overflow() {
+        let low = VirtualAddress(0x12);
+        let high = VirtualAddress(0x1234);
+
+        // This would overflow, so should panic.
+        let _ = low - high;
     }
 }

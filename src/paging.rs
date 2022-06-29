@@ -290,8 +290,9 @@ bitflags! {
 /// implement `Debug` and `Drop`, as walking the page table hierachy requires knowing the starting
 /// level.
 struct PageTableWithLevel<T: Translation> {
-    table: NonNull<PageTable<T>>,
+    table: NonNull<PageTable>,
     level: usize,
+    _phantom_data: PhantomData<T>,
 }
 
 impl<T: Translation> PageTableWithLevel<T> {
@@ -303,6 +304,7 @@ impl<T: Translation> PageTableWithLevel<T> {
             // allocator, and the memory is zeroed which is valid initialisation for a PageTable.
             table: unsafe { allocate_zeroed() },
             level,
+            _phantom_data: PhantomData,
         }
     }
 
@@ -414,9 +416,8 @@ impl<T: Translation> Debug for PageTableWithLevel<T> {
 
 /// A single level of a page table.
 #[repr(C, align(4096))]
-struct PageTable<T: Translation> {
+struct PageTable {
     entries: [Descriptor; 1 << BITS_PER_LEVEL],
-    _phantom_data: PhantomData<T>,
 }
 
 /// An entry in a page table.
@@ -469,10 +470,11 @@ impl Descriptor {
         if level < LEAF_LEVEL && self.is_table_or_page() {
             if let Some(output_address) = self.output_address() {
                 let va = T::physical_to_virtual(output_address);
-                let ptr = va.0 as *mut PageTable<T>;
+                let ptr = va.0 as *mut PageTable;
                 return Some(PageTableWithLevel {
                     level: level + 1,
                     table: NonNull::new(ptr).expect("Subtable pointer must be non-null."),
+                    _phantom_data: PhantomData,
                 });
             }
         }

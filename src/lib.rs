@@ -30,7 +30,7 @@
 //! idmap.map_range(
 //!     &MemoryRegion::new(0x80200000, 0x80400000),
 //!     Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::READ_ONLY,
-//! );
+//! ).unwrap();
 //! // Set `TTBR0_EL1` to activate the page table.
 //! # #[cfg(target_arch = "aarch64")]
 //! idmap.activate();

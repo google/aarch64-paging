@@ -43,5 +43,13 @@ pub mod paging;
 
 extern crate alloc;
 
+use core::fmt::{self, Display, Formatter};
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct AddressRangeError;
+
+impl Display for AddressRangeError {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "AddressRangeError")
+    }
+}

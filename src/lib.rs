@@ -50,6 +50,8 @@ use core::arch::asm;
 use core::fmt::{self, Display, Formatter};
 use paging::{Attributes, MemoryRegion, RootTable, Translation};
 
+/// The address requested to be mapped was out of the range supported by the page table
+/// configuration.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct AddressRangeError;
 

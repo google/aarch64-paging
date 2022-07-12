@@ -2,7 +2,7 @@
 // This project is dual-licensed under Apache 2.0 and MIT terms.
 // See LICENSE-APACHE and LICENSE-MIT for details.
 
-//! Functionality for managing page tables with identity mapping.
+//! Functionality for managing page tables with linear mapping.
 
 use crate::{
     paging::{Attributes, MemoryRegion, PhysicalAddress, RootTable, Translation, VirtualAddress},
@@ -11,8 +11,8 @@ use crate::{
 #[cfg(target_arch = "aarch64")]
 use core::arch::asm;
 
-/// Manages a level 1 page-table using identity mapping, where every virtual address is either
-/// unmapped or mapped to the identical IPA.
+/// Manages a level 1 page-table using linear mapping, where every virtual address is either
+/// unmapped or mapped to an IPA with a fixed offset.
 ///
 /// Mappings should be added with [`map_range`](Self::map_range) before calling
 /// [`activate`](Self::activate) to start using the new page table. To make changes which may
@@ -24,40 +24,41 @@ use core::arch::asm;
 ///
 /// ```
 /// use aarch64_paging::{
-///     idmap::IdMap,
+///     linearmap::LinearMap,
 ///     paging::{Attributes, MemoryRegion},
 /// };
 ///
 /// const ASID: usize = 1;
 /// const ROOT_LEVEL: usize = 1;
+/// const OFFSET: isize = 4096;
 ///
-/// // Create a new page table with identity mapping.
-/// let mut idmap = IdMap::new(ASID, ROOT_LEVEL);
+/// // Create a new page table with linear mapping.
+/// let mut pagetable = LinearMap::new(ASID, ROOT_LEVEL, OFFSET);
 /// // Map a 2 MiB region of memory as read-write.
-/// idmap.map_range(
+/// pagetable.map_range(
 ///     &MemoryRegion::new(0x80200000, 0x80400000),
 ///     Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::EXECUTE_NEVER,
 /// ).unwrap();
 /// // Set `TTBR0_EL1` to activate the page table.
 /// # #[cfg(target_arch = "aarch64")]
-/// idmap.activate();
+/// pagetable.activate();
 ///
 /// // Write something to the memory...
 ///
 /// // Restore `TTBR0_EL1` to its earlier value while we modify the page table.
 /// # #[cfg(target_arch = "aarch64")]
-/// idmap.deactivate();
+/// pagetable.deactivate();
 /// // Now change the mapping to read-only and executable.
-/// idmap.map_range(
+/// pagetable.map_range(
 ///     &MemoryRegion::new(0x80200000, 0x80400000),
 ///     Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::READ_ONLY,
 /// ).unwrap();
 /// # #[cfg(target_arch = "aarch64")]
-/// idmap.activate();
+/// pagetable.activate();
 /// ```
 #[derive(Debug)]
-pub struct IdMap {
-    root: RootTable<IdTranslation>,
+pub struct LinearMap {
+    root: RootTable<LinearTranslation>,
     #[allow(unused)]
     asid: usize,
     #[allow(unused)]
@@ -65,23 +66,26 @@ pub struct IdMap {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-struct IdTranslation;
+struct LinearTranslation {
+    /// The offset from a virtual address to the corresponding (intermediate) physical address.
+    offset: isize,
+}
 
-impl Translation for IdTranslation {
+impl Translation for LinearTranslation {
     fn virtual_to_physical(&self, va: VirtualAddress) -> PhysicalAddress {
-        PhysicalAddress(va.0)
+        PhysicalAddress(va.0.wrapping_add(self.offset as usize))
     }
 
     fn physical_to_virtual(&self, pa: PhysicalAddress) -> VirtualAddress {
-        VirtualAddress(pa.0)
+        VirtualAddress(pa.0.wrapping_sub(self.offset as usize))
     }
 }
 
-impl IdMap {
+impl LinearMap {
     /// Creates a new identity-mapping page table with the given ASID and root level.
-    pub fn new(asid: usize, rootlevel: usize) -> IdMap {
-        IdMap {
-            root: RootTable::new(IdTranslation, rootlevel),
+    pub fn new(asid: usize, rootlevel: usize, offset: isize) -> LinearMap {
+        LinearMap {
+            root: RootTable::new(LinearTranslation { offset }, rootlevel),
             asid,
             previous_ttbr: None,
         }
@@ -160,7 +164,7 @@ impl IdMap {
     }
 }
 
-impl Drop for IdMap {
+impl Drop for LinearMap {
     fn drop(&mut self) {
         if self.previous_ttbr.is_some() {
             #[cfg(target_arch = "aarch64")]
@@ -179,23 +183,23 @@ mod tests {
     #[test]
     fn map_valid() {
         // A single byte at the start of the address space.
-        let mut idmap = IdMap::new(1, 1);
+        let mut pagetable = LinearMap::new(1, 1, 4096);
         assert_eq!(
-            idmap.map_range(&MemoryRegion::new(0, 1), Attributes::NORMAL),
+            pagetable.map_range(&MemoryRegion::new(0, 1), Attributes::NORMAL),
             Ok(())
         );
 
         // Two pages at the start of the address space.
-        let mut idmap = IdMap::new(1, 1);
+        let mut pagetable = LinearMap::new(1, 1, 4096);
         assert_eq!(
-            idmap.map_range(&MemoryRegion::new(0, PAGE_SIZE * 2), Attributes::NORMAL),
+            pagetable.map_range(&MemoryRegion::new(0, PAGE_SIZE * 2), Attributes::NORMAL),
             Ok(())
         );
 
         // A single byte at the end of the address space.
-        let mut idmap = IdMap::new(1, 1);
+        let mut pagetable = LinearMap::new(1, 1, 4096);
         assert_eq!(
-            idmap.map_range(
+            pagetable.map_range(
                 &MemoryRegion::new(
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1 - 1,
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1
@@ -206,9 +210,9 @@ mod tests {
         );
 
         // The entire valid address space.
-        let mut idmap = IdMap::new(1, 1);
+        let mut pagetable = LinearMap::new(1, 1, 4096);
         assert_eq!(
-            idmap.map_range(
+            pagetable.map_range(
                 &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
                 Attributes::NORMAL
             ),
@@ -218,11 +222,11 @@ mod tests {
 
     #[test]
     fn map_out_of_range() {
-        let mut idmap = IdMap::new(1, 1);
+        let mut pagetable = LinearMap::new(1, 1, 4096);
 
         // One byte, just past the edge of the valid range.
         assert_eq!(
-            idmap.map_range(
+            pagetable.map_range(
                 &MemoryRegion::new(
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1,
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1 + 1,
@@ -234,7 +238,7 @@ mod tests {
 
         // From 0 to just past the valid range.
         assert_eq!(
-            idmap.map_range(
+            pagetable.map_range(
                 &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1 + 1,),
                 Attributes::NORMAL
             ),

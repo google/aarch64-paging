@@ -9,9 +9,9 @@
 //!   - EL1
 //!   - 4 KiB pages
 //!
-//! Full support is only provided for identity mapping; for other mapping schemes the user of the
-//! library must implement some functionality themself including an implementation of the
-//! [`Translation`](paging::Translation) trait.
+//! Full support is only provided for identity mapping and linear mapping; for other mapping schemes
+//! the user of the library must implement some functionality themself including an implementation
+//! of the [`Translation`](paging::Translation) trait.
 //!
 //! # Example
 //!
@@ -39,6 +39,7 @@
 #![no_std]
 
 pub mod idmap;
+pub mod linearmap;
 pub mod paging;
 
 extern crate alloc;

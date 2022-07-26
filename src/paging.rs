@@ -69,6 +69,14 @@ impl Add<usize> for VirtualAddress {
     }
 }
 
+impl Sub<usize> for VirtualAddress {
+    type Output = Self;
+
+    fn sub(self, other: usize) -> Self {
+        Self(self.0 - other)
+    }
+}
+
 /// A range of virtual addresses which may be mapped in a page table.
 #[derive(Clone, Eq, PartialEq)]
 pub struct MemoryRegion(Range<VirtualAddress>);
@@ -103,6 +111,14 @@ impl Add<usize> for PhysicalAddress {
 
     fn add(self, other: usize) -> Self {
         Self(self.0 + other)
+    }
+}
+
+impl Sub<usize> for PhysicalAddress {
+    type Output = Self;
+
+    fn sub(self, other: usize) -> Self {
+        Self(self.0 - other)
     }
 }
 

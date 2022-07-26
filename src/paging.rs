@@ -116,7 +116,12 @@ fn granularity_at_level(level: usize) -> usize {
 /// physical addresses used in the page tables can be converted into virtual addresses that can be
 /// used to access their contents from the code.
 pub trait Translation {
+    /// Given a virtual address, returns the physical address to which it should be mapped.
+    ///
+    /// This must at least define mappings for any memory which might be allocated.
     fn virtual_to_physical(&self, va: VirtualAddress) -> PhysicalAddress;
+
+    /// Given the physical address of a subtable, returns the virtual address at which it is mapped.
     fn physical_to_virtual(&self, pa: PhysicalAddress) -> VirtualAddress;
 }
 

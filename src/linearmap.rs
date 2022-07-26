@@ -18,6 +18,8 @@ pub struct LinearTranslation {
 }
 
 impl LinearTranslation {
+    /// Constructs a new linear translation, which will map a virtual address `va` to the
+    /// (intermediate) physical address `va + offset`.
     pub fn new(offset: isize) -> Self {
         Self { offset }
     }
@@ -25,11 +27,29 @@ impl LinearTranslation {
 
 impl Translation for LinearTranslation {
     fn virtual_to_physical(&self, va: VirtualAddress) -> PhysicalAddress {
-        PhysicalAddress(va.0.wrapping_add(self.offset as usize))
+        if let Some(pa) = checked_add_signed(va.0, self.offset) {
+            PhysicalAddress(pa)
+        } else {
+            panic!("Attempt to map invalid virtual address {}", va)
+        }
     }
 
     fn physical_to_virtual(&self, pa: PhysicalAddress) -> VirtualAddress {
-        VirtualAddress(pa.0.wrapping_sub(self.offset as usize))
+        if let Some(va) = checked_add_signed(pa.0, -self.offset) {
+            VirtualAddress(va)
+        } else {
+            panic!("Invalid physical address {}", pa);
+        }
+    }
+}
+
+// TODO: Use `usize::checked_add_signed` once it is stable
+// (https://github.com/rust-lang/rust/issues/87840)
+fn checked_add_signed(a: usize, b: isize) -> Option<usize> {
+    if b >= 0 {
+        a.checked_add(b as usize)
+    } else {
+        a.checked_sub(b.unsigned_abs())
     }
 }
 
@@ -109,5 +129,19 @@ mod tests {
             ),
             Err(AddressRangeError)
         );
+    }
+
+    #[test]
+    #[should_panic]
+    fn physical_address_out_of_range() {
+        let translation = LinearTranslation::new(4096);
+        translation.physical_to_virtual(PhysicalAddress(1024));
+    }
+
+    #[test]
+    #[should_panic]
+    fn virtual_address_out_of_range() {
+        let translation = LinearTranslation::new(-4096);
+        translation.virtual_to_physical(VirtualAddress(1024));
     }
 }

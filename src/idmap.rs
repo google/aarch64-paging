@@ -38,21 +38,21 @@ mod tests {
     #[test]
     fn map_valid() {
         // A single byte at the start of the address space.
-        let mut idmap = Mapping::new(IdTranslation, 1, 1);
+        let mut idmap = IdMap::new(IdTranslation, 1, 1);
         assert_eq!(
             idmap.map_range(&MemoryRegion::new(0, 1), Attributes::NORMAL),
             Ok(())
         );
 
         // Two pages at the start of the address space.
-        let mut idmap = Mapping::new(IdTranslation, 1, 1);
+        let mut idmap = IdMap::new(IdTranslation, 1, 1);
         assert_eq!(
             idmap.map_range(&MemoryRegion::new(0, PAGE_SIZE * 2), Attributes::NORMAL),
             Ok(())
         );
 
         // A single byte at the end of the address space.
-        let mut idmap = Mapping::new(IdTranslation, 1, 1);
+        let mut idmap = IdMap::new(IdTranslation, 1, 1);
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(
@@ -65,7 +65,7 @@ mod tests {
         );
 
         // The entire valid address space.
-        let mut idmap = Mapping::new(IdTranslation, 1, 1);
+        let mut idmap = IdMap::new(IdTranslation, 1, 1);
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
@@ -77,7 +77,7 @@ mod tests {
 
     #[test]
     fn map_out_of_range() {
-        let mut idmap = Mapping::new(IdTranslation, 1, 1);
+        let mut idmap = IdMap::new(IdTranslation, 1, 1);
 
         // One byte, just past the edge of the valid range.
         assert_eq!(

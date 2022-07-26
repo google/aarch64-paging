@@ -17,16 +17,15 @@
 //!
 //! ```
 //! use aarch64_paging::{
-//!     idmap::IdTranslation,
+//!     idmap::{IdMap, IdTranslation},
 //!     paging::{Attributes, MemoryRegion},
-//!     Mapping,
 //! };
 //!
 //! const ASID: usize = 1;
 //! const ROOT_LEVEL: usize = 1;
 //!
 //! // Create a new page table with identity mapping.
-//! let mut idmap = Mapping::new(IdTranslation, ASID, ROOT_LEVEL);
+//! let mut idmap = IdMap::new(IdTranslation, ASID, ROOT_LEVEL);
 //! // Map a 2 MiB region of memory as read-only.
 //! idmap.map_range(
 //!     &MemoryRegion::new(0x80200000, 0x80400000),
@@ -73,16 +72,15 @@ impl Display for AddressRangeError {
 ///
 /// ```
 /// use aarch64_paging::{
-///     idmap::IdTranslation,
+///     idmap::{IdMap, IdTranslation},
 ///     paging::{Attributes, MemoryRegion},
-///     Mapping,
 /// };
 ///
 /// const ASID: usize = 1;
 /// const ROOT_LEVEL: usize = 1;
 ///
 /// // Create a new page table with identity mapping.
-/// let mut idmap = Mapping::new(IdTranslation, ASID, ROOT_LEVEL);
+/// let mut idmap = IdMap::new(IdTranslation, ASID, ROOT_LEVEL);
 /// // Map a 2 MiB region of memory as read-write.
 /// idmap.map_range(
 ///     &MemoryRegion::new(0x80200000, 0x80400000),

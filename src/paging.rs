@@ -5,7 +5,7 @@
 //! Generic aarch64 page table manipulation functionality which doesn't assume anything about how
 //! addresses are mapped.
 
-use crate::AddressRangeError;
+use crate::MapError;
 use alloc::alloc::{alloc_zeroed, handle_alloc_error};
 use bitflags::bitflags;
 use core::alloc::Layout;
@@ -135,7 +135,7 @@ pub trait Translation {
     /// Given a virtual address, returns the physical address to which it should be mapped.
     ///
     /// This must at least define mappings for any memory which might be allocated.
-    fn virtual_to_physical(&self, va: VirtualAddress) -> PhysicalAddress;
+    fn virtual_to_physical(&self, va: VirtualAddress) -> Result<PhysicalAddress, MapError>;
 
     /// Given the physical address of a subtable, returns the virtual address at which it is mapped.
     fn physical_to_virtual(&self, pa: PhysicalAddress) -> VirtualAddress;
@@ -221,16 +221,24 @@ impl<T: Translation + Clone> RootTable<T> {
     }
 
     /// Recursively maps a range into the pagetable hierarchy starting at the root level.
-    pub fn map_range(
-        &mut self,
-        range: &MemoryRegion,
-        flags: Attributes,
-    ) -> Result<(), AddressRangeError> {
+    ///
+    /// Returns an error if the virtual address range is out of the range covered by the pagetable,
+    /// or has no valid corresponding physical page for its start and end.
+    pub fn map_range(&mut self, range: &MemoryRegion, flags: Attributes) -> Result<(), MapError> {
         if range.end().0 > self.size() {
-            return Err(AddressRangeError);
+            return Err(MapError::AddressRange(range.end()));
         }
 
+        // Check that there is a valid physical page for both the first and the last pages in the
+        // range. We assume that the mapping is contiguous so there's no need to check each
+        // individual page.
+        self.table.translation.virtual_to_physical(range.start())?;
+        self.table
+            .translation
+            .virtual_to_physical(range.end() - PAGE_SIZE)?;
+
         self.table.map_range(range, flags);
+
         Ok(())
     }
 
@@ -330,8 +338,11 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
 
     /// Returns the physical address of this page table in memory.
     fn to_physical(&self) -> PhysicalAddress {
+        // If there is no defined mapping for the page table itself, then something is very wrong
+        // and we can't usefully recover, so panic.
         self.translation
             .virtual_to_physical(VirtualAddress::from(self.table.as_ptr()))
+            .unwrap()
     }
 
     /// Returns a mutable reference to the descriptor corresponding to a given virtual address.
@@ -345,9 +356,20 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
         &mut table.entries[index]
     }
 
+    /// Maps the the given virtual address range in this pagetable to the corresponding physical
+    /// addresses according to the translation, recursing into any subtables as necessary.
+    ///
+    /// Assumes that the entire range is within the range covered by this pagetable.
+    ///
+    /// Panics if the `translation` doesn't provide a corresponding physical address for some
+    /// virtual address within the range, as there is no way to roll back to a safe state so this
+    /// should be checked by the caller beforehand.
     fn map_range(&mut self, range: &MemoryRegion, flags: Attributes) {
         let translation = self.translation.clone();
-        let mut pa = translation.virtual_to_physical(range.start());
+        // Unwrap because the caller should already have checked that there are corresponding
+        // physical addresses for the range, and there's no safe way to roll back at this point if
+        // not.
+        let mut pa = translation.virtual_to_physical(range.start()).unwrap();
         let level = self.level;
 
         for chunk in range.split(level) {

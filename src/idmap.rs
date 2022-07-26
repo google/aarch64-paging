@@ -6,7 +6,7 @@
 
 use crate::{
     paging::{PhysicalAddress, Translation, VirtualAddress},
-    Mapping,
+    MapError, Mapping,
 };
 
 /// Identity mapping, where every virtual address is either unmapped or mapped to the identical IPA.
@@ -14,8 +14,8 @@ use crate::{
 pub struct IdTranslation;
 
 impl Translation for IdTranslation {
-    fn virtual_to_physical(&self, va: VirtualAddress) -> PhysicalAddress {
-        PhysicalAddress(va.0)
+    fn virtual_to_physical(&self, va: VirtualAddress) -> Result<PhysicalAddress, MapError> {
+        Ok(PhysicalAddress(va.0))
     }
 
     fn physical_to_virtual(&self, pa: PhysicalAddress) -> VirtualAddress {
@@ -30,7 +30,7 @@ mod tests {
     use super::*;
     use crate::{
         paging::{Attributes, MemoryRegion, PAGE_SIZE},
-        AddressRangeError,
+        MapError,
     };
 
     const MAX_ADDRESS_FOR_ROOT_LEVEL_1: usize = 1 << 39;
@@ -88,7 +88,9 @@ mod tests {
                 ),
                 Attributes::NORMAL
             ),
-            Err(AddressRangeError)
+            Err(MapError::AddressRange(VirtualAddress(
+                MAX_ADDRESS_FOR_ROOT_LEVEL_1 + PAGE_SIZE
+            )))
         );
 
         // From 0 to just past the valid range.
@@ -97,7 +99,9 @@ mod tests {
                 &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1 + 1,),
                 Attributes::NORMAL
             ),
-            Err(AddressRangeError)
+            Err(MapError::AddressRange(VirtualAddress(
+                MAX_ADDRESS_FOR_ROOT_LEVEL_1 + PAGE_SIZE
+            )))
         );
     }
 }

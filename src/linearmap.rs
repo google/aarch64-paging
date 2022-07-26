@@ -6,7 +6,7 @@
 
 use crate::{
     paging::{PhysicalAddress, Translation, VirtualAddress},
-    Mapping,
+    MapError, Mapping,
 };
 
 /// Linear mapping, where every virtual address is either unmapped or mapped to an IPA with a fixed
@@ -26,11 +26,11 @@ impl LinearTranslation {
 }
 
 impl Translation for LinearTranslation {
-    fn virtual_to_physical(&self, va: VirtualAddress) -> PhysicalAddress {
+    fn virtual_to_physical(&self, va: VirtualAddress) -> Result<PhysicalAddress, MapError> {
         if let Some(pa) = checked_add_signed(va.0, self.offset) {
-            PhysicalAddress(pa)
+            Ok(PhysicalAddress(pa))
         } else {
-            panic!("Attempt to map invalid virtual address {}", va)
+            Err(MapError::InvalidVirtualAddress(va))
         }
     }
 
@@ -60,7 +60,7 @@ mod tests {
     use super::*;
     use crate::{
         paging::{Attributes, MemoryRegion, PAGE_SIZE},
-        AddressRangeError,
+        MapError,
     };
 
     const MAX_ADDRESS_FOR_ROOT_LEVEL_1: usize = 1 << 39;
@@ -164,16 +164,31 @@ mod tests {
                 ),
                 Attributes::NORMAL
             ),
-            Err(AddressRangeError)
+            Err(MapError::AddressRange(VirtualAddress(
+                MAX_ADDRESS_FOR_ROOT_LEVEL_1 + PAGE_SIZE
+            )))
         );
 
         // From 0 to just past the valid range.
         assert_eq!(
             pagetable.map_range(
-                &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1 + 1,),
+                &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1 + 1),
                 Attributes::NORMAL
             ),
-            Err(AddressRangeError)
+            Err(MapError::AddressRange(VirtualAddress(
+                MAX_ADDRESS_FOR_ROOT_LEVEL_1 + PAGE_SIZE
+            )))
+        );
+    }
+
+    #[test]
+    fn map_invalid_offset() {
+        let mut pagetable = LinearMap::new(LinearTranslation::new(-4096), 1, 1);
+
+        // One byte, with an offset which would map it to a negative IPA.
+        assert_eq!(
+            pagetable.map_range(&MemoryRegion::new(0, 1), Attributes::NORMAL),
+            Err(MapError::InvalidVirtualAddress(VirtualAddress(0)))
         );
     }
 
@@ -185,9 +200,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
     fn virtual_address_out_of_range() {
         let translation = LinearTranslation::new(-4096);
-        translation.virtual_to_physical(VirtualAddress(1024));
+        let va = VirtualAddress(1024);
+        assert_eq!(
+            translation.virtual_to_physical(va),
+            Err(MapError::InvalidVirtualAddress(va))
+        )
     }
 }

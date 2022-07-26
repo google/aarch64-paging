@@ -47,16 +47,26 @@ extern crate alloc;
 #[cfg(target_arch = "aarch64")]
 use core::arch::asm;
 use core::fmt::{self, Display, Formatter};
-use paging::{Attributes, MemoryRegion, RootTable, Translation};
+use paging::{Attributes, MemoryRegion, RootTable, Translation, VirtualAddress};
 
-/// The address requested to be mapped was out of the range supported by the page table
-/// configuration.
+/// An error attempting to map some range in the page table.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct AddressRangeError;
+pub enum MapError {
+    /// The address requested to be mapped was out of the range supported by the page table
+    /// configuration.
+    AddressRange(VirtualAddress),
+    /// The address requested to be mapped was not valid for the mapping in use.
+    InvalidVirtualAddress(VirtualAddress),
+}
 
-impl Display for AddressRangeError {
+impl Display for MapError {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "AddressRangeError")
+        match self {
+            Self::AddressRange(va) => write!(f, "Virtual address {} out of range", va),
+            Self::InvalidVirtualAddress(va) => {
+                write!(f, "Invalid virtual address {} for mapping", va)
+            }
+        }
     }
 }
 
@@ -180,11 +190,7 @@ impl<T: Translation + Clone> Mapping<T> {
     /// change that may require break-before-make per the architecture must be made while the page
     /// table is inactive. Mapping a previously unmapped memory range may be done while the page
     /// table is active.
-    pub fn map_range(
-        &mut self,
-        range: &MemoryRegion,
-        flags: Attributes,
-    ) -> Result<(), AddressRangeError> {
+    pub fn map_range(&mut self, range: &MemoryRegion, flags: Attributes) -> Result<(), MapError> {
         self.root.map_range(range, flags)?;
         #[cfg(target_arch = "aarch64")]
         unsafe {

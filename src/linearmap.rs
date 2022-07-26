@@ -106,6 +106,52 @@ mod tests {
     }
 
     #[test]
+    fn map_valid_negative_offset() {
+        // A single byte which maps to IPA 0.
+        let mut pagetable = LinearMap::new(LinearTranslation::new(-(PAGE_SIZE as isize)), 1, 1);
+        assert_eq!(
+            pagetable.map_range(
+                &MemoryRegion::new(PAGE_SIZE, PAGE_SIZE + 1),
+                Attributes::NORMAL
+            ),
+            Ok(())
+        );
+
+        // Two pages at the start of the address space.
+        let mut pagetable = LinearMap::new(LinearTranslation::new(-(PAGE_SIZE as isize)), 1, 1);
+        assert_eq!(
+            pagetable.map_range(
+                &MemoryRegion::new(PAGE_SIZE, PAGE_SIZE * 3),
+                Attributes::NORMAL
+            ),
+            Ok(())
+        );
+
+        // A single byte at the end of the address space.
+        let mut pagetable = LinearMap::new(LinearTranslation::new(-(PAGE_SIZE as isize)), 1, 1);
+        assert_eq!(
+            pagetable.map_range(
+                &MemoryRegion::new(
+                    MAX_ADDRESS_FOR_ROOT_LEVEL_1 - 1,
+                    MAX_ADDRESS_FOR_ROOT_LEVEL_1
+                ),
+                Attributes::NORMAL
+            ),
+            Ok(())
+        );
+
+        // The entire valid address space.
+        let mut pagetable = LinearMap::new(LinearTranslation::new(-(PAGE_SIZE as isize)), 1, 1);
+        assert_eq!(
+            pagetable.map_range(
+                &MemoryRegion::new(PAGE_SIZE, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
+                Attributes::NORMAL
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
     fn map_out_of_range() {
         let mut pagetable = LinearMap::new(LinearTranslation::new(4096), 1, 1);
 

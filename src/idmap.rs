@@ -64,6 +64,16 @@ mod tests {
             Ok(())
         );
 
+        // Two pages, on the boundary between two subtables.
+        let mut idmap = IdMap::new(IdTranslation, 1, 1);
+        assert_eq!(
+            idmap.map_range(
+                &MemoryRegion::new(PAGE_SIZE * 1023, PAGE_SIZE * 1025),
+                Attributes::NORMAL
+            ),
+            Ok(())
+        );
+
         // The entire valid address space.
         let mut idmap = IdMap::new(IdTranslation, 1, 1);
         assert_eq!(

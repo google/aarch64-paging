@@ -232,12 +232,12 @@ impl<T: Translation + Clone> RootTable<T> {
         // Check that there is a valid physical page for both the first and the last pages in the
         // range. We assume that the mapping is contiguous so there's no need to check each
         // individual page.
-        self.table.translation.virtual_to_physical(range.start())?;
+        let pa = self.table.translation.virtual_to_physical(range.start())?;
         self.table
             .translation
             .virtual_to_physical(range.end() - PAGE_SIZE)?;
 
-        self.table.map_range(range, flags);
+        self.table.map_range(range, pa, flags);
 
         Ok(())
     }
@@ -357,19 +357,15 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
     }
 
     /// Maps the the given virtual address range in this pagetable to the corresponding physical
-    /// addresses according to the translation, recursing into any subtables as necessary.
+    /// address range starting at the given `pa`, recursing into any subtables as necessary.
     ///
     /// Assumes that the entire range is within the range covered by this pagetable.
     ///
     /// Panics if the `translation` doesn't provide a corresponding physical address for some
     /// virtual address within the range, as there is no way to roll back to a safe state so this
     /// should be checked by the caller beforehand.
-    fn map_range(&mut self, range: &MemoryRegion, flags: Attributes) {
+    fn map_range(&mut self, range: &MemoryRegion, mut pa: PhysicalAddress, flags: Attributes) {
         let translation = self.translation.clone();
-        // Unwrap because the caller should already have checked that there are corresponding
-        // physical addresses for the range, and there's no safe way to roll back at this point if
-        // not.
-        let mut pa = translation.virtual_to_physical(range.start()).unwrap();
         let level = self.level;
 
         for chunk in range.split(level) {
@@ -389,18 +385,18 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
                 } else {
                     let old = *entry;
                     let mut subtable = Self::new(translation.clone(), level + 1);
-                    if let Some(old_flags) = old.flags() {
+                    if let (Some(old_flags), Some(old_pa)) = (old.flags(), old.output_address()) {
                         let granularity = granularity_at_level(level);
                         // Old was a valid block entry, so we need to split it.
                         // Recreate the entire block in the newly added table.
                         let a = align_down(chunk.0.start.0, granularity);
                         let b = align_up(chunk.0.end.0, granularity);
-                        subtable.map_range(&MemoryRegion::new(a, b), old_flags);
+                        subtable.map_range(&MemoryRegion::new(a, b), old_pa, old_flags);
                     }
                     entry.set(subtable.to_physical(), Attributes::TABLE_OR_PAGE);
                     subtable
                 };
-                subtable.map_range(&chunk, flags);
+                subtable.map_range(&chunk, pa, flags);
             }
             pa.0 += chunk.len();
         }

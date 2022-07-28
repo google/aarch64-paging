@@ -16,6 +16,7 @@
 //! # Example
 //!
 //! ```
+//! # #[cfg(feature = "alloc")] {
 //! use aarch64_paging::{
 //!     idmap::IdMap,
 //!     paging::{Attributes, MemoryRegion},
@@ -34,14 +35,18 @@
 //! // Set `TTBR0_EL1` to activate the page table.
 //! # #[cfg(target_arch = "aarch64")]
 //! idmap.activate();
+//! # }
 //! ```
 
 #![no_std]
 
+#[cfg(feature = "alloc")]
 pub mod idmap;
+#[cfg(feature = "alloc")]
 pub mod linearmap;
 pub mod paging;
 
+#[cfg(feature = "alloc")]
 extern crate alloc;
 
 #[cfg(target_arch = "aarch64")]

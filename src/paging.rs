@@ -6,9 +6,9 @@
 //! addresses are mapped.
 
 use crate::MapError;
-use alloc::alloc::{alloc_zeroed, dealloc, handle_alloc_error};
+#[cfg(feature = "alloc")]
+use alloc::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
 use bitflags::bitflags;
-use core::alloc::Layout;
 use core::fmt::{self, Debug, Display, Formatter};
 use core::ops::{Add, Range, Sub};
 use core::ptr::NonNull;
@@ -474,6 +474,7 @@ pub struct PageTable {
 impl PageTable {
     /// Allocates a new zeroed, appropriately-aligned pagetable on the heap using the global
     /// allocator and returns a pointer to it.
+    #[cfg(feature = "alloc")]
     pub fn new() -> NonNull<Self> {
         // Safe because the pointer has been allocated with the appropriate layout by the global
         // allocator, and the memory is zeroed which is valid initialisation for a PageTable.
@@ -562,6 +563,7 @@ impl Debug for Descriptor {
 /// # Safety
 ///
 /// It must be valid to initialise the type `T` by simply zeroing its memory.
+#[cfg(feature = "alloc")]
 unsafe fn allocate_zeroed<T>() -> NonNull<T> {
     let layout = Layout::new::<T>();
     // Safe because we know the layout has non-zero size.
@@ -579,6 +581,7 @@ unsafe fn allocate_zeroed<T>() -> NonNull<T> {
 ///
 /// The memory must have been allocated by the global allocator, with the layout for `T`, and not
 /// yet deallocated.
+#[cfg(feature = "alloc")]
 pub(crate) unsafe fn deallocate<T>(ptr: NonNull<T>) {
     let layout = Layout::new::<T>();
     dealloc(ptr.as_ptr() as *mut u8, layout);
@@ -595,8 +598,10 @@ const fn align_up(value: usize, alignment: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "alloc")]
     use alloc::{format, string::ToString};
 
+    #[cfg(feature = "alloc")]
     #[test]
     fn display_memory_region() {
         let region = MemoryRegion::new(0x1234, 0x56789);

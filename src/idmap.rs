@@ -3,6 +3,8 @@
 // See LICENSE-APACHE and LICENSE-MIT for details.
 
 //! Functionality for managing page tables with identity mapping.
+//!
+//! See [`IdMap`] for details on how to use it.
 
 use crate::{
     paging::{
@@ -125,6 +127,11 @@ impl IdMap {
     /// change that may require break-before-make per the architecture must be made while the page
     /// table is inactive. Mapping a previously unmapped memory range may be done while the page
     /// table is active.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
+    /// largest virtual address covered by the page table given its root level.
     pub fn map_range(&mut self, range: &MemoryRegion, flags: Attributes) -> Result<(), MapError> {
         let pa = IdTranslation::virtual_to_physical(range.start());
         self.mapping.map_range(range, pa, flags)

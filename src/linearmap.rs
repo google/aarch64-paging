@@ -3,6 +3,8 @@
 // See LICENSE-APACHE and LICENSE-MIT for details.
 
 //! Functionality for managing page tables with linear mapping.
+//!
+//! See [`LinearMap`] for details on how to use it.
 
 use crate::{
     paging::{
@@ -81,7 +83,10 @@ pub struct LinearMap {
 }
 
 impl LinearMap {
-    /// Creates a new identity-mapping page table with the given ASID and root level.
+    /// Creates a new identity-mapping page table with the given ASID, root level and offset.
+    ///
+    /// This will map any virtual address `va` which is added to the table to the physical address
+    /// `va + offset`.
     pub fn new(asid: usize, rootlevel: usize, offset: isize) -> Self {
         Self {
             mapping: Mapping::new(LinearTranslation::new(offset), asid, rootlevel),
@@ -116,6 +121,14 @@ impl LinearMap {
     /// change that may require break-before-make per the architecture must be made while the page
     /// table is inactive. Mapping a previously unmapped memory range may be done while the page
     /// table is active.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MapError::InvalidVirtualAddress`] if adding the configured offset to any virtual
+    /// address within the `range` would result in overflow.
+    ///
+    /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
+    /// largest virtual address covered by the page table given its root level.
     pub fn map_range(&mut self, range: &MemoryRegion, flags: Attributes) -> Result<(), MapError> {
         let pa = self
             .mapping

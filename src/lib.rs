@@ -9,9 +9,10 @@
 //!   - EL1
 //!   - 4 KiB pages
 //!
-//! Full support is only provided for identity mapping and linear mapping; for other mapping schemes
-//! the user of the library must implement some functionality themself including an implementation
-//! of the [`Translation`](paging::Translation) trait.
+//! Full support is provided for identity mapping ([`IdMap`](idmap::IdMap)) and linear mapping
+//! ([`LinearMap`](linearmap::LinearMap)). If you want to use a different mapping scheme, you must
+//! provide an implementation of the [`Translation`](paging::Translation) trait and then use
+//! [`Mapping`] directly.
 //!
 //! # Example
 //!

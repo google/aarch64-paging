@@ -6,7 +6,7 @@
 //! addresses are mapped.
 
 use crate::MapError;
-use alloc::alloc::{alloc_zeroed, handle_alloc_error};
+use alloc::alloc::{alloc_zeroed, dealloc, handle_alloc_error};
 use bitflags::bitflags;
 use core::alloc::Layout;
 use core::fmt::{self, Debug, Display, Formatter};
@@ -442,10 +442,16 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
         let table = unsafe { self.table.as_ref() };
         for entry in table.entries {
             if let Some(mut subtable) = entry.subtable(&self.translation, self.level) {
-                // Safe because the subtable was allocated by `PageTable::new` with the global
-                // allocator and appropriate layout.
+                // Safe because the subtable was allocated by `PageTableWithLevel::new` with the
+                // global allocator and appropriate layout.
                 subtable.free();
             }
+        }
+        // Safe because the table was allocated by `PageTableWithLevel::new` with the global
+        // allocator and appropriate layout.
+        unsafe {
+            // Actually free the memory used by the `PageTable`.
+            deallocate(self.table);
         }
     }
 }
@@ -554,6 +560,17 @@ unsafe fn allocate_zeroed<T>() -> NonNull<T> {
     }
     // Safe because we just checked that the pointer is non-null.
     NonNull::new_unchecked(pointer as *mut T)
+}
+
+/// Deallocates the heap space for a `T` which was previously allocated by `allocate_zeroed`.
+///
+/// # Safety
+///
+/// The memory must have been allocated by the global allocator, with the layout for `T`, and not
+/// yet deallocated.
+unsafe fn deallocate<T>(ptr: NonNull<T>) {
+    let layout = Layout::new::<T>();
+    dealloc(ptr.as_ptr() as *mut u8, layout);
 }
 
 const fn align_down(value: usize, alignment: usize) -> usize {

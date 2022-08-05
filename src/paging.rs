@@ -5,12 +5,11 @@
 //! Generic aarch64 page table manipulation functionality which doesn't assume anything about how
 //! addresses are mapped.
 
-use crate::AddressRangeError;
+use crate::MapError;
 use alloc::alloc::{alloc_zeroed, handle_alloc_error};
 use bitflags::bitflags;
 use core::alloc::Layout;
 use core::fmt::{self, Debug, Display, Formatter};
-use core::marker::PhantomData;
 use core::ops::{Add, Range, Sub};
 use core::ptr::NonNull;
 
@@ -70,6 +69,14 @@ impl Add<usize> for VirtualAddress {
     }
 }
 
+impl Sub<usize> for VirtualAddress {
+    type Output = Self;
+
+    fn sub(self, other: usize) -> Self {
+        Self(self.0 - other)
+    }
+}
+
 /// A range of virtual addresses which may be mapped in a page table.
 #[derive(Clone, Eq, PartialEq)]
 pub struct MemoryRegion(Range<VirtualAddress>);
@@ -107,6 +114,14 @@ impl Add<usize> for PhysicalAddress {
     }
 }
 
+impl Sub<usize> for PhysicalAddress {
+    type Output = Self;
+
+    fn sub(self, other: usize) -> Self {
+        Self(self.0 - other)
+    }
+}
+
 /// Returns the size in bytes of the address space covered by a single entry in the page table at
 /// the given level.
 fn granularity_at_level(level: usize) -> usize {
@@ -117,8 +132,13 @@ fn granularity_at_level(level: usize) -> usize {
 /// physical addresses used in the page tables can be converted into virtual addresses that can be
 /// used to access their contents from the code.
 pub trait Translation {
-    fn virtual_to_physical(va: VirtualAddress) -> PhysicalAddress;
-    fn physical_to_virtual(pa: PhysicalAddress) -> VirtualAddress;
+    /// Given a virtual address, returns the physical address to which it should be mapped.
+    ///
+    /// This must at least define mappings for any memory which might be allocated.
+    fn virtual_to_physical(&self, va: VirtualAddress) -> Result<PhysicalAddress, MapError>;
+
+    /// Given the physical address of a subtable, returns the virtual address at which it is mapped.
+    fn physical_to_virtual(&self, pa: PhysicalAddress) -> VirtualAddress;
 }
 
 impl MemoryRegion {
@@ -173,22 +193,22 @@ impl Debug for MemoryRegion {
 
 /// A complete hierarchy of page tables including all levels.
 #[derive(Debug)]
-pub struct RootTable<T: Translation> {
+pub struct RootTable<T: Translation + Clone> {
     table: PageTableWithLevel<T>,
 }
 
-impl<T: Translation> RootTable<T> {
+impl<T: Translation + Clone> RootTable<T> {
     /// Creates a new page table starting at the given root level.
     ///
     /// The level must be between 0 and 3; level -1 (for 52-bit addresses with LPA2) is not
     /// currently supported by this library. The value of `TCR_EL1.T0SZ` must be set appropriately
     /// to match.
-    pub fn new(level: usize) -> Self {
+    pub fn new(translation: T, level: usize) -> Self {
         if level > LEAF_LEVEL {
             panic!("Invalid root table level {}.", level);
         }
         RootTable {
-            table: PageTableWithLevel::new(level),
+            table: PageTableWithLevel::new(translation, level),
         }
     }
 
@@ -201,16 +221,24 @@ impl<T: Translation> RootTable<T> {
     }
 
     /// Recursively maps a range into the pagetable hierarchy starting at the root level.
-    pub fn map_range(
-        &mut self,
-        range: &MemoryRegion,
-        flags: Attributes,
-    ) -> Result<(), AddressRangeError> {
+    ///
+    /// Returns an error if the virtual address range is out of the range covered by the pagetable,
+    /// or has no valid corresponding physical page for its start and end.
+    pub fn map_range(&mut self, range: &MemoryRegion, flags: Attributes) -> Result<(), MapError> {
         if range.end().0 > self.size() {
-            return Err(AddressRangeError);
+            return Err(MapError::AddressRange(range.end()));
         }
 
+        // Check that there is a valid physical page for both the first and the last pages in the
+        // range. We assume that the mapping is contiguous so there's no need to check each
+        // individual page.
+        self.table.translation.virtual_to_physical(range.start())?;
+        self.table
+            .translation
+            .virtual_to_physical(range.end() - PAGE_SIZE)?;
+
         self.table.map_range(range, flags);
+
         Ok(())
     }
 
@@ -220,7 +248,7 @@ impl<T: Translation> RootTable<T> {
     }
 }
 
-impl<T: Translation> Drop for RootTable<T> {
+impl<T: Translation + Clone> Drop for RootTable<T> {
     fn drop(&mut self) {
         self.table.free()
     }
@@ -291,26 +319,30 @@ bitflags! {
 /// level.
 struct PageTableWithLevel<T: Translation> {
     table: NonNull<PageTable>,
+    translation: T,
     level: usize,
-    _phantom_data: PhantomData<T>,
 }
 
-impl<T: Translation> PageTableWithLevel<T> {
+impl<T: Translation + Clone> PageTableWithLevel<T> {
     /// Allocates a new, zeroed, appropriately-aligned page table on the heap.
-    fn new(level: usize) -> Self {
+    fn new(translation: T, level: usize) -> Self {
         assert!(level <= LEAF_LEVEL);
         Self {
             // Safe because the pointer has been allocated with the appropriate layout by the global
             // allocator, and the memory is zeroed which is valid initialisation for a PageTable.
             table: unsafe { allocate_zeroed() },
+            translation,
             level,
-            _phantom_data: PhantomData,
         }
     }
 
     /// Returns the physical address of this page table in memory.
     fn to_physical(&self) -> PhysicalAddress {
-        T::virtual_to_physical(VirtualAddress::from(self.table.as_ptr()))
+        // If there is no defined mapping for the page table itself, then something is very wrong
+        // and we can't usefully recover, so panic.
+        self.translation
+            .virtual_to_physical(VirtualAddress::from(self.table.as_ptr()))
+            .unwrap()
     }
 
     /// Returns a mutable reference to the descriptor corresponding to a given virtual address.
@@ -324,8 +356,20 @@ impl<T: Translation> PageTableWithLevel<T> {
         &mut table.entries[index]
     }
 
+    /// Maps the the given virtual address range in this pagetable to the corresponding physical
+    /// addresses according to the translation, recursing into any subtables as necessary.
+    ///
+    /// Assumes that the entire range is within the range covered by this pagetable.
+    ///
+    /// Panics if the `translation` doesn't provide a corresponding physical address for some
+    /// virtual address within the range, as there is no way to roll back to a safe state so this
+    /// should be checked by the caller beforehand.
     fn map_range(&mut self, range: &MemoryRegion, flags: Attributes) {
-        let mut pa = T::virtual_to_physical(range.start());
+        let translation = self.translation.clone();
+        // Unwrap because the caller should already have checked that there are corresponding
+        // physical addresses for the range, and there's no safe way to roll back at this point if
+        // not.
+        let mut pa = translation.virtual_to_physical(range.start()).unwrap();
         let level = self.level;
 
         for chunk in range.split(level) {
@@ -340,11 +384,11 @@ impl<T: Translation> PageTableWithLevel<T> {
                 // a table mapping.
                 entry.set(pa, flags | Attributes::ACCESSED);
             } else {
-                let mut subtable = if let Some(subtable) = entry.subtable::<T>(level) {
+                let mut subtable = if let Some(subtable) = entry.subtable(&translation, level) {
                     subtable
                 } else {
                     let old = *entry;
-                    let mut subtable = Self::new(level + 1);
+                    let mut subtable = Self::new(translation.clone(), level + 1);
                     if let Some(old_flags) = old.flags() {
                         let granularity = granularity_at_level(level);
                         // Old was a valid block entry, so we need to split it.
@@ -381,7 +425,7 @@ impl<T: Translation> PageTableWithLevel<T> {
                 }
             } else {
                 writeln!(f, "{:indentation$}{}: {:?}", "", i, table.entries[i])?;
-                if let Some(subtable) = table.entries[i].subtable::<T>(self.level) {
+                if let Some(subtable) = table.entries[i].subtable(&self.translation, self.level) {
                     subtable.fmt_indented(f, indentation + 2)?;
                 }
                 i += 1;
@@ -397,7 +441,7 @@ impl<T: Translation> PageTableWithLevel<T> {
         // PageTable won't be mutated while we are freeing it.
         let table = unsafe { self.table.as_ref() };
         for entry in table.entries {
-            if let Some(mut subtable) = entry.subtable::<T>(self.level) {
+            if let Some(mut subtable) = entry.subtable(&self.translation, self.level) {
                 // Safe because the subtable was allocated by `PageTable::new` with the global
                 // allocator and appropriate layout.
                 subtable.free();
@@ -406,7 +450,7 @@ impl<T: Translation> PageTableWithLevel<T> {
     }
 }
 
-impl<T: Translation> Debug for PageTableWithLevel<T> {
+impl<T: Translation + Clone> Debug for PageTableWithLevel<T> {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
         writeln!(f, "PageTableWithLevel {{ level: {}, table:", self.level)?;
         self.fmt_indented(f, 0)?;
@@ -466,15 +510,19 @@ impl Descriptor {
         self.0 = pa.0 | (flags | Attributes::VALID).bits();
     }
 
-    fn subtable<T: Translation>(&self, level: usize) -> Option<PageTableWithLevel<T>> {
+    fn subtable<T: Translation + Clone>(
+        &self,
+        translation: &T,
+        level: usize,
+    ) -> Option<PageTableWithLevel<T>> {
         if level < LEAF_LEVEL && self.is_table_or_page() {
             if let Some(output_address) = self.output_address() {
-                let va = T::physical_to_virtual(output_address);
+                let va = translation.physical_to_virtual(output_address);
                 let ptr = va.0 as *mut PageTable;
                 return Some(PageTableWithLevel {
                     level: level + 1,
                     table: NonNull::new(ptr).expect("Subtable pointer must be non-null."),
-                    _phantom_data: PhantomData,
+                    translation: translation.clone(),
                 });
             }
         }

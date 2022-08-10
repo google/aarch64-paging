@@ -6,9 +6,9 @@
 //! addresses are mapped.
 
 use crate::MapError;
-use alloc::alloc::{alloc_zeroed, dealloc, handle_alloc_error};
+#[cfg(feature = "alloc")]
+use alloc::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
 use bitflags::bitflags;
-use core::alloc::Layout;
 use core::fmt::{self, Debug, Display, Formatter};
 use core::ops::{Add, Range, Sub};
 use core::ptr::NonNull;
@@ -28,18 +28,6 @@ pub const BITS_PER_LEVEL: usize = PAGE_SHIFT - 3;
 /// An aarch64 virtual address, the input type of a stage 1 page table.
 #[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub struct VirtualAddress(pub usize);
-
-impl<T> From<*const T> for VirtualAddress {
-    fn from(pointer: *const T) -> Self {
-        Self(pointer as usize)
-    }
-}
-
-impl<T> From<*mut T> for VirtualAddress {
-    fn from(pointer: *mut T) -> Self {
-        Self(pointer as usize)
-    }
-}
 
 impl Display for VirtualAddress {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
@@ -132,13 +120,20 @@ fn granularity_at_level(level: usize) -> usize {
 /// physical addresses used in the page tables can be converted into virtual addresses that can be
 /// used to access their contents from the code.
 pub trait Translation {
-    /// Given a virtual address, returns the physical address to which it should be mapped.
+    /// Allocates a page, which is already mapped, to be used for a new subtable of some pagetable.
+    /// Returns both a pointer to the page and its physical address.
+    fn allocate_table(&self) -> (NonNull<PageTable>, PhysicalAddress);
+
+    /// Deallocates the page which was previous allocated by [`allocate_table`](Self::allocate_table).
     ///
-    /// This must at least define mappings for any memory which might be allocated.
-    fn virtual_to_physical(&self, va: VirtualAddress) -> Result<PhysicalAddress, MapError>;
+    /// # Safety
+    ///
+    /// The memory must have been allocated by `allocate_table` on the same `Translation`, and not
+    /// yet deallocated.
+    unsafe fn deallocate_table(&self, page_table: NonNull<PageTable>);
 
     /// Given the physical address of a subtable, returns the virtual address at which it is mapped.
-    fn physical_to_virtual(&self, pa: PhysicalAddress) -> VirtualAddress;
+    fn physical_to_virtual(&self, pa: PhysicalAddress) -> NonNull<PageTable>;
 }
 
 impl MemoryRegion {
@@ -195,6 +190,7 @@ impl Debug for MemoryRegion {
 #[derive(Debug)]
 pub struct RootTable<T: Translation + Clone> {
     table: PageTableWithLevel<T>,
+    pa: PhysicalAddress,
 }
 
 impl<T: Translation + Clone> RootTable<T> {
@@ -207,9 +203,8 @@ impl<T: Translation + Clone> RootTable<T> {
         if level > LEAF_LEVEL {
             panic!("Invalid root table level {}.", level);
         }
-        RootTable {
-            table: PageTableWithLevel::new(translation, level),
-        }
+        let (table, pa) = PageTableWithLevel::new(translation, level);
+        RootTable { table, pa }
     }
 
     /// Returns the size in bytes of the virtual address space which can be mapped in this page
@@ -220,31 +215,33 @@ impl<T: Translation + Clone> RootTable<T> {
         granularity_at_level(self.table.level) << BITS_PER_LEVEL
     }
 
-    /// Recursively maps a range into the pagetable hierarchy starting at the root level.
+    /// Recursively maps a range into the pagetable hierarchy starting at the root level, mapping
+    /// the pages to the corresponding physical address range starting at `pa`.
     ///
-    /// Returns an error if the virtual address range is out of the range covered by the pagetable,
-    /// or has no valid corresponding physical page for its start and end.
-    pub fn map_range(&mut self, range: &MemoryRegion, flags: Attributes) -> Result<(), MapError> {
+    /// Returns an error if the virtual address range is out of the range covered by the pagetable
+    pub fn map_range(
+        &mut self,
+        range: &MemoryRegion,
+        pa: PhysicalAddress,
+        flags: Attributes,
+    ) -> Result<(), MapError> {
         if range.end().0 > self.size() {
             return Err(MapError::AddressRange(range.end()));
         }
 
-        // Check that there is a valid physical page for both the first and the last pages in the
-        // range. We assume that the mapping is contiguous so there's no need to check each
-        // individual page.
-        self.table.translation.virtual_to_physical(range.start())?;
-        self.table
-            .translation
-            .virtual_to_physical(range.end() - PAGE_SIZE)?;
-
-        self.table.map_range(range, flags);
+        self.table.map_range(range, pa, flags);
 
         Ok(())
     }
 
     /// Returns the physical address of the root table in memory.
     pub fn to_physical(&self) -> PhysicalAddress {
-        self.table.to_physical()
+        self.pa
+    }
+
+    /// Returns a reference to the translation used for this page table.
+    pub fn translation(&self) -> &T {
+        &self.table.translation
     }
 }
 
@@ -324,25 +321,21 @@ struct PageTableWithLevel<T: Translation> {
 }
 
 impl<T: Translation + Clone> PageTableWithLevel<T> {
-    /// Allocates a new, zeroed, appropriately-aligned page table on the heap.
-    fn new(translation: T, level: usize) -> Self {
+    /// Allocates a new, zeroed, appropriately-aligned page table with the given translation,
+    /// returning both a pointer to it and its physical address.
+    fn new(translation: T, level: usize) -> (Self, PhysicalAddress) {
         assert!(level <= LEAF_LEVEL);
-        Self {
-            // Safe because the pointer has been allocated with the appropriate layout by the global
-            // allocator, and the memory is zeroed which is valid initialisation for a PageTable.
-            table: unsafe { allocate_zeroed() },
-            translation,
-            level,
-        }
-    }
-
-    /// Returns the physical address of this page table in memory.
-    fn to_physical(&self) -> PhysicalAddress {
-        // If there is no defined mapping for the page table itself, then something is very wrong
-        // and we can't usefully recover, so panic.
-        self.translation
-            .virtual_to_physical(VirtualAddress::from(self.table.as_ptr()))
-            .unwrap()
+        let (table, pa) = translation.allocate_table();
+        (
+            Self {
+                // Safe because the pointer has been allocated with the appropriate layout by the global
+                // allocator, and the memory is zeroed which is valid initialisation for a PageTable.
+                table,
+                translation,
+                level,
+            },
+            pa,
+        )
     }
 
     /// Returns a mutable reference to the descriptor corresponding to a given virtual address.
@@ -357,19 +350,15 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
     }
 
     /// Maps the the given virtual address range in this pagetable to the corresponding physical
-    /// addresses according to the translation, recursing into any subtables as necessary.
+    /// address range starting at the given `pa`, recursing into any subtables as necessary.
     ///
     /// Assumes that the entire range is within the range covered by this pagetable.
     ///
     /// Panics if the `translation` doesn't provide a corresponding physical address for some
     /// virtual address within the range, as there is no way to roll back to a safe state so this
     /// should be checked by the caller beforehand.
-    fn map_range(&mut self, range: &MemoryRegion, flags: Attributes) {
+    fn map_range(&mut self, range: &MemoryRegion, mut pa: PhysicalAddress, flags: Attributes) {
         let translation = self.translation.clone();
-        // Unwrap because the caller should already have checked that there are corresponding
-        // physical addresses for the range, and there's no safe way to roll back at this point if
-        // not.
-        let mut pa = translation.virtual_to_physical(range.start()).unwrap();
         let level = self.level;
 
         for chunk in range.split(level) {
@@ -388,19 +377,19 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
                     subtable
                 } else {
                     let old = *entry;
-                    let mut subtable = Self::new(translation.clone(), level + 1);
-                    if let Some(old_flags) = old.flags() {
+                    let (mut subtable, subtable_pa) = Self::new(translation.clone(), level + 1);
+                    if let (Some(old_flags), Some(old_pa)) = (old.flags(), old.output_address()) {
                         let granularity = granularity_at_level(level);
                         // Old was a valid block entry, so we need to split it.
                         // Recreate the entire block in the newly added table.
                         let a = align_down(chunk.0.start.0, granularity);
                         let b = align_up(chunk.0.end.0, granularity);
-                        subtable.map_range(&MemoryRegion::new(a, b), old_flags);
+                        subtable.map_range(&MemoryRegion::new(a, b), old_pa, old_flags);
                     }
-                    entry.set(subtable.to_physical(), Attributes::TABLE_OR_PAGE);
+                    entry.set(subtable_pa, Attributes::TABLE_OR_PAGE);
                     subtable
                 };
-                subtable.map_range(&chunk, flags);
+                subtable.map_range(&chunk, pa, flags);
             }
             pa.0 += chunk.len();
         }
@@ -451,7 +440,7 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
         // allocator and appropriate layout.
         unsafe {
             // Actually free the memory used by the `PageTable`.
-            deallocate(self.table);
+            self.translation.deallocate_table(self.table);
         }
     }
 }
@@ -466,8 +455,19 @@ impl<T: Translation + Clone> Debug for PageTableWithLevel<T> {
 
 /// A single level of a page table.
 #[repr(C, align(4096))]
-struct PageTable {
+pub struct PageTable {
     entries: [Descriptor; 1 << BITS_PER_LEVEL],
+}
+
+impl PageTable {
+    /// Allocates a new zeroed, appropriately-aligned pagetable on the heap using the global
+    /// allocator and returns a pointer to it.
+    #[cfg(feature = "alloc")]
+    pub fn new() -> NonNull<Self> {
+        // Safe because the pointer has been allocated with the appropriate layout by the global
+        // allocator, and the memory is zeroed which is valid initialisation for a PageTable.
+        unsafe { allocate_zeroed() }
+    }
 }
 
 /// An entry in a page table.
@@ -523,11 +523,10 @@ impl Descriptor {
     ) -> Option<PageTableWithLevel<T>> {
         if level < LEAF_LEVEL && self.is_table_or_page() {
             if let Some(output_address) = self.output_address() {
-                let va = translation.physical_to_virtual(output_address);
-                let ptr = va.0 as *mut PageTable;
+                let table = translation.physical_to_virtual(output_address);
                 return Some(PageTableWithLevel {
                     level: level + 1,
-                    table: NonNull::new(ptr).expect("Subtable pointer must be non-null."),
+                    table,
                     translation: translation.clone(),
                 });
             }
@@ -551,6 +550,7 @@ impl Debug for Descriptor {
 /// # Safety
 ///
 /// It must be valid to initialise the type `T` by simply zeroing its memory.
+#[cfg(feature = "alloc")]
 unsafe fn allocate_zeroed<T>() -> NonNull<T> {
     let layout = Layout::new::<T>();
     // Safe because we know the layout has non-zero size.
@@ -568,7 +568,8 @@ unsafe fn allocate_zeroed<T>() -> NonNull<T> {
 ///
 /// The memory must have been allocated by the global allocator, with the layout for `T`, and not
 /// yet deallocated.
-unsafe fn deallocate<T>(ptr: NonNull<T>) {
+#[cfg(feature = "alloc")]
+pub(crate) unsafe fn deallocate<T>(ptr: NonNull<T>) {
     let layout = Layout::new::<T>();
     dealloc(ptr.as_ptr() as *mut u8, layout);
 }
@@ -584,8 +585,10 @@ const fn align_up(value: usize, alignment: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "alloc")]
     use alloc::{format, string::ToString};
 
+    #[cfg(feature = "alloc")]
     #[test]
     fn display_memory_region() {
         let region = MemoryRegion::new(0x1234, 0x56789);

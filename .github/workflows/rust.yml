@@ -24,6 +24,8 @@ jobs:
         run: cargo build --target=aarch64-unknown-none
       - name: Run tests
         run: cargo test
+      - name: Run tests without default features
+        run: cargo test --no-default-features
       - name: Run clippy
         uses: actions-rs/clippy-check@v1
         with:

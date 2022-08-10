@@ -9,15 +9,17 @@
 //!   - EL1
 //!   - 4 KiB pages
 //!
-//! Full support is only provided for identity mapping and linear mapping; for other mapping schemes
-//! the user of the library must implement some functionality themself including an implementation
-//! of the [`Translation`](paging::Translation) trait.
+//! Full support is provided for identity mapping ([`IdMap`](idmap::IdMap)) and linear mapping
+//! ([`LinearMap`](linearmap::LinearMap)). If you want to use a different mapping scheme, you must
+//! provide an implementation of the [`Translation`](paging::Translation) trait and then use
+//! [`Mapping`] directly.
 //!
 //! # Example
 //!
 //! ```
+//! # #[cfg(feature = "alloc")] {
 //! use aarch64_paging::{
-//!     idmap::{IdMap, IdTranslation},
+//!     idmap::IdMap,
 //!     paging::{Attributes, MemoryRegion},
 //! };
 //!
@@ -25,7 +27,7 @@
 //! const ROOT_LEVEL: usize = 1;
 //!
 //! // Create a new page table with identity mapping.
-//! let mut idmap = IdMap::new(IdTranslation, ASID, ROOT_LEVEL);
+//! let mut idmap = IdMap::new(ASID, ROOT_LEVEL);
 //! // Map a 2 MiB region of memory as read-only.
 //! idmap.map_range(
 //!     &MemoryRegion::new(0x80200000, 0x80400000),
@@ -34,20 +36,24 @@
 //! // Set `TTBR0_EL1` to activate the page table.
 //! # #[cfg(target_arch = "aarch64")]
 //! idmap.activate();
+//! # }
 //! ```
 
 #![no_std]
 
+#[cfg(feature = "alloc")]
 pub mod idmap;
+#[cfg(feature = "alloc")]
 pub mod linearmap;
 pub mod paging;
 
+#[cfg(feature = "alloc")]
 extern crate alloc;
 
 #[cfg(target_arch = "aarch64")]
 use core::arch::asm;
 use core::fmt::{self, Display, Formatter};
-use paging::{Attributes, MemoryRegion, RootTable, Translation, VirtualAddress};
+use paging::{Attributes, MemoryRegion, PhysicalAddress, RootTable, Translation, VirtualAddress};
 
 /// An error attempting to map some range in the page table.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -70,49 +76,13 @@ impl Display for MapError {
     }
 }
 
-/// Manages a level 1 page-table.
+/// Manages a level 1 page table and associated state.
 ///
 /// Mappings should be added with [`map_range`](Self::map_range) before calling
 /// [`activate`](Self::activate) to start using the new page table. To make changes which may
 /// require break-before-make semantics you must first call [`deactivate`](Self::deactivate) to
 /// switch back to a previous static page table, and then `activate` again after making the desired
 /// changes.
-///
-/// # Example
-///
-/// ```
-/// use aarch64_paging::{
-///     idmap::{IdMap, IdTranslation},
-///     paging::{Attributes, MemoryRegion},
-/// };
-///
-/// const ASID: usize = 1;
-/// const ROOT_LEVEL: usize = 1;
-///
-/// // Create a new page table with identity mapping.
-/// let mut idmap = IdMap::new(IdTranslation, ASID, ROOT_LEVEL);
-/// // Map a 2 MiB region of memory as read-write.
-/// idmap.map_range(
-///     &MemoryRegion::new(0x80200000, 0x80400000),
-///     Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::EXECUTE_NEVER,
-/// ).unwrap();
-/// // Set `TTBR0_EL1` to activate the page table.
-/// # #[cfg(target_arch = "aarch64")]
-/// idmap.activate();
-///
-/// // Write something to the memory...
-///
-/// // Restore `TTBR0_EL1` to its earlier value while we modify the page table.
-/// # #[cfg(target_arch = "aarch64")]
-/// idmap.deactivate();
-/// // Now change the mapping to read-only and executable.
-/// idmap.map_range(
-///     &MemoryRegion::new(0x80200000, 0x80400000),
-///     Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::READ_ONLY,
-/// ).unwrap();
-/// # #[cfg(target_arch = "aarch64")]
-/// idmap.activate();
-/// ```
 #[derive(Debug)]
 pub struct Mapping<T: Translation + Clone> {
     root: RootTable<T>,
@@ -183,15 +153,20 @@ impl<T: Translation + Clone> Mapping<T> {
         self.previous_ttbr = None;
     }
 
-    /// Maps the given range of virtual addresses to the identical physical addresses with the given
-    /// flags.
+    /// Maps the given range of virtual addresses to the corresponding range of physical addresses
+    /// starting at `pa`, with the given flags.
     ///
     /// This should generally only be called while the page table is not active. In particular, any
     /// change that may require break-before-make per the architecture must be made while the page
     /// table is inactive. Mapping a previously unmapped memory range may be done while the page
     /// table is active.
-    pub fn map_range(&mut self, range: &MemoryRegion, flags: Attributes) -> Result<(), MapError> {
-        self.root.map_range(range, flags)?;
+    pub fn map_range(
+        &mut self,
+        range: &MemoryRegion,
+        pa: PhysicalAddress,
+        flags: Attributes,
+    ) -> Result<(), MapError> {
+        self.root.map_range(range, pa, flags)?;
         #[cfg(target_arch = "aarch64")]
         unsafe {
             // Safe because this is just a memory barrier.

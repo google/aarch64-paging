@@ -303,4 +303,27 @@ mod tests {
             Err(MapError::InvalidVirtualAddress(va))
         )
     }
+
+    #[test]
+    fn block_mapping() {
+        // Test that block mapping is used when the PA is appropriately aligned...
+        let mut pagetable = LinearMap::new(1, 1, 1 << 30);
+        pagetable
+            .map_range(&MemoryRegion::new(0, 1 << 30), Attributes::NORMAL)
+            .unwrap();
+        assert_eq!(
+            pagetable.mapping.root.mapping_level(VirtualAddress(0)),
+            Some(1)
+        );
+
+        // ...but not when it is not.
+        let mut pagetable = LinearMap::new(1, 1, 1 << 29);
+        pagetable
+            .map_range(&MemoryRegion::new(0, 1 << 30), Attributes::NORMAL)
+            .unwrap();
+        assert_eq!(
+            pagetable.mapping.root.mapping_level(VirtualAddress(0)),
+            Some(2)
+        );
+    }
 }

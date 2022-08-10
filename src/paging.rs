@@ -469,6 +469,8 @@ impl<T: Translation> PageTableWithLevel<T> {
                     if let (Some(old_flags), Some(old_pa)) = (old.flags(), old.output_address()) {
                         // Old was a valid block entry, so we need to split it.
                         // Recreate the entire block in the newly added table.
+                        // TODO: This is not safe if the page table is active, as it doesn't obey
+                        // break-before-make.
                         let a = align_down(chunk.0.start.0, granularity);
                         let b = align_up(chunk.0.end.0, granularity);
                         subtable.map_range(

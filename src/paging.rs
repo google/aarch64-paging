@@ -188,18 +188,18 @@ impl Debug for MemoryRegion {
 
 /// A complete hierarchy of page tables including all levels.
 #[derive(Debug)]
-pub struct RootTable<T: Translation + Clone> {
-    table: PageTableWithLevel<T>,
+pub struct RootTable<'a, T: Translation> {
+    table: PageTableWithLevel<'a, T>,
     pa: PhysicalAddress,
 }
 
-impl<T: Translation + Clone> RootTable<T> {
+impl<'a, T: Translation> RootTable<'a, T> {
     /// Creates a new page table starting at the given root level.
     ///
     /// The level must be between 0 and 3; level -1 (for 52-bit addresses with LPA2) is not
     /// currently supported by this library. The value of `TCR_EL1.T0SZ` must be set appropriately
     /// to match.
-    pub fn new(translation: T, level: usize) -> Self {
+    pub fn new(translation: &'a T, level: usize) -> Self {
         if level > LEAF_LEVEL {
             panic!("Invalid root table level {}.", level);
         }
@@ -254,7 +254,7 @@ impl<T: Translation + Clone> RootTable<T> {
     }
 }
 
-impl<T: Translation + Clone> Drop for RootTable<T> {
+impl<T: Translation> Drop for RootTable<'_, T> {
     fn drop(&mut self) {
         self.table.free()
     }
@@ -323,16 +323,16 @@ bitflags! {
 /// Smart pointer which owns a [`PageTable`] and knows what level it is at. This allows it to
 /// implement `Debug` and `Drop`, as walking the page table hierachy requires knowing the starting
 /// level.
-struct PageTableWithLevel<T: Translation> {
+struct PageTableWithLevel<'a, T: Translation> {
     table: NonNull<PageTable>,
-    translation: T,
+    translation: &'a T,
     level: usize,
 }
 
-impl<T: Translation + Clone> PageTableWithLevel<T> {
+impl<'a, T: Translation> PageTableWithLevel<'a, T> {
     /// Allocates a new, zeroed, appropriately-aligned page table with the given translation,
     /// returning both a pointer to it and its physical address.
-    fn new(translation: T, level: usize) -> (Self, PhysicalAddress) {
+    fn new(translation: &'a T, level: usize) -> (Self, PhysicalAddress) {
         assert!(level <= LEAF_LEVEL);
         let (table, pa) = translation.allocate_table();
         (
@@ -379,7 +379,7 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
     /// virtual address within the range, as there is no way to roll back to a safe state so this
     /// should be checked by the caller beforehand.
     fn map_range(&mut self, range: &MemoryRegion, mut pa: PhysicalAddress, flags: Attributes) {
-        let translation = self.translation.clone();
+        let translation = self.translation;
         let level = self.level;
         let granularity = granularity_at_level(level);
 
@@ -398,11 +398,11 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
                 // a table mapping.
                 entry.set(pa, flags | Attributes::ACCESSED);
             } else {
-                let mut subtable = if let Some(subtable) = entry.subtable(&translation, level) {
+                let mut subtable = if let Some(subtable) = entry.subtable(translation, level) {
                     subtable
                 } else {
                     let old = *entry;
-                    let (mut subtable, subtable_pa) = Self::new(translation.clone(), level + 1);
+                    let (mut subtable, subtable_pa) = Self::new(translation, level + 1);
                     if let (Some(old_flags), Some(old_pa)) = (old.flags(), old.output_address()) {
                         // Old was a valid block entry, so we need to split it.
                         // Recreate the entire block in the newly added table.
@@ -438,7 +438,7 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
                 }
             } else {
                 writeln!(f, "{:indentation$}{}: {:?}", "", i, table.entries[i])?;
-                if let Some(subtable) = table.entries[i].subtable(&self.translation, self.level) {
+                if let Some(subtable) = table.entries[i].subtable(self.translation, self.level) {
                     subtable.fmt_indented(f, indentation + 2)?;
                 }
                 i += 1;
@@ -454,7 +454,7 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
         // PageTable won't be mutated while we are freeing it.
         let table = unsafe { self.table.as_ref() };
         for entry in table.entries {
-            if let Some(mut subtable) = entry.subtable(&self.translation, self.level) {
+            if let Some(mut subtable) = entry.subtable(self.translation, self.level) {
                 // Safe because the subtable was allocated by `PageTableWithLevel::new` with the
                 // global allocator and appropriate layout.
                 subtable.free();
@@ -475,7 +475,7 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
     #[cfg(test)]
     fn mapping_level(&self, va: VirtualAddress) -> Option<usize> {
         let entry = self.get_entry(va);
-        if let Some(subtable) = entry.subtable(&self.translation, self.level) {
+        if let Some(subtable) = entry.subtable(self.translation, self.level) {
             subtable.mapping_level(va)
         } else {
             if entry.is_valid() {
@@ -487,7 +487,7 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
     }
 }
 
-impl<T: Translation + Clone> Debug for PageTableWithLevel<T> {
+impl<T: Translation> Debug for PageTableWithLevel<'_, T> {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
         writeln!(f, "PageTableWithLevel {{ level: {}, table:", self.level)?;
         self.fmt_indented(f, 0)?;
@@ -558,18 +558,18 @@ impl Descriptor {
         self.0 = pa.0 | (flags | Attributes::VALID).bits();
     }
 
-    fn subtable<T: Translation + Clone>(
+    fn subtable<'a, T: Translation>(
         &self,
-        translation: &T,
+        translation: &'a T,
         level: usize,
-    ) -> Option<PageTableWithLevel<T>> {
+    ) -> Option<PageTableWithLevel<'a, T>> {
         if level < LEAF_LEVEL && self.is_table_or_page() {
             if let Some(output_address) = self.output_address() {
                 let table = translation.physical_to_virtual(output_address);
                 return Some(PageTableWithLevel {
                     level: level + 1,
                     table,
-                    translation: translation.clone(),
+                    translation: translation,
                 });
             }
         }

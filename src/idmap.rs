@@ -16,7 +16,7 @@ use crate::{
 use core::ptr::NonNull;
 
 /// Identity mapping, where every virtual address is either unmapped or mapped to the identical IPA.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct IdTranslation;
 
 impl IdTranslation {
@@ -91,15 +91,15 @@ impl Translation for IdTranslation {
 /// idmap.activate();
 /// ```
 #[derive(Debug)]
-pub struct IdMap {
-    mapping: Mapping<IdTranslation>,
+pub struct IdMap<'a> {
+    mapping: Mapping<'a, IdTranslation>,
 }
 
-impl IdMap {
+impl IdMap<'_> {
     /// Creates a new identity-mapping page table with the given ASID and root level.
     pub fn new(asid: usize, rootlevel: usize) -> Self {
         Self {
-            mapping: Mapping::new(IdTranslation, asid, rootlevel),
+            mapping: Mapping::new(&IdTranslation, asid, rootlevel),
         }
     }
 

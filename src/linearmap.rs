@@ -17,7 +17,7 @@ use core::ptr::NonNull;
 
 /// Linear mapping, where every virtual address is either unmapped or mapped to an IPA with a fixed
 /// offset.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct LinearTranslation {
     /// The offset from a virtual address to the corresponding (intermediate) physical address.
     offset: isize,
@@ -97,11 +97,11 @@ fn checked_add_signed(a: usize, b: isize) -> Option<usize> {
 /// This assumes that the same linear mapping is used both for the page table being managed, and for
 /// code that is managing it.
 #[derive(Debug)]
-pub struct LinearMap {
-    mapping: Mapping<LinearTranslation>,
+pub struct LinearMap<'a> {
+    mapping: Mapping<'a, LinearTranslation>,
 }
 
-impl<'a> LinearMap {
+impl<'a> LinearMap<'a> {
     /// Creates a new identity-mapping page table with the given ASID, root level and offset.
     ///
     /// This will map any virtual address `va` which is added to the table to the physical address
@@ -110,7 +110,7 @@ impl<'a> LinearMap {
     /// The `offset` must be a multiple of [`PAGE_SIZE`]; if not this will panic.
     pub fn new(asid: usize, rootlevel: usize, translation: &'a LinearTranslation) -> Self {
         Self {
-            mapping: Mapping::new(*translation, asid, rootlevel),
+            mapping: Mapping::new(translation, asid, rootlevel),
         }
     }
 

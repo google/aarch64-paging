@@ -8,8 +8,8 @@
 
 use crate::{
     paging::{
-        deallocate, Attributes, MemoryRegion, PageTable, PhysicalAddress, Translation,
-        VirtualAddress,
+        deallocate, is_aligned, Attributes, MemoryRegion, PageTable, PhysicalAddress, Translation,
+        VirtualAddress, PAGE_SIZE,
     },
     MapError, Mapping,
 };
@@ -26,7 +26,15 @@ pub struct LinearTranslation {
 impl LinearTranslation {
     /// Constructs a new linear translation, which will map a virtual address `va` to the
     /// (intermediate) physical address `va + offset`.
+    ///
+    /// The `offset` must be a multiple of [`PAGE_SIZE`]; if not this will panic.
     pub fn new(offset: isize) -> Self {
+        if !is_aligned(offset.unsigned_abs(), PAGE_SIZE) {
+            panic!(
+                "Invalid offset {}, must be a multiple of page size {}.",
+                offset, PAGE_SIZE,
+            );
+        }
         Self { offset }
     }
 }
@@ -98,6 +106,8 @@ impl LinearMap {
     ///
     /// This will map any virtual address `va` which is added to the table to the physical address
     /// `va + offset`.
+    ///
+    /// The `offset` must be a multiple of [`PAGE_SIZE`]; if not this will panic.
     pub fn new(asid: usize, rootlevel: usize, offset: isize) -> Self {
         Self {
             mapping: Mapping::new(LinearTranslation::new(offset), asid, rootlevel),
@@ -154,7 +164,7 @@ impl LinearMap {
 mod tests {
     use super::*;
     use crate::{
-        paging::{Attributes, MemoryRegion, PAGE_SIZE},
+        paging::{Attributes, MemoryRegion, BITS_PER_LEVEL, PAGE_SIZE},
         MapError,
     };
 
@@ -189,8 +199,10 @@ mod tests {
             Ok(())
         );
 
-        // The entire valid address space.
-        let mut pagetable = LinearMap::new(1, 1, 4096);
+        // The entire valid address space. Use an offset that is a multiple of the level 2 block
+        // size to avoid mapping everything as pages as that is really slow.
+        const LEVEL_2_BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
+        let mut pagetable = LinearMap::new(1, 1, LEVEL_2_BLOCK_SIZE as isize);
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
@@ -235,11 +247,13 @@ mod tests {
             Ok(())
         );
 
-        // The entire valid address space.
-        let mut pagetable = LinearMap::new(1, 1, -(PAGE_SIZE as isize));
+        // The entire valid address space. Use an offset that is a multiple of the level 2 block
+        // size to avoid mapping everything as pages as that is really slow.
+        const LEVEL_2_BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
+        let mut pagetable = LinearMap::new(1, 1, -(LEVEL_2_BLOCK_SIZE as isize));
         assert_eq!(
             pagetable.map_range(
-                &MemoryRegion::new(PAGE_SIZE, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
+                &MemoryRegion::new(LEVEL_2_BLOCK_SIZE, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
                 Attributes::NORMAL
             ),
             Ok(())
@@ -302,5 +316,28 @@ mod tests {
             translation.virtual_to_physical(va),
             Err(MapError::InvalidVirtualAddress(va))
         )
+    }
+
+    #[test]
+    fn block_mapping() {
+        // Test that block mapping is used when the PA is appropriately aligned...
+        let mut pagetable = LinearMap::new(1, 1, 1 << 30);
+        pagetable
+            .map_range(&MemoryRegion::new(0, 1 << 30), Attributes::NORMAL)
+            .unwrap();
+        assert_eq!(
+            pagetable.mapping.root.mapping_level(VirtualAddress(0)),
+            Some(1)
+        );
+
+        // ...but not when it is not.
+        let mut pagetable = LinearMap::new(1, 1, 1 << 29);
+        pagetable
+            .map_range(&MemoryRegion::new(0, 1 << 30), Attributes::NORMAL)
+            .unwrap();
+        assert_eq!(
+            pagetable.mapping.root.mapping_level(VirtualAddress(0)),
+            Some(2)
+        );
     }
 }

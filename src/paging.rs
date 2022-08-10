@@ -243,6 +243,15 @@ impl<T: Translation + Clone> RootTable<T> {
     pub fn translation(&self) -> &T {
         &self.table.translation
     }
+
+    /// Returns the level of mapping used for the given virtual address:
+    /// - `None` if it is unmapped
+    /// - `Some(LEAF_LEVEL)` if it is mapped as a single page
+    /// - `Some(level)` if it is mapped as a block at `level`
+    #[cfg(test)]
+    pub(crate) fn mapping_level(&self, va: VirtualAddress) -> Option<usize> {
+        self.table.mapping_level(va)
+    }
 }
 
 impl<T: Translation + Clone> Drop for RootTable<T> {
@@ -338,6 +347,18 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
         )
     }
 
+    /// Returns a  reference to the descriptor corresponding to a given virtual address.
+    #[cfg(test)]
+    fn get_entry(&self, va: VirtualAddress) -> &Descriptor {
+        let shift = PAGE_SHIFT + (LEAF_LEVEL - self.level) * BITS_PER_LEVEL;
+        let index = (va.0 >> shift) % (1 << BITS_PER_LEVEL);
+        // Safe because we know that the pointer is properly aligned, dereferenced and initialised,
+        // and nothing else can access the page table while we hold a mutable reference to the
+        // PageTableWithLevel (assuming it is not currently active).
+        let table = unsafe { self.table.as_ref() };
+        &table.entries[index]
+    }
+
     /// Returns a mutable reference to the descriptor corresponding to a given virtual address.
     fn get_entry_mut(&mut self, va: VirtualAddress) -> &mut Descriptor {
         let shift = PAGE_SHIFT + (LEAF_LEVEL - self.level) * BITS_PER_LEVEL;
@@ -360,6 +381,7 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
     fn map_range(&mut self, range: &MemoryRegion, mut pa: PhysicalAddress, flags: Attributes) {
         let translation = self.translation.clone();
         let level = self.level;
+        let granularity = granularity_at_level(level);
 
         for chunk in range.split(level) {
             let entry = self.get_entry_mut(chunk.0.start);
@@ -367,7 +389,10 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
             if level == LEAF_LEVEL {
                 // Put down a page mapping.
                 entry.set(pa, flags | Attributes::ACCESSED | Attributes::TABLE_OR_PAGE);
-            } else if chunk.is_block(level) && !entry.is_table_or_page() {
+            } else if chunk.is_block(level)
+                && !entry.is_table_or_page()
+                && is_aligned(pa.0, granularity)
+            {
                 // Rather than leak the entire subhierarchy, only put down
                 // a block mapping if the region is not already covered by
                 // a table mapping.
@@ -379,7 +404,6 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
                     let old = *entry;
                     let (mut subtable, subtable_pa) = Self::new(translation.clone(), level + 1);
                     if let (Some(old_flags), Some(old_pa)) = (old.flags(), old.output_address()) {
-                        let granularity = granularity_at_level(level);
                         // Old was a valid block entry, so we need to split it.
                         // Recreate the entire block in the newly added table.
                         let a = align_down(chunk.0.start.0, granularity);
@@ -441,6 +465,24 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
         unsafe {
             // Actually free the memory used by the `PageTable`.
             self.translation.deallocate_table(self.table);
+        }
+    }
+
+    /// Returns the level of mapping used for the given virtual address:
+    /// - `None` if it is unmapped
+    /// - `Some(LEAF_LEVEL)` if it is mapped as a single page
+    /// - `Some(level)` if it is mapped as a block at `level`
+    #[cfg(test)]
+    fn mapping_level(&self, va: VirtualAddress) -> Option<usize> {
+        let entry = self.get_entry(va);
+        if let Some(subtable) = entry.subtable(&self.translation, self.level) {
+            subtable.mapping_level(va)
+        } else {
+            if entry.is_valid() {
+                Some(self.level)
+            } else {
+                None
+            }
         }
     }
 }
@@ -580,6 +622,10 @@ const fn align_down(value: usize, alignment: usize) -> usize {
 
 const fn align_up(value: usize, alignment: usize) -> usize {
     ((value - 1) | (alignment - 1)) + 1
+}
+
+pub(crate) const fn is_aligned(value: usize, alignment: usize) -> bool {
+    value & (alignment - 1) == 0
 }
 
 #[cfg(test)]

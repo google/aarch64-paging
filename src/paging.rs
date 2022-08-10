@@ -9,6 +9,8 @@ use crate::MapError;
 #[cfg(feature = "alloc")]
 use alloc::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
 use bitflags::bitflags;
+#[cfg(target_arch = "aarch64")]
+use core::arch::asm;
 use core::fmt::{self, Debug, Display, Formatter};
 use core::marker::PhantomData;
 use core::ops::{Add, Range, Sub};
@@ -476,6 +478,15 @@ impl<T: Translation> PageTableWithLevel<T> {
                             old_flags,
                         );
                     }
+
+                    // Make sure that table initialisation is finished before the MMU might read
+                    // from it.
+                    #[cfg(target_arch = "aarch64")]
+                    unsafe {
+                        // Safe because it's just a memory barrier.
+                        asm!("dmb ish");
+                    }
+
                     entry.set(subtable_pa, Attributes::TABLE_OR_PAGE);
                     subtable
                 };

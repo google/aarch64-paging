@@ -28,22 +28,26 @@ impl IdTranslation {
 impl Translation for IdTranslation {
     fn allocate_table(&self) -> (NonNull<PageTable>, PhysicalAddress) {
         let table = PageTable::new();
-        let va = VirtualAddress::from(table.as_ptr());
 
-        (table, Self::virtual_to_physical(va))
+        // Physical address is the same as the virtual address because we are using identity mapping
+        // everywhere.
+        (table, PhysicalAddress(table.as_ptr() as usize))
     }
 
     unsafe fn deallocate_table(&self, page_table: NonNull<PageTable>) {
         deallocate(page_table);
     }
 
-    fn physical_to_virtual(&self, pa: PhysicalAddress) -> VirtualAddress {
-        VirtualAddress(pa.0)
+    fn physical_to_virtual(&self, pa: PhysicalAddress) -> NonNull<PageTable> {
+        NonNull::new(pa.0 as *mut PageTable).expect("Got physical address 0 for pagetable")
     }
 }
 
 /// Manages a level 1 page table using identity mapping, where every virtual address is either
 /// unmapped or mapped to the identical IPA.
+///
+/// This assumes that identity mapping is used both for the page table being managed, and for code
+/// that is managing it.
 ///
 /// Mappings should be added with [`map_range`](Self::map_range) before calling
 /// [`activate`](Self::activate) to start using the new page table. To make changes which may

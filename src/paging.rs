@@ -29,18 +29,6 @@ pub const BITS_PER_LEVEL: usize = PAGE_SHIFT - 3;
 #[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub struct VirtualAddress(pub usize);
 
-impl<T> From<*const T> for VirtualAddress {
-    fn from(pointer: *const T) -> Self {
-        Self(pointer as usize)
-    }
-}
-
-impl<T> From<*mut T> for VirtualAddress {
-    fn from(pointer: *mut T) -> Self {
-        Self(pointer as usize)
-    }
-}
-
 impl Display for VirtualAddress {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
         write!(f, "{:#018x}", self.0)
@@ -145,7 +133,7 @@ pub trait Translation {
     unsafe fn deallocate_table(&self, page_table: NonNull<PageTable>);
 
     /// Given the physical address of a subtable, returns the virtual address at which it is mapped.
-    fn physical_to_virtual(&self, pa: PhysicalAddress) -> VirtualAddress;
+    fn physical_to_virtual(&self, pa: PhysicalAddress) -> NonNull<PageTable>;
 }
 
 impl MemoryRegion {
@@ -535,11 +523,10 @@ impl Descriptor {
     ) -> Option<PageTableWithLevel<T>> {
         if level < LEAF_LEVEL && self.is_table_or_page() {
             if let Some(output_address) = self.output_address() {
-                let va = translation.physical_to_virtual(output_address);
-                let ptr = va.0 as *mut PageTable;
+                let table = translation.physical_to_virtual(output_address);
                 return Some(PageTableWithLevel {
                     level: level + 1,
-                    table: NonNull::new(ptr).expect("Subtable pointer must be non-null."),
+                    table,
                     translation: translation.clone(),
                 });
             }

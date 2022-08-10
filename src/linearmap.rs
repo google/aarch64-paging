@@ -44,7 +44,8 @@ impl LinearTranslation {
 impl Translation for LinearTranslation {
     fn allocate_table(&self) -> (NonNull<PageTable>, PhysicalAddress) {
         let table = PageTable::new();
-        let va = VirtualAddress::from(table.as_ptr());
+        // Assume that the same linear mapping is used everywhere.
+        let va = VirtualAddress(table.as_ptr() as usize);
 
         let pa = self.virtual_to_physical(va).expect(
             "Allocated subtable with virtual address which doesn't correspond to any physical address."
@@ -56,11 +57,18 @@ impl Translation for LinearTranslation {
         deallocate(page_table);
     }
 
-    fn physical_to_virtual(&self, pa: PhysicalAddress) -> VirtualAddress {
+    fn physical_to_virtual(&self, pa: PhysicalAddress) -> NonNull<PageTable> {
         if let Some(va) = checked_add_signed(pa.0, -self.offset) {
-            VirtualAddress(va)
+            if let Some(ptr) = NonNull::new(va as *mut PageTable) {
+                ptr
+            } else {
+                panic!(
+                    "Invalid physical address {} for pagetable (translated to virtual address 0)",
+                    pa
+                )
+            }
         } else {
-            panic!("Invalid physical address {}", pa);
+            panic!("Invalid physical address {} for pagetable", pa);
         }
     }
 }
@@ -77,6 +85,9 @@ fn checked_add_signed(a: usize, b: isize) -> Option<usize> {
 
 /// Manages a level 1 page table using linear mapping, where every virtual address is either
 /// unmapped or mapped to an IPA with a fixed offset.
+///
+/// This assumes that the same linear mapping is used both for the page table being managed, and for
+/// code that is managing it.
 #[derive(Debug)]
 pub struct LinearMap {
     mapping: Mapping<LinearTranslation>,

@@ -9,6 +9,7 @@
   they are used.
 - Renamed `AddressRangeError` to `MapError`, which is now an enum with two variants and implements
   `Display`.
+- `From<*const T>` and `From<*mut T>` are no longer implemented for `VirtualAddress`.
 
 ### New features
 

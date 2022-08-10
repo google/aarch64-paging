@@ -154,7 +154,7 @@ impl LinearMap {
 mod tests {
     use super::*;
     use crate::{
-        paging::{Attributes, MemoryRegion, PAGE_SIZE},
+        paging::{Attributes, MemoryRegion, BITS_PER_LEVEL, PAGE_SIZE},
         MapError,
     };
 
@@ -189,8 +189,10 @@ mod tests {
             Ok(())
         );
 
-        // The entire valid address space.
-        let mut pagetable = LinearMap::new(1, 1, 4096);
+        // The entire valid address space. Use an offset that is a multiple of the level 2 block
+        // size to avoid mapping everything as pages as that is really slow.
+        const LEVEL_2_BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
+        let mut pagetable = LinearMap::new(1, 1, LEVEL_2_BLOCK_SIZE as isize);
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
@@ -235,11 +237,13 @@ mod tests {
             Ok(())
         );
 
-        // The entire valid address space.
-        let mut pagetable = LinearMap::new(1, 1, -(PAGE_SIZE as isize));
+        // The entire valid address space. Use an offset that is a multiple of the level 2 block
+        // size to avoid mapping everything as pages as that is really slow.
+        const LEVEL_2_BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
+        let mut pagetable = LinearMap::new(1, 1, -(LEVEL_2_BLOCK_SIZE as isize));
         assert_eq!(
             pagetable.map_range(
-                &MemoryRegion::new(PAGE_SIZE, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
+                &MemoryRegion::new(LEVEL_2_BLOCK_SIZE, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
                 Attributes::NORMAL
             ),
             Ok(())

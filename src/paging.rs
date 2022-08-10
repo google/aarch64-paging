@@ -624,7 +624,7 @@ const fn align_up(value: usize, alignment: usize) -> usize {
     ((value - 1) | (alignment - 1)) + 1
 }
 
-const fn is_aligned(value: usize, alignment: usize) -> bool {
+pub(crate) const fn is_aligned(value: usize, alignment: usize) -> bool {
     value & (alignment - 1) == 0
 }
 

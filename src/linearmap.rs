@@ -8,8 +8,8 @@
 
 use crate::{
     paging::{
-        deallocate, Attributes, MemoryRegion, PageTable, PhysicalAddress, Translation,
-        VirtualAddress,
+        deallocate, is_aligned, Attributes, MemoryRegion, PageTable, PhysicalAddress, Translation,
+        VirtualAddress, PAGE_SIZE,
     },
     MapError, Mapping,
 };
@@ -26,7 +26,15 @@ pub struct LinearTranslation {
 impl LinearTranslation {
     /// Constructs a new linear translation, which will map a virtual address `va` to the
     /// (intermediate) physical address `va + offset`.
+    ///
+    /// The `offset` must be a multiple of [`PAGE_SIZE`]; if not this will panic.
     pub fn new(offset: isize) -> Self {
+        if !is_aligned(offset.unsigned_abs(), PAGE_SIZE) {
+            panic!(
+                "Invalid offset {}, must be a multiple of page size {}.",
+                offset, PAGE_SIZE,
+            );
+        }
         Self { offset }
     }
 }
@@ -98,6 +106,8 @@ impl LinearMap {
     ///
     /// This will map any virtual address `va` which is added to the table to the physical address
     /// `va + offset`.
+    ///
+    /// The `offset` must be a multiple of [`PAGE_SIZE`]; if not this will panic.
     pub fn new(asid: usize, rootlevel: usize, offset: isize) -> Self {
         Self {
             mapping: Mapping::new(LinearTranslation::new(offset), asid, rootlevel),

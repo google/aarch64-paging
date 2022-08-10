@@ -347,7 +347,7 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
         )
     }
 
-    /// Returns a  reference to the descriptor corresponding to a given virtual address.
+    /// Returns a reference to the descriptor corresponding to a given virtual address.
     #[cfg(test)]
     fn get_entry(&self, va: VirtualAddress) -> &Descriptor {
         let shift = PAGE_SHIFT + (LEAF_LEVEL - self.level) * BITS_PER_LEVEL;

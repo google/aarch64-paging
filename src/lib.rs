@@ -84,7 +84,7 @@ impl Display for MapError {
 /// switch back to a previous static page table, and then `activate` again after making the desired
 /// changes.
 #[derive(Debug)]
-pub struct Mapping<T: Translation + Clone> {
+pub struct Mapping<T: Translation + Clone, const TTBR1: bool> {
     root: RootTable<T>,
     #[allow(unused)]
     asid: usize,
@@ -92,7 +92,7 @@ pub struct Mapping<T: Translation + Clone> {
     previous_ttbr: Option<usize>,
 }
 
-impl<T: Translation + Clone> Mapping<T> {
+impl<T: Translation + Clone, const TTBR1: bool> Mapping<T, TTBR1> {
     /// Creates a new page table with the given ASID, root level and translation mapping.
     pub fn new(translation: T, asid: usize, rootlevel: usize) -> Self {
         Self {
@@ -102,10 +102,10 @@ impl<T: Translation + Clone> Mapping<T> {
         }
     }
 
-    /// Activates the page table by setting `TTBR0_EL1` to point to it, and saves the previous value
-    /// of `TTBR0_EL1` so that it may later be restored by [`deactivate`](Self::deactivate).
+    /// Activates the page table by setting `TTBRn_EL1` to point to it, and saves the previous value
+    /// of `TTBRn_EL1` so that it may later be restored by [`deactivate`](Self::deactivate).
     ///
-    /// Panics if a previous value of `TTBR0_EL1` is already saved and not yet used by a call to
+    /// Panics if a previous value of `TTBRn_EL1` is already saved and not yet used by a call to
     /// `deactivate`.
     #[cfg(target_arch = "aarch64")]
     pub fn activate(&mut self) {
@@ -114,41 +114,65 @@ impl<T: Translation + Clone> Mapping<T> {
         let mut previous_ttbr;
         unsafe {
             // Safe because we trust that self.root.to_physical() returns a valid physical address
-            // of a page table, and the `Drop` implementation will reset `TTRB0_EL1` before it
+            // of a page table, and the `Drop` implementation will reset `TTBRn_EL1` before it
             // becomes invalid.
-            asm!(
-                "mrs   {previous_ttbr}, ttbr0_el1",
-                "msr   ttbr0_el1, {ttbrval}",
-                "isb",
-                ttbrval = in(reg) self.root.to_physical().0 | (self.asid << 48),
-                previous_ttbr = out(reg) previous_ttbr,
-                options(preserves_flags),
-            );
+            if TTBR1 {
+                asm!(
+                    "mrs   {previous_ttbr}, ttbr1_el1",
+                    "msr   ttbr1_el1, {ttbrval}",
+                    "isb",
+                    ttbrval = in(reg) self.root.to_physical().0 | (self.asid << 48),
+                    previous_ttbr = out(reg) previous_ttbr,
+                    options(preserves_flags),
+                );
+            } else {
+                asm!(
+                    "mrs   {previous_ttbr}, ttbr0_el1",
+                    "msr   ttbr0_el1, {ttbrval}",
+                    "isb",
+                    ttbrval = in(reg) self.root.to_physical().0 | (self.asid << 48),
+                    previous_ttbr = out(reg) previous_ttbr,
+                    options(preserves_flags),
+                );
+            }
         }
         self.previous_ttbr = Some(previous_ttbr);
     }
 
-    /// Deactivates the page table, by setting `TTBR0_EL1` back to the value it had before
+    /// Deactivates the page table, by setting `TTBRn_EL1` back to the value it had before
     /// [`activate`](Self::activate) was called, and invalidating the TLB for this page table's
     /// configured ASID.
     ///
-    /// Panics if there is no saved `TTRB0_EL1` value because `activate` has not previously been
+    /// Panics if there is no saved `TTBRn_EL1` value because `activate` has not previously been
     /// called.
     #[cfg(target_arch = "aarch64")]
     pub fn deactivate(&mut self) {
         unsafe {
-            // Safe because this just restores the previously saved value of `TTBR0_EL1`, which must
+            // Safe because this just restores the previously saved value of `TTBRn_EL1`, which must
             // have been valid.
-            asm!(
-                "msr   ttbr0_el1, {ttbrval}",
-                "isb",
-                "tlbi  aside1, {asid}",
-                "dsb   nsh",
-                "isb",
-                asid = in(reg) self.asid << 48,
-                ttbrval = in(reg) self.previous_ttbr.unwrap(),
-                options(preserves_flags),
-            );
+            if TTBR1 {
+                asm!(
+                    "msr   ttbr1_el1, {ttbrval}",
+                    "isb",
+                    "tlbi  aside1, {asid}",
+                    "dsb   nsh",
+                    "isb",
+                    asid = in(reg) self.asid << 48,
+                    ttbrval = in(reg) self.previous_ttbr.unwrap(),
+                    options(preserves_flags),
+                );
+            } else {
+                asm!(
+                    "msr   ttbr0_el1, {ttbrval}",
+                    "isb",
+                    "tlbi  aside1, {asid}",
+                    "dsb   nsh",
+                    "isb",
+                    asid = in(reg) self.asid << 48,
+                    ttbrval = in(reg) self.previous_ttbr.unwrap(),
+                    options(preserves_flags),
+                );
+            }
         }
         self.previous_ttbr = None;
     }
@@ -176,7 +200,7 @@ impl<T: Translation + Clone> Mapping<T> {
     }
 }
 
-impl<T: Translation + Clone> Drop for Mapping<T> {
+impl<T: Translation + Clone, const TTBR1: bool> Drop for Mapping<T, TTBR1> {
     fn drop(&mut self) {
         if self.previous_ttbr.is_some() {
             #[cfg(target_arch = "aarch64")]

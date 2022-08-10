@@ -92,7 +92,7 @@ impl Translation for IdTranslation {
 /// ```
 #[derive(Debug)]
 pub struct IdMap {
-    mapping: Mapping<IdTranslation>,
+    mapping: Mapping<IdTranslation, false>,
 }
 
 impl IdMap {

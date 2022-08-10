@@ -101,16 +101,16 @@ pub struct LinearMap {
     mapping: Mapping<LinearTranslation>,
 }
 
-impl LinearMap {
+impl<'a> LinearMap {
     /// Creates a new identity-mapping page table with the given ASID, root level and offset.
     ///
     /// This will map any virtual address `va` which is added to the table to the physical address
     /// `va + offset`.
     ///
     /// The `offset` must be a multiple of [`PAGE_SIZE`]; if not this will panic.
-    pub fn new(asid: usize, rootlevel: usize, offset: isize) -> Self {
+    pub fn new(asid: usize, rootlevel: usize, translation: &'a LinearTranslation) -> Self {
         Self {
-            mapping: Mapping::new(LinearTranslation::new(offset), asid, rootlevel),
+            mapping: Mapping::new(*translation, asid, rootlevel),
         }
     }
 
@@ -173,21 +173,22 @@ mod tests {
     #[test]
     fn map_valid() {
         // A single byte at the start of the address space.
-        let mut pagetable = LinearMap::new(1, 1, 4096);
+        let translation = LinearTranslation::new(4096);
+        let mut pagetable = LinearMap::new(1, 1, &translation);
         assert_eq!(
             pagetable.map_range(&MemoryRegion::new(0, 1), Attributes::NORMAL),
             Ok(())
         );
 
         // Two pages at the start of the address space.
-        let mut pagetable = LinearMap::new(1, 1, 4096);
+        let mut pagetable = LinearMap::new(1, 1, &translation);
         assert_eq!(
             pagetable.map_range(&MemoryRegion::new(0, PAGE_SIZE * 2), Attributes::NORMAL),
             Ok(())
         );
 
         // A single byte at the end of the address space.
-        let mut pagetable = LinearMap::new(1, 1, 4096);
+        let mut pagetable = LinearMap::new(1, 1, &translation);
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(
@@ -202,7 +203,8 @@ mod tests {
         // The entire valid address space. Use an offset that is a multiple of the level 2 block
         // size to avoid mapping everything as pages as that is really slow.
         const LEVEL_2_BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
-        let mut pagetable = LinearMap::new(1, 1, LEVEL_2_BLOCK_SIZE as isize);
+        let translation = LinearTranslation::new(LEVEL_2_BLOCK_SIZE as isize);
+        let mut pagetable = LinearMap::new(1, 1, &translation);
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
@@ -215,7 +217,8 @@ mod tests {
     #[test]
     fn map_valid_negative_offset() {
         // A single byte which maps to IPA 0.
-        let mut pagetable = LinearMap::new(1, 1, -(PAGE_SIZE as isize));
+        let translation = LinearTranslation::new(-(PAGE_SIZE as isize));
+        let mut pagetable = LinearMap::new(1, 1, &translation);
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(PAGE_SIZE, PAGE_SIZE + 1),
@@ -225,7 +228,7 @@ mod tests {
         );
 
         // Two pages at the start of the address space.
-        let mut pagetable = LinearMap::new(1, 1, -(PAGE_SIZE as isize));
+        let mut pagetable = LinearMap::new(1, 1, &translation);
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(PAGE_SIZE, PAGE_SIZE * 3),
@@ -235,7 +238,7 @@ mod tests {
         );
 
         // A single byte at the end of the address space.
-        let mut pagetable = LinearMap::new(1, 1, -(PAGE_SIZE as isize));
+        let mut pagetable = LinearMap::new(1, 1, &translation);
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(
@@ -250,7 +253,8 @@ mod tests {
         // The entire valid address space. Use an offset that is a multiple of the level 2 block
         // size to avoid mapping everything as pages as that is really slow.
         const LEVEL_2_BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
-        let mut pagetable = LinearMap::new(1, 1, -(LEVEL_2_BLOCK_SIZE as isize));
+        let translation = LinearTranslation::new(LEVEL_2_BLOCK_SIZE as isize);
+        let mut pagetable = LinearMap::new(1, 1, &translation);
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(LEVEL_2_BLOCK_SIZE, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
@@ -262,7 +266,8 @@ mod tests {
 
     #[test]
     fn map_out_of_range() {
-        let mut pagetable = LinearMap::new(1, 1, 4096);
+        let translation = LinearTranslation::new(4096);
+        let mut pagetable = LinearMap::new(1, 1, &translation);
 
         // One byte, just past the edge of the valid range.
         assert_eq!(
@@ -292,7 +297,8 @@ mod tests {
 
     #[test]
     fn map_invalid_offset() {
-        let mut pagetable = LinearMap::new(1, 1, -4096);
+        let translation = LinearTranslation::new(-4096);
+        let mut pagetable = LinearMap::new(1, 1, &translation);
 
         // One byte, with an offset which would map it to a negative IPA.
         assert_eq!(
@@ -321,7 +327,8 @@ mod tests {
     #[test]
     fn block_mapping() {
         // Test that block mapping is used when the PA is appropriately aligned...
-        let mut pagetable = LinearMap::new(1, 1, 1 << 30);
+        let translation = LinearTranslation::new(1 << 30);
+        let mut pagetable = LinearMap::new(1, 1, &translation);
         pagetable
             .map_range(&MemoryRegion::new(0, 1 << 30), Attributes::NORMAL)
             .unwrap();
@@ -331,7 +338,8 @@ mod tests {
         );
 
         // ...but not when it is not.
-        let mut pagetable = LinearMap::new(1, 1, 1 << 29);
+        let translation = LinearTranslation::new(1 << 29);
+        let mut pagetable = LinearMap::new(1, 1, &translation);
         pagetable
             .map_range(&MemoryRegion::new(0, 1 << 30), Attributes::NORMAL)
             .unwrap();

@@ -53,7 +53,9 @@ extern crate alloc;
 #[cfg(target_arch = "aarch64")]
 use core::arch::asm;
 use core::fmt::{self, Display, Formatter};
-use paging::{Attributes, MemoryRegion, PhysicalAddress, RootTable, Translation, VirtualAddress};
+use paging::{
+    Attributes, MemoryRegion, PhysicalAddress, RootTable, Translation, Ttbr, VirtualAddress,
+};
 
 /// An error attempting to map some range in the page table.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -84,7 +86,7 @@ impl Display for MapError {
 /// switch back to a previous static page table, and then `activate` again after making the desired
 /// changes.
 #[derive(Debug)]
-pub struct Mapping<T: Translation + Clone, const TTBR1: bool> {
+pub struct Mapping<T: Translation + Clone> {
     root: RootTable<T>,
     #[allow(unused)]
     asid: usize,
@@ -92,11 +94,11 @@ pub struct Mapping<T: Translation + Clone, const TTBR1: bool> {
     previous_ttbr: Option<usize>,
 }
 
-impl<T: Translation + Clone, const TTBR1: bool> Mapping<T, TTBR1> {
+impl<T: Translation + Clone> Mapping<T> {
     /// Creates a new page table with the given ASID, root level and translation mapping.
-    pub fn new(translation: T, asid: usize, rootlevel: usize) -> Self {
+    pub fn new(translation: T, asid: usize, rootlevel: usize, ttbr: Ttbr) -> Self {
         Self {
-            root: RootTable::new(translation, rootlevel),
+            root: RootTable::new(translation, rootlevel, ttbr),
             asid,
             previous_ttbr: None,
         }
@@ -116,24 +118,23 @@ impl<T: Translation + Clone, const TTBR1: bool> Mapping<T, TTBR1> {
             // Safe because we trust that self.root.to_physical() returns a valid physical address
             // of a page table, and the `Drop` implementation will reset `TTBRn_EL1` before it
             // becomes invalid.
-            if TTBR1 {
-                asm!(
-                    "mrs   {previous_ttbr}, ttbr1_el1",
-                    "msr   ttbr1_el1, {ttbrval}",
-                    "isb",
-                    ttbrval = in(reg) self.root.to_physical().0 | (self.asid << 48),
-                    previous_ttbr = out(reg) previous_ttbr,
-                    options(preserves_flags),
-                );
-            } else {
-                asm!(
+            match self.root.ttbr() {
+                Ttbr::Ttbr0 => asm!(
                     "mrs   {previous_ttbr}, ttbr0_el1",
                     "msr   ttbr0_el1, {ttbrval}",
                     "isb",
                     ttbrval = in(reg) self.root.to_physical().0 | (self.asid << 48),
                     previous_ttbr = out(reg) previous_ttbr,
                     options(preserves_flags),
-                );
+                ),
+                Ttbr::Ttbr1 => asm!(
+                    "mrs   {previous_ttbr}, ttbr1_el1",
+                    "msr   ttbr1_el1, {ttbrval}",
+                    "isb",
+                    ttbrval = in(reg) self.root.to_physical().0 | (self.asid << 48),
+                    previous_ttbr = out(reg) previous_ttbr,
+                    options(preserves_flags),
+                ),
             }
         }
         self.previous_ttbr = Some(previous_ttbr);
@@ -150,19 +151,8 @@ impl<T: Translation + Clone, const TTBR1: bool> Mapping<T, TTBR1> {
         unsafe {
             // Safe because this just restores the previously saved value of `TTBRn_EL1`, which must
             // have been valid.
-            if TTBR1 {
-                asm!(
-                    "msr   ttbr1_el1, {ttbrval}",
-                    "isb",
-                    "tlbi  aside1, {asid}",
-                    "dsb   nsh",
-                    "isb",
-                    asid = in(reg) self.asid << 48,
-                    ttbrval = in(reg) self.previous_ttbr.unwrap(),
-                    options(preserves_flags),
-                );
-            } else {
-                asm!(
+            match self.root.ttbr() {
+                Ttbr::Ttbr0 => asm!(
                     "msr   ttbr0_el1, {ttbrval}",
                     "isb",
                     "tlbi  aside1, {asid}",
@@ -171,7 +161,17 @@ impl<T: Translation + Clone, const TTBR1: bool> Mapping<T, TTBR1> {
                     asid = in(reg) self.asid << 48,
                     ttbrval = in(reg) self.previous_ttbr.unwrap(),
                     options(preserves_flags),
-                );
+                ),
+                Ttbr::Ttbr1 => asm!(
+                    "msr   ttbr1_el1, {ttbrval}",
+                    "isb",
+                    "tlbi  aside1, {asid}",
+                    "dsb   nsh",
+                    "isb",
+                    asid = in(reg) self.asid << 48,
+                    ttbrval = in(reg) self.previous_ttbr.unwrap(),
+                    options(preserves_flags),
+                ),
             }
         }
         self.previous_ttbr = None;
@@ -200,7 +200,7 @@ impl<T: Translation + Clone, const TTBR1: bool> Mapping<T, TTBR1> {
     }
 }
 
-impl<T: Translation + Clone, const TTBR1: bool> Drop for Mapping<T, TTBR1> {
+impl<T: Translation + Clone> Drop for Mapping<T> {
     fn drop(&mut self) {
         if self.previous_ttbr.is_some() {
             #[cfg(target_arch = "aarch64")]

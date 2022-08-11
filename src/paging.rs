@@ -25,6 +25,13 @@ pub const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
 /// page size.
 pub const BITS_PER_LEVEL: usize = PAGE_SHIFT - 3;
 
+/// Which TTBR register to use for a page table.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Ttbr {
+    Ttbr0,
+    Ttbr1,
+}
+
 /// An aarch64 virtual address, the input type of a stage 1 page table.
 #[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub struct VirtualAddress(pub usize);
@@ -191,6 +198,7 @@ impl Debug for MemoryRegion {
 pub struct RootTable<T: Translation + Clone> {
     table: PageTableWithLevel<T>,
     pa: PhysicalAddress,
+    ttbr: Ttbr,
 }
 
 impl<T: Translation + Clone> RootTable<T> {
@@ -199,12 +207,12 @@ impl<T: Translation + Clone> RootTable<T> {
     /// The level must be between 0 and 3; level -1 (for 52-bit addresses with LPA2) is not
     /// currently supported by this library. The value of `TCR_EL1.T0SZ` must be set appropriately
     /// to match.
-    pub fn new(translation: T, level: usize) -> Self {
+    pub fn new(translation: T, level: usize, ttbr: Ttbr) -> Self {
         if level > LEAF_LEVEL {
             panic!("Invalid root table level {}.", level);
         }
         let (table, pa) = PageTableWithLevel::new(translation, level);
-        RootTable { table, pa }
+        RootTable { table, pa, ttbr }
     }
 
     /// Returns the size in bytes of the virtual address space which can be mapped in this page
@@ -225,8 +233,17 @@ impl<T: Translation + Clone> RootTable<T> {
         pa: PhysicalAddress,
         flags: Attributes,
     ) -> Result<(), MapError> {
-        if range.end().0 > self.size() {
-            return Err(MapError::AddressRange(range.end()));
+        match self.ttbr {
+            Ttbr::Ttbr0 => {
+                if range.end().0 > self.size() {
+                    return Err(MapError::AddressRange(range.end()));
+                }
+            }
+            Ttbr::Ttbr1 => {
+                if (range.start().0 as isize).unsigned_abs() > self.size() {
+                    return Err(MapError::AddressRange(range.start()));
+                }
+            }
         }
 
         self.table.map_range(range, pa, flags);
@@ -237,6 +254,11 @@ impl<T: Translation + Clone> RootTable<T> {
     /// Returns the physical address of the root table in memory.
     pub fn to_physical(&self) -> PhysicalAddress {
         self.pa
+    }
+
+    /// Returns the TTBR for which this table is intended.
+    pub fn ttbr(&self) -> Ttbr {
+        self.ttbr
     }
 
     /// Returns a reference to the translation used for this page table.

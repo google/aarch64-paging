@@ -9,7 +9,7 @@
 use crate::{
     paging::{
         deallocate, is_aligned, Attributes, MemoryRegion, PageTable, PhysicalAddress, Translation,
-        VirtualAddress, PAGE_SIZE,
+        Ttbr, VirtualAddress, PAGE_SIZE,
     },
     MapError, Mapping,
 };
@@ -122,7 +122,7 @@ fn checked_add_to_unsigned(a: isize, b: isize) -> Option<usize> {
 /// code that is managing it.
 #[derive(Debug)]
 pub struct LinearMap<const TTBR1: bool> {
-    mapping: Mapping<LinearTranslation<TTBR1>, TTBR1>,
+    mapping: Mapping<LinearTranslation<TTBR1>>,
 }
 
 impl LinearMap<false> {
@@ -134,7 +134,7 @@ impl LinearMap<false> {
     /// The `offset` must be a multiple of [`PAGE_SIZE`]; if not this will panic.
     pub fn new_ttbr0(asid: usize, rootlevel: usize, offset: isize) -> Self {
         Self {
-            mapping: Mapping::new(LinearTranslation::new(offset), asid, rootlevel),
+            mapping: Mapping::new(LinearTranslation::new(offset), asid, rootlevel, Ttbr::Ttbr0),
         }
     }
 }
@@ -148,7 +148,7 @@ impl LinearMap<true> {
     /// The `offset` must be a multiple of [`PAGE_SIZE`]; if not this will panic.
     pub fn new_ttbr1(asid: usize, rootlevel: usize, offset: isize) -> Self {
         Self {
-            mapping: Mapping::new(LinearTranslation::new(offset), asid, rootlevel),
+            mapping: Mapping::new(LinearTranslation::new(offset), asid, rootlevel, Ttbr::Ttbr1),
         }
     }
 }

@@ -18,35 +18,35 @@ use core::ptr::NonNull;
 /// Linear mapping, where every virtual address is either unmapped or mapped to an IPA with a fixed
 /// offset.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct LinearTranslation<const TTBR1: bool> {
+pub struct LinearTranslation {
     /// The offset from a virtual address to the corresponding (intermediate) physical address.
     offset: isize,
+    ttbr: Ttbr,
 }
 
-impl<const TTBR1: bool> LinearTranslation<TTBR1> {
+impl LinearTranslation {
     /// Constructs a new linear translation, which will map a virtual address `va` to the
     /// (intermediate) physical address `va + offset`.
     ///
     /// The `offset` must be a multiple of [`PAGE_SIZE`]; if not this will panic.
-    pub fn new(offset: isize) -> Self {
+    pub fn new(offset: isize, ttbr: Ttbr) -> Self {
         if !is_aligned(offset.unsigned_abs(), PAGE_SIZE) {
             panic!(
                 "Invalid offset {}, must be a multiple of page size {}.",
                 offset, PAGE_SIZE,
             );
         }
-        Self { offset }
+        Self { offset, ttbr }
     }
 
     fn virtual_to_physical(&self, va: VirtualAddress) -> Result<PhysicalAddress, MapError> {
-        if TTBR1 ^ ((va.0 as isize) < 0) {
+        if (self.ttbr == Ttbr::Ttbr1) ^ ((va.0 as isize) < 0) {
             return Err(MapError::AddressRange(va));
         }
 
-        if let Some(pa) = if TTBR1 {
-            checked_add_to_unsigned(va.0 as isize, self.offset)
-        } else {
-            checked_add_signed(va.0, self.offset)
+        if let Some(pa) = match self.ttbr {
+            Ttbr::Ttbr0 => checked_add_signed(va.0, self.offset),
+            Ttbr::Ttbr1 => checked_add_to_unsigned(va.0 as isize, self.offset),
         } {
             Ok(PhysicalAddress(pa))
         } else {
@@ -55,7 +55,7 @@ impl<const TTBR1: bool> LinearTranslation<TTBR1> {
     }
 }
 
-impl<const TTBR1: bool> Translation for LinearTranslation<TTBR1> {
+impl Translation for LinearTranslation {
     fn allocate_table(&self) -> (NonNull<PageTable>, PhysicalAddress) {
         let table = PageTable::new();
         // Assume that the same linear mapping is used everywhere.
@@ -72,18 +72,19 @@ impl<const TTBR1: bool> Translation for LinearTranslation<TTBR1> {
     }
 
     fn physical_to_virtual(&self, pa: PhysicalAddress) -> NonNull<PageTable> {
-        if let Some(va) = if TTBR1 {
-            if let Some(va) = (pa.0 as isize).checked_sub(self.offset) {
-                if va <= 0 {
-                    Some(va as usize)
+        if let Some(va) = match self.ttbr {
+            Ttbr::Ttbr0 => checked_add_signed(pa.0, -self.offset),
+            Ttbr::Ttbr1 => {
+                if let Some(va) = (pa.0 as isize).checked_sub(self.offset) {
+                    if va <= 0 {
+                        Some(va as usize)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
-            } else {
-                None
             }
-        } else {
-            checked_add_signed(pa.0, -self.offset)
         } {
             if let Some(ptr) = NonNull::new(va as *mut PageTable) {
                 ptr
@@ -121,39 +122,24 @@ fn checked_add_to_unsigned(a: isize, b: isize) -> Option<usize> {
 /// This assumes that the same linear mapping is used both for the page table being managed, and for
 /// code that is managing it.
 #[derive(Debug)]
-pub struct LinearMap<const TTBR1: bool> {
-    mapping: Mapping<LinearTranslation<TTBR1>>,
+pub struct LinearMap {
+    mapping: Mapping<LinearTranslation>,
 }
 
-impl LinearMap<false> {
-    /// Creates a new identity-mapping page table with the given ASID, root level and offset.
+impl LinearMap {
+    /// Creates a new identity-mapping page table with the given ASID, root level and offset, for
+    /// use in the given TTBR.
     ///
     /// This will map any virtual address `va` which is added to the table to the physical address
     /// `va + offset`.
     ///
     /// The `offset` must be a multiple of [`PAGE_SIZE`]; if not this will panic.
-    pub fn new_ttbr0(asid: usize, rootlevel: usize, offset: isize) -> Self {
+    pub fn new(asid: usize, rootlevel: usize, offset: isize, ttbr: Ttbr) -> Self {
         Self {
-            mapping: Mapping::new(LinearTranslation::new(offset), asid, rootlevel, Ttbr::Ttbr0),
+            mapping: Mapping::new(LinearTranslation::new(offset, ttbr), asid, rootlevel, ttbr),
         }
     }
-}
 
-impl LinearMap<true> {
-    /// Creates a new identity-mapping page table with the given ASID, root level and offset.
-    ///
-    /// This will map any virtual address `va` which is added to the table to the physical address
-    /// `va + offset`.
-    ///
-    /// The `offset` must be a multiple of [`PAGE_SIZE`]; if not this will panic.
-    pub fn new_ttbr1(asid: usize, rootlevel: usize, offset: isize) -> Self {
-        Self {
-            mapping: Mapping::new(LinearTranslation::new(offset), asid, rootlevel, Ttbr::Ttbr1),
-        }
-    }
-}
-
-impl<const TTBR1: bool> LinearMap<TTBR1> {
     /// Activates the page table by setting `TTBR0_EL1` to point to it, and saves the previous value
     /// of `TTBR0_EL1` so that it may later be restored by [`deactivate`](Self::deactivate).
     ///
@@ -213,21 +199,21 @@ mod tests {
     #[test]
     fn map_valid() {
         // A single byte at the start of the address space.
-        let mut pagetable = LinearMap::new_ttbr0(1, 1, 4096);
+        let mut pagetable = LinearMap::new(1, 1, 4096, Ttbr::Ttbr0);
         assert_eq!(
             pagetable.map_range(&MemoryRegion::new(0, 1), Attributes::NORMAL),
             Ok(())
         );
 
         // Two pages at the start of the address space.
-        let mut pagetable = LinearMap::new_ttbr0(1, 1, 4096);
+        let mut pagetable = LinearMap::new(1, 1, 4096, Ttbr::Ttbr0);
         assert_eq!(
             pagetable.map_range(&MemoryRegion::new(0, PAGE_SIZE * 2), Attributes::NORMAL),
             Ok(())
         );
 
         // A single byte at the end of the address space.
-        let mut pagetable = LinearMap::new_ttbr0(1, 1, 4096);
+        let mut pagetable = LinearMap::new(1, 1, 4096, Ttbr::Ttbr0);
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(
@@ -242,7 +228,7 @@ mod tests {
         // The entire valid address space. Use an offset that is a multiple of the level 2 block
         // size to avoid mapping everything as pages as that is really slow.
         const LEVEL_2_BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
-        let mut pagetable = LinearMap::new_ttbr0(1, 1, LEVEL_2_BLOCK_SIZE as isize);
+        let mut pagetable = LinearMap::new(1, 1, LEVEL_2_BLOCK_SIZE as isize, Ttbr::Ttbr0);
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
@@ -255,7 +241,7 @@ mod tests {
     #[test]
     fn map_valid_negative_offset() {
         // A single byte which maps to IPA 0.
-        let mut pagetable = LinearMap::new_ttbr0(1, 1, -(PAGE_SIZE as isize));
+        let mut pagetable = LinearMap::new(1, 1, -(PAGE_SIZE as isize), Ttbr::Ttbr0);
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(PAGE_SIZE, PAGE_SIZE + 1),
@@ -265,7 +251,7 @@ mod tests {
         );
 
         // Two pages at the start of the address space.
-        let mut pagetable = LinearMap::new_ttbr0(1, 1, -(PAGE_SIZE as isize));
+        let mut pagetable = LinearMap::new(1, 1, -(PAGE_SIZE as isize), Ttbr::Ttbr0);
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(PAGE_SIZE, PAGE_SIZE * 3),
@@ -275,7 +261,7 @@ mod tests {
         );
 
         // A single byte at the end of the address space.
-        let mut pagetable = LinearMap::new_ttbr0(1, 1, -(PAGE_SIZE as isize));
+        let mut pagetable = LinearMap::new(1, 1, -(PAGE_SIZE as isize), Ttbr::Ttbr0);
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(
@@ -290,7 +276,7 @@ mod tests {
         // The entire valid address space. Use an offset that is a multiple of the level 2 block
         // size to avoid mapping everything as pages as that is really slow.
         const LEVEL_2_BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
-        let mut pagetable = LinearMap::new_ttbr0(1, 1, -(LEVEL_2_BLOCK_SIZE as isize));
+        let mut pagetable = LinearMap::new(1, 1, -(LEVEL_2_BLOCK_SIZE as isize), Ttbr::Ttbr0);
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(LEVEL_2_BLOCK_SIZE, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
@@ -302,7 +288,7 @@ mod tests {
 
     #[test]
     fn map_out_of_range() {
-        let mut pagetable = LinearMap::new_ttbr0(1, 1, 4096);
+        let mut pagetable = LinearMap::new(1, 1, 4096, Ttbr::Ttbr0);
 
         // One byte, just past the edge of the valid range.
         assert_eq!(
@@ -332,7 +318,7 @@ mod tests {
 
     #[test]
     fn map_invalid_offset() {
-        let mut pagetable = LinearMap::new_ttbr0(1, 1, -4096);
+        let mut pagetable = LinearMap::new(1, 1, -4096, Ttbr::Ttbr0);
 
         // One byte, with an offset which would map it to a negative IPA.
         assert_eq!(
@@ -343,7 +329,7 @@ mod tests {
 
     #[test]
     fn physical_address_in_range_ttbr0() {
-        let translation = LinearTranslation::<false>::new(4096);
+        let translation = LinearTranslation::new(4096, Ttbr::Ttbr0);
         assert_eq!(
             translation.physical_to_virtual(PhysicalAddress(8192)),
             NonNull::new(4096 as *mut PageTable).unwrap(),
@@ -358,7 +344,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn physical_address_out_of_range_ttbr0() {
-        let translation = LinearTranslation::<false>::new(4096);
+        let translation = LinearTranslation::new(4096, Ttbr::Ttbr0);
         translation.physical_to_virtual(PhysicalAddress(1024));
     }
 
@@ -367,7 +353,7 @@ mod tests {
         const GIB_512: isize = 512 * 1024 * 1024 * 1024;
         // Map the 512 GiB region at the top of virtual address space to one page above the bottom
         // of physical address space.
-        let translation = LinearTranslation::<true>::new(GIB_512 + 4096);
+        let translation = LinearTranslation::new(GIB_512 + 4096, Ttbr::Ttbr1);
         assert_eq!(
             translation.physical_to_virtual(PhysicalAddress(8192)),
             NonNull::new((4096 - GIB_512) as *mut PageTable).unwrap(),
@@ -384,13 +370,13 @@ mod tests {
         const GIB_512: isize = 512 * 1024 * 1024 * 1024;
         // Map the 512 GiB region at the top of virtual address space to the bottom of physical
         // address space.
-        let translation = LinearTranslation::<true>::new(GIB_512);
+        let translation = LinearTranslation::new(GIB_512, Ttbr::Ttbr1);
         translation.physical_to_virtual(PhysicalAddress(GIB_512 as usize + 4096));
     }
 
     #[test]
     fn virtual_address_out_of_range() {
-        let translation = LinearTranslation::<false>::new(-4096);
+        let translation = LinearTranslation::new(-4096, Ttbr::Ttbr0);
         let va = VirtualAddress(1024);
         assert_eq!(
             translation.virtual_to_physical(va),
@@ -403,7 +389,7 @@ mod tests {
         const GIB_512: isize = 512 * 1024 * 1024 * 1024;
         // Map the 512 GiB region at the top of virtual address space to the bottom of physical
         // address space.
-        let translation = LinearTranslation::<true>::new(GIB_512);
+        let translation = LinearTranslation::new(GIB_512, Ttbr::Ttbr1);
 
         // The first page in the region covered by TTBR1.
         assert_eq!(
@@ -426,7 +412,7 @@ mod tests {
     #[test]
     fn block_mapping() {
         // Test that block mapping is used when the PA is appropriately aligned...
-        let mut pagetable = LinearMap::new_ttbr0(1, 1, 1 << 30);
+        let mut pagetable = LinearMap::new(1, 1, 1 << 30, Ttbr::Ttbr0);
         pagetable
             .map_range(&MemoryRegion::new(0, 1 << 30), Attributes::NORMAL)
             .unwrap();
@@ -436,7 +422,7 @@ mod tests {
         );
 
         // ...but not when it is not.
-        let mut pagetable = LinearMap::new_ttbr0(1, 1, 1 << 29);
+        let mut pagetable = LinearMap::new(1, 1, 1 << 29, Ttbr::Ttbr0);
         pagetable
             .map_range(&MemoryRegion::new(0, 1 << 30), Attributes::NORMAL)
             .unwrap();

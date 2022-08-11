@@ -233,6 +233,9 @@ impl<T: Translation + Clone> RootTable<T> {
         pa: PhysicalAddress,
         flags: Attributes,
     ) -> Result<(), MapError> {
+        if range.end() < range.start() {
+            return Err(MapError::RegionBackwards(range.clone()));
+        }
         match self.ttbr {
             Ttbr::Ttbr0 => {
                 if range.end().0 > self.size() {

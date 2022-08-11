@@ -58,13 +58,15 @@ use paging::{
 };
 
 /// An error attempting to map some range in the page table.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MapError {
     /// The address requested to be mapped was out of the range supported by the page table
     /// configuration.
     AddressRange(VirtualAddress),
     /// The address requested to be mapped was not valid for the mapping in use.
     InvalidVirtualAddress(VirtualAddress),
+    /// The end of the memory region is before the start.
+    RegionBackwards(MemoryRegion),
 }
 
 impl Display for MapError {
@@ -73,6 +75,9 @@ impl Display for MapError {
             Self::AddressRange(va) => write!(f, "Virtual address {} out of range", va),
             Self::InvalidVirtualAddress(va) => {
                 write!(f, "Invalid virtual address {} for mapping", va)
+            }
+            Self::RegionBackwards(region) => {
+                write!(f, "End of memory region {} is before start.", region)
             }
         }
     }

@@ -680,6 +680,7 @@ mod tests {
         assert_eq!(high - low, 0x1222);
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic]
     fn subtract_virtual_address_overflow() {
@@ -702,6 +703,7 @@ mod tests {
         assert_eq!(high - low, 0x1222);
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic]
     fn subtract_physical_address_overflow() {

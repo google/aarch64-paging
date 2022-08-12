@@ -238,12 +238,16 @@ impl<T: Translation + Clone> RootTable<T> {
         }
         match self.ttbr {
             Ttbr::Ttbr0 => {
-                if range.end().0 > self.size() {
+                if (range.start().0 as isize) < 0 {
+                    return Err(MapError::AddressRange(range.start()));
+                } else if range.end().0 > self.size() {
                     return Err(MapError::AddressRange(range.end()));
                 }
             }
             Ttbr::Ttbr1 => {
-                if (range.start().0 as isize).unsigned_abs() > self.size() {
+                if range.start().0 as isize >= 0 {
+                    return Err(MapError::AddressRange(range.start()));
+                } else if (range.start().0 as isize).unsigned_abs() > self.size() {
                     return Err(MapError::AddressRange(range.start()));
                 }
             }

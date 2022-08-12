@@ -21,7 +21,6 @@ use core::ptr::NonNull;
 pub struct LinearTranslation {
     /// The offset from a virtual address to the corresponding (intermediate) physical address.
     offset: isize,
-    ttbr: Ttbr,
 }
 
 impl LinearTranslation {
@@ -29,21 +28,17 @@ impl LinearTranslation {
     /// (intermediate) physical address `va + offset`.
     ///
     /// The `offset` must be a multiple of [`PAGE_SIZE`]; if not this will panic.
-    pub fn new(offset: isize, ttbr: Ttbr) -> Self {
+    pub fn new(offset: isize) -> Self {
         if !is_aligned(offset.unsigned_abs(), PAGE_SIZE) {
             panic!(
                 "Invalid offset {}, must be a multiple of page size {}.",
                 offset, PAGE_SIZE,
             );
         }
-        Self { offset, ttbr }
+        Self { offset }
     }
 
     fn virtual_to_physical(&self, va: VirtualAddress) -> Result<PhysicalAddress, MapError> {
-        if (self.ttbr == Ttbr::Ttbr1) ^ ((va.0 as isize) < 0) {
-            return Err(MapError::AddressRange(va));
-        }
-
         if let Some(pa) = checked_add_to_unsigned(va.0 as isize, self.offset) {
             Ok(PhysicalAddress(pa))
         } else {
@@ -113,7 +108,7 @@ impl LinearMap {
     /// The `offset` must be a multiple of [`PAGE_SIZE`]; if not this will panic.
     pub fn new(asid: usize, rootlevel: usize, offset: isize, ttbr: Ttbr) -> Self {
         Self {
-            mapping: Mapping::new(LinearTranslation::new(offset, ttbr), asid, rootlevel, ttbr),
+            mapping: Mapping::new(LinearTranslation::new(offset), asid, rootlevel, ttbr),
         }
     }
 
@@ -306,7 +301,7 @@ mod tests {
 
     #[test]
     fn physical_address_in_range_ttbr0() {
-        let translation = LinearTranslation::new(4096, Ttbr::Ttbr0);
+        let translation = LinearTranslation::new(4096);
         assert_eq!(
             translation.physical_to_virtual(PhysicalAddress(8192)),
             NonNull::new(4096 as *mut PageTable).unwrap(),
@@ -321,14 +316,14 @@ mod tests {
     #[test]
     #[should_panic]
     fn physical_address_to_zero_ttbr0() {
-        let translation = LinearTranslation::new(4096, Ttbr::Ttbr0);
+        let translation = LinearTranslation::new(4096);
         translation.physical_to_virtual(PhysicalAddress(4096));
     }
 
     #[test]
     #[should_panic]
     fn physical_address_out_of_range_ttbr0() {
-        let translation = LinearTranslation::new(4096, Ttbr::Ttbr0);
+        let translation = LinearTranslation::new(4096);
         translation.physical_to_virtual(PhysicalAddress(-4096_isize as usize));
     }
 
@@ -337,7 +332,7 @@ mod tests {
         const GIB_512: isize = 512 * 1024 * 1024 * 1024;
         // Map the 512 GiB region at the top of virtual address space to one page above the bottom
         // of physical address space.
-        let translation = LinearTranslation::new(GIB_512 + 4096, Ttbr::Ttbr1);
+        let translation = LinearTranslation::new(GIB_512 + 4096);
         assert_eq!(
             translation.physical_to_virtual(PhysicalAddress(8192)),
             NonNull::new((4096 - GIB_512) as *mut PageTable).unwrap(),
@@ -354,7 +349,7 @@ mod tests {
         const GIB_512: isize = 512 * 1024 * 1024 * 1024;
         // Map the 512 GiB region at the top of virtual address space to the bottom of physical
         // address space.
-        let translation = LinearTranslation::new(GIB_512, Ttbr::Ttbr1);
+        let translation = LinearTranslation::new(GIB_512);
         translation.physical_to_virtual(PhysicalAddress(GIB_512 as usize));
     }
 
@@ -364,13 +359,13 @@ mod tests {
         const GIB_512: isize = 512 * 1024 * 1024 * 1024;
         // Map the 512 GiB region at the top of virtual address space to the bottom of physical
         // address space.
-        let translation = LinearTranslation::new(GIB_512, Ttbr::Ttbr1);
+        let translation = LinearTranslation::new(GIB_512);
         translation.physical_to_virtual(PhysicalAddress(-4096_isize as usize));
     }
 
     #[test]
     fn virtual_address_out_of_range() {
-        let translation = LinearTranslation::new(-4096, Ttbr::Ttbr0);
+        let translation = LinearTranslation::new(-4096);
         let va = VirtualAddress(1024);
         assert_eq!(
             translation.virtual_to_physical(va),
@@ -383,7 +378,7 @@ mod tests {
         const GIB_512: isize = 512 * 1024 * 1024 * 1024;
         // Map the 512 GiB region at the top of virtual address space to the bottom of physical
         // address space.
-        let translation = LinearTranslation::new(GIB_512, Ttbr::Ttbr1);
+        let translation = LinearTranslation::new(GIB_512);
 
         // The first page in the region covered by TTBR1.
         assert_eq!(
@@ -394,12 +389,6 @@ mod tests {
         assert_eq!(
             translation.virtual_to_physical(VirtualAddress(0xfffffffffffff000)),
             Ok(PhysicalAddress(0x7ffffff000))
-        );
-
-        // The start of virtual address space, which is definitely not covered by TTBR1.
-        assert_eq!(
-            translation.virtual_to_physical(VirtualAddress(0)),
-            Err(MapError::AddressRange(VirtualAddress(0)))
         );
     }
 

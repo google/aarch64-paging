@@ -463,7 +463,7 @@ impl<T: Translation> PageTableWithLevel<T> {
                     subtable
                 } else {
                     let old = *entry;
-                    let (mut subtable, subtable_pa) = Self::new(translation.clone(), level + 1);
+                    let (mut subtable, subtable_pa) = Self::new(translation, level + 1);
                     if let (Some(old_flags), Some(old_pa)) = (old.flags(), old.output_address()) {
                         // Old was a valid block entry, so we need to split it.
                         // Recreate the entire block in the newly added table.

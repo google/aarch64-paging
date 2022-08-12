@@ -44,10 +44,7 @@ impl LinearTranslation {
             return Err(MapError::AddressRange(va));
         }
 
-        if let Some(pa) = match self.ttbr {
-            Ttbr::Ttbr0 => checked_add_signed(va.0, self.offset),
-            Ttbr::Ttbr1 => checked_add_to_unsigned(va.0 as isize, self.offset),
-        } {
+        if let Some(pa) = checked_add_to_unsigned(va.0 as isize, self.offset) {
             Ok(PhysicalAddress(pa))
         } else {
             Err(MapError::InvalidVirtualAddress(va))
@@ -72,20 +69,11 @@ impl Translation for LinearTranslation {
     }
 
     fn physical_to_virtual(&self, pa: PhysicalAddress) -> NonNull<PageTable> {
-        if let Some(va) = match self.ttbr {
-            Ttbr::Ttbr0 => checked_add_signed(pa.0, -self.offset),
-            Ttbr::Ttbr1 => {
-                if let Some(va) = (pa.0 as isize).checked_sub(self.offset) {
-                    if va <= 0 {
-                        Some(va as usize)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            }
-        } {
+        let signed_pa = pa.0 as isize;
+        if signed_pa < 0 {
+            panic!("Invalid physical address {} for pagetable", pa);
+        }
+        if let Some(va) = signed_pa.checked_sub(self.offset) {
             if let Some(ptr) = NonNull::new(va as *mut PageTable) {
                 ptr
             } else {
@@ -97,17 +85,6 @@ impl Translation for LinearTranslation {
         } else {
             panic!("Invalid physical address {} for pagetable", pa);
         }
-    }
-}
-
-/// Adds a signed value to an unsigned value, returning an unsigned value or `None` if it would overflow.
-// TODO: Use `usize::checked_add_signed` once it is stable
-// (https://github.com/rust-lang/rust/issues/87840)
-fn checked_add_signed(a: usize, b: isize) -> Option<usize> {
-    if b >= 0 {
-        a.checked_add(b as usize)
-    } else {
-        a.checked_sub(b.unsigned_abs())
     }
 }
 
@@ -343,9 +320,16 @@ mod tests {
 
     #[test]
     #[should_panic]
+    fn physical_address_to_zero_ttbr0() {
+        let translation = LinearTranslation::new(4096, Ttbr::Ttbr0);
+        translation.physical_to_virtual(PhysicalAddress(4096));
+    }
+
+    #[test]
+    #[should_panic]
     fn physical_address_out_of_range_ttbr0() {
         let translation = LinearTranslation::new(4096, Ttbr::Ttbr0);
-        translation.physical_to_virtual(PhysicalAddress(1024));
+        translation.physical_to_virtual(PhysicalAddress(-4096_isize as usize));
     }
 
     #[test]
@@ -366,12 +350,22 @@ mod tests {
 
     #[test]
     #[should_panic]
+    fn physical_address_to_zero_ttbr1() {
+        const GIB_512: isize = 512 * 1024 * 1024 * 1024;
+        // Map the 512 GiB region at the top of virtual address space to the bottom of physical
+        // address space.
+        let translation = LinearTranslation::new(GIB_512, Ttbr::Ttbr1);
+        translation.physical_to_virtual(PhysicalAddress(GIB_512 as usize));
+    }
+
+    #[test]
+    #[should_panic]
     fn physical_address_out_of_range_ttbr1() {
         const GIB_512: isize = 512 * 1024 * 1024 * 1024;
         // Map the 512 GiB region at the top of virtual address space to the bottom of physical
         // address space.
         let translation = LinearTranslation::new(GIB_512, Ttbr::Ttbr1);
-        translation.physical_to_virtual(PhysicalAddress(GIB_512 as usize + 4096));
+        translation.physical_to_virtual(PhysicalAddress(-4096_isize as usize));
     }
 
     #[test]

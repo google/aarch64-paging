@@ -28,7 +28,11 @@ pub const BITS_PER_LEVEL: usize = PAGE_SHIFT - 3;
 /// Which TTBR register to use for a page table.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Ttbr {
+    /// `TTBR0`, meaning that the page table covers the bottom of the virtual address space
+    /// (starting at address 0).
     Ttbr0,
+    /// `TTBR1`, meaning that the page table covers the top of the virtual address space (ending at
+    /// address 0xffffffffffffffff).
     Ttbr1,
 }
 

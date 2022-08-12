@@ -249,9 +249,9 @@ impl<T: Translation + Clone> RootTable<T> {
                 }
             }
             Ttbr::Ttbr1 => {
-                if range.start().0 as isize >= 0 {
-                    return Err(MapError::AddressRange(range.start()));
-                } else if (range.start().0 as isize).unsigned_abs() > self.size() {
+                if range.start().0 as isize >= 0
+                    || (range.start().0 as isize).unsigned_abs() > self.size()
+                {
                     return Err(MapError::AddressRange(range.start()));
                 }
             }

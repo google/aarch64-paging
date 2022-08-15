@@ -54,7 +54,7 @@ extern crate alloc;
 use core::arch::asm;
 use core::fmt::{self, Display, Formatter};
 use paging::{
-    Attributes, MemoryRegion, PhysicalAddress, RootTable, Translation, Ttbr, VirtualAddress,
+    Attributes, MemoryRegion, PhysicalAddress, RootTable, Translation, VaRange, VirtualAddress,
 };
 
 /// An error attempting to map some range in the page table.
@@ -101,9 +101,9 @@ pub struct Mapping<T: Translation + Clone> {
 
 impl<T: Translation + Clone> Mapping<T> {
     /// Creates a new page table with the given ASID, root level and translation mapping.
-    pub fn new(translation: T, asid: usize, rootlevel: usize, ttbr: Ttbr) -> Self {
+    pub fn new(translation: T, asid: usize, rootlevel: usize, va_range: VaRange) -> Self {
         Self {
-            root: RootTable::new(translation, rootlevel, ttbr),
+            root: RootTable::new(translation, rootlevel, va_range),
             asid,
             previous_ttbr: None,
         }
@@ -123,8 +123,8 @@ impl<T: Translation + Clone> Mapping<T> {
             // Safe because we trust that self.root.to_physical() returns a valid physical address
             // of a page table, and the `Drop` implementation will reset `TTBRn_EL1` before it
             // becomes invalid.
-            match self.root.ttbr() {
-                Ttbr::Ttbr0 => asm!(
+            match self.root.va_range() {
+                VaRange::Lower => asm!(
                     "mrs   {previous_ttbr}, ttbr0_el1",
                     "msr   ttbr0_el1, {ttbrval}",
                     "isb",
@@ -132,7 +132,7 @@ impl<T: Translation + Clone> Mapping<T> {
                     previous_ttbr = out(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
-                Ttbr::Ttbr1 => asm!(
+                VaRange::Upper => asm!(
                     "mrs   {previous_ttbr}, ttbr1_el1",
                     "msr   ttbr1_el1, {ttbrval}",
                     "isb",
@@ -156,8 +156,8 @@ impl<T: Translation + Clone> Mapping<T> {
         unsafe {
             // Safe because this just restores the previously saved value of `TTBRn_EL1`, which must
             // have been valid.
-            match self.root.ttbr() {
-                Ttbr::Ttbr0 => asm!(
+            match self.root.va_range() {
+                VaRange::Lower => asm!(
                     "msr   ttbr0_el1, {ttbrval}",
                     "isb",
                     "tlbi  aside1, {asid}",
@@ -167,7 +167,7 @@ impl<T: Translation + Clone> Mapping<T> {
                     ttbrval = in(reg) self.previous_ttbr.unwrap(),
                     options(preserves_flags),
                 ),
-                Ttbr::Ttbr1 => asm!(
+                VaRange::Upper => asm!(
                     "msr   ttbr1_el1, {ttbrval}",
                     "isb",
                     "tlbi  aside1, {asid}",

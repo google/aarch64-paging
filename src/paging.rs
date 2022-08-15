@@ -25,15 +25,15 @@ pub const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
 /// page size.
 pub const BITS_PER_LEVEL: usize = PAGE_SHIFT - 3;
 
-/// Which TTBR register to use for a page table.
+/// Which virtual address range a page table is for, i.e. which TTBR register to use for it.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum Ttbr {
-    /// `TTBR0`, meaning that the page table covers the bottom of the virtual address space
-    /// (starting at address 0).
-    Ttbr0,
-    /// `TTBR1`, meaning that the page table covers the top of the virtual address space (ending at
-    /// address 0xffffffffffffffff).
-    Ttbr1,
+pub enum VaRange {
+    /// The page table covers the bottom of the virtual address space (starting at address 0), so
+    /// will be used with `TTBR0`.
+    Lower,
+    /// The page table covers the top of the virtual address space (ending at address
+    /// 0xffffffffffffffff), so will be used with `TTBR1`.
+    Upper,
 }
 
 /// An aarch64 virtual address, the input type of a stage 1 page table.
@@ -202,7 +202,7 @@ impl Debug for MemoryRegion {
 pub struct RootTable<T: Translation + Clone> {
     table: PageTableWithLevel<T>,
     pa: PhysicalAddress,
-    ttbr: Ttbr,
+    va_range: VaRange,
 }
 
 impl<T: Translation + Clone> RootTable<T> {
@@ -211,12 +211,16 @@ impl<T: Translation + Clone> RootTable<T> {
     /// The level must be between 0 and 3; level -1 (for 52-bit addresses with LPA2) is not
     /// currently supported by this library. The value of `TCR_EL1.T0SZ` must be set appropriately
     /// to match.
-    pub fn new(translation: T, level: usize, ttbr: Ttbr) -> Self {
+    pub fn new(translation: T, level: usize, va_range: VaRange) -> Self {
         if level > LEAF_LEVEL {
             panic!("Invalid root table level {}.", level);
         }
         let (table, pa) = PageTableWithLevel::new(translation, level);
-        RootTable { table, pa, ttbr }
+        RootTable {
+            table,
+            pa,
+            va_range,
+        }
     }
 
     /// Returns the size in bytes of the virtual address space which can be mapped in this page
@@ -240,15 +244,15 @@ impl<T: Translation + Clone> RootTable<T> {
         if range.end() < range.start() {
             return Err(MapError::RegionBackwards(range.clone()));
         }
-        match self.ttbr {
-            Ttbr::Ttbr0 => {
+        match self.va_range {
+            VaRange::Lower => {
                 if (range.start().0 as isize) < 0 {
                     return Err(MapError::AddressRange(range.start()));
                 } else if range.end().0 > self.size() {
                     return Err(MapError::AddressRange(range.end()));
                 }
             }
-            Ttbr::Ttbr1 => {
+            VaRange::Upper => {
                 if range.start().0 as isize >= 0
                     || (range.start().0 as isize).unsigned_abs() > self.size()
                 {
@@ -268,8 +272,8 @@ impl<T: Translation + Clone> RootTable<T> {
     }
 
     /// Returns the TTBR for which this table is intended.
-    pub fn ttbr(&self) -> Ttbr {
-        self.ttbr
+    pub fn va_range(&self) -> VaRange {
+        self.va_range
     }
 
     /// Returns a reference to the translation used for this page table.

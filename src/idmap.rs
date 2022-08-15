@@ -8,7 +8,7 @@
 
 use crate::{
     paging::{
-        deallocate, Attributes, MemoryRegion, PageTable, PhysicalAddress, Translation, Ttbr,
+        deallocate, Attributes, MemoryRegion, PageTable, PhysicalAddress, Translation, VaRange,
         VirtualAddress,
     },
     MapError, Mapping,
@@ -99,7 +99,7 @@ impl IdMap {
     /// Creates a new identity-mapping page table with the given ASID and root level.
     pub fn new(asid: usize, rootlevel: usize) -> Self {
         Self {
-            mapping: Mapping::new(IdTranslation, asid, rootlevel, Ttbr::Ttbr0),
+            mapping: Mapping::new(IdTranslation, asid, rootlevel, VaRange::Lower),
         }
     }
 

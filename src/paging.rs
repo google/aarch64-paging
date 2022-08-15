@@ -10,6 +10,7 @@ use crate::MapError;
 use alloc::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
 use bitflags::bitflags;
 use core::fmt::{self, Debug, Display, Formatter};
+use core::marker::PhantomData;
 use core::ops::{Add, Range, Sub};
 use core::ptr::NonNull;
 
@@ -131,8 +132,8 @@ fn granularity_at_level(level: usize) -> usize {
 /// physical addresses used in the page tables can be converted into virtual addresses that can be
 /// used to access their contents from the code.
 pub trait Translation {
-    /// Allocates a page, which is already mapped, to be used for a new subtable of some pagetable.
-    /// Returns both a pointer to the page and its physical address.
+    /// Allocates a zeroed page, which is already mapped, to be used for a new subtable of some
+    /// pagetable. Returns both a pointer to the page and its physical address.
     fn allocate_table(&self) -> (NonNull<PageTable>, PhysicalAddress);
 
     /// Deallocates the page which was previous allocated by [`allocate_table`](Self::allocate_table).
@@ -198,14 +199,14 @@ impl Debug for MemoryRegion {
 }
 
 /// A complete hierarchy of page tables including all levels.
-#[derive(Debug)]
-pub struct RootTable<T: Translation + Clone> {
+pub struct RootTable<T: Translation> {
     table: PageTableWithLevel<T>,
+    translation: T,
     pa: PhysicalAddress,
     va_range: VaRange,
 }
 
-impl<T: Translation + Clone> RootTable<T> {
+impl<T: Translation> RootTable<T> {
     /// Creates a new page table starting at the given root level.
     ///
     /// The level must be between 0 and 3; level -1 (for 52-bit addresses with LPA2) is not
@@ -215,9 +216,10 @@ impl<T: Translation + Clone> RootTable<T> {
         if level > LEAF_LEVEL {
             panic!("Invalid root table level {}.", level);
         }
-        let (table, pa) = PageTableWithLevel::new(translation, level);
+        let (table, pa) = PageTableWithLevel::new(&translation, level);
         RootTable {
             table,
+            translation,
             pa,
             va_range,
         }
@@ -261,7 +263,7 @@ impl<T: Translation + Clone> RootTable<T> {
             }
         }
 
-        self.table.map_range(range, pa, flags);
+        self.table.map_range(&self.translation, range, pa, flags);
 
         Ok(())
     }
@@ -278,7 +280,7 @@ impl<T: Translation + Clone> RootTable<T> {
 
     /// Returns a reference to the translation used for this page table.
     pub fn translation(&self) -> &T {
-        &self.table.translation
+        &self.translation
     }
 
     /// Returns the level of mapping used for the given virtual address:
@@ -287,13 +289,25 @@ impl<T: Translation + Clone> RootTable<T> {
     /// - `Some(level)` if it is mapped as a block at `level`
     #[cfg(test)]
     pub(crate) fn mapping_level(&self, va: VirtualAddress) -> Option<usize> {
-        self.table.mapping_level(va)
+        self.table.mapping_level(&self.translation, va)
     }
 }
 
-impl<T: Translation + Clone> Drop for RootTable<T> {
+impl<T: Translation> Debug for RootTable<T> {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        writeln!(
+            f,
+            "RootTable {{ pa: {}, level: {}, table:",
+            self.pa, self.table.level
+        )?;
+        self.table.fmt_indented(f, &self.translation, 0)?;
+        write!(f, "}}")
+    }
+}
+
+impl<T: Translation> Drop for RootTable<T> {
     fn drop(&mut self) {
-        self.table.free()
+        self.table.free(&self.translation)
     }
 }
 
@@ -360,28 +374,33 @@ bitflags! {
 /// Smart pointer which owns a [`PageTable`] and knows what level it is at. This allows it to
 /// implement `Debug` and `Drop`, as walking the page table hierachy requires knowing the starting
 /// level.
+#[derive(Debug)]
 struct PageTableWithLevel<T: Translation> {
     table: NonNull<PageTable>,
-    translation: T,
     level: usize,
+    _translation: PhantomData<T>,
 }
 
-impl<T: Translation + Clone> PageTableWithLevel<T> {
+impl<T: Translation> PageTableWithLevel<T> {
     /// Allocates a new, zeroed, appropriately-aligned page table with the given translation,
     /// returning both a pointer to it and its physical address.
-    fn new(translation: T, level: usize) -> (Self, PhysicalAddress) {
+    fn new(translation: &T, level: usize) -> (Self, PhysicalAddress) {
         assert!(level <= LEAF_LEVEL);
         let (table, pa) = translation.allocate_table();
         (
-            Self {
-                // Safe because the pointer has been allocated with the appropriate layout by the global
-                // allocator, and the memory is zeroed which is valid initialisation for a PageTable.
-                table,
-                translation,
-                level,
-            },
+            // Safe because the pointer has been allocated with the appropriate layout, and the
+            // memory is zeroed which is valid initialisation for a PageTable.
+            Self::from_pointer(table, level),
             pa,
         )
+    }
+
+    fn from_pointer(table: NonNull<PageTable>, level: usize) -> Self {
+        Self {
+            table,
+            level,
+            _translation: PhantomData::default(),
+        }
     }
 
     /// Returns a reference to the descriptor corresponding to a given virtual address.
@@ -415,8 +434,13 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
     /// Panics if the `translation` doesn't provide a corresponding physical address for some
     /// virtual address within the range, as there is no way to roll back to a safe state so this
     /// should be checked by the caller beforehand.
-    fn map_range(&mut self, range: &MemoryRegion, mut pa: PhysicalAddress, flags: Attributes) {
-        let translation = self.translation.clone();
+    fn map_range(
+        &mut self,
+        translation: &T,
+        range: &MemoryRegion,
+        mut pa: PhysicalAddress,
+        flags: Attributes,
+    ) {
         let level = self.level;
         let granularity = granularity_at_level(level);
 
@@ -435,28 +459,38 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
                 // a table mapping.
                 entry.set(pa, flags | Attributes::ACCESSED);
             } else {
-                let mut subtable = if let Some(subtable) = entry.subtable(&translation, level) {
+                let mut subtable = if let Some(subtable) = entry.subtable(translation, level) {
                     subtable
                 } else {
                     let old = *entry;
-                    let (mut subtable, subtable_pa) = Self::new(translation.clone(), level + 1);
+                    let (mut subtable, subtable_pa) = Self::new(translation, level + 1);
                     if let (Some(old_flags), Some(old_pa)) = (old.flags(), old.output_address()) {
                         // Old was a valid block entry, so we need to split it.
                         // Recreate the entire block in the newly added table.
                         let a = align_down(chunk.0.start.0, granularity);
                         let b = align_up(chunk.0.end.0, granularity);
-                        subtable.map_range(&MemoryRegion::new(a, b), old_pa, old_flags);
+                        subtable.map_range(
+                            translation,
+                            &MemoryRegion::new(a, b),
+                            old_pa,
+                            old_flags,
+                        );
                     }
                     entry.set(subtable_pa, Attributes::TABLE_OR_PAGE);
                     subtable
                 };
-                subtable.map_range(&chunk, pa, flags);
+                subtable.map_range(translation, &chunk, pa, flags);
             }
             pa.0 += chunk.len();
         }
     }
 
-    fn fmt_indented(&self, f: &mut Formatter, indentation: usize) -> Result<(), fmt::Error> {
+    fn fmt_indented(
+        &self,
+        f: &mut Formatter,
+        translation: &T,
+        indentation: usize,
+    ) -> Result<(), fmt::Error> {
         // Safe because we know that the pointer is aligned, initialised and dereferencable, and the
         // PageTable won't be mutated while we are using it.
         let table = unsafe { self.table.as_ref() };
@@ -475,8 +509,8 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
                 }
             } else {
                 writeln!(f, "{:indentation$}{}: {:?}", "", i, table.entries[i])?;
-                if let Some(subtable) = table.entries[i].subtable(&self.translation, self.level) {
-                    subtable.fmt_indented(f, indentation + 2)?;
+                if let Some(subtable) = table.entries[i].subtable(translation, self.level) {
+                    subtable.fmt_indented(f, translation, indentation + 2)?;
                 }
                 i += 1;
             }
@@ -486,22 +520,22 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
 
     /// Frees the memory used by this pagetable and all subtables. It is not valid to access the
     /// page table after this.
-    fn free(&mut self) {
+    fn free(&mut self, translation: &T) {
         // Safe because we know that the pointer is aligned, initialised and dereferencable, and the
         // PageTable won't be mutated while we are freeing it.
         let table = unsafe { self.table.as_ref() };
         for entry in table.entries {
-            if let Some(mut subtable) = entry.subtable(&self.translation, self.level) {
+            if let Some(mut subtable) = entry.subtable(translation, self.level) {
                 // Safe because the subtable was allocated by `PageTableWithLevel::new` with the
                 // global allocator and appropriate layout.
-                subtable.free();
+                subtable.free(translation);
             }
         }
         // Safe because the table was allocated by `PageTableWithLevel::new` with the global
         // allocator and appropriate layout.
         unsafe {
             // Actually free the memory used by the `PageTable`.
-            self.translation.deallocate_table(self.table);
+            translation.deallocate_table(self.table);
         }
     }
 
@@ -510,10 +544,10 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
     /// - `Some(LEAF_LEVEL)` if it is mapped as a single page
     /// - `Some(level)` if it is mapped as a block at `level`
     #[cfg(test)]
-    fn mapping_level(&self, va: VirtualAddress) -> Option<usize> {
+    fn mapping_level(&self, translation: &T, va: VirtualAddress) -> Option<usize> {
         let entry = self.get_entry(va);
-        if let Some(subtable) = entry.subtable(&self.translation, self.level) {
-            subtable.mapping_level(va)
+        if let Some(subtable) = entry.subtable(translation, self.level) {
+            subtable.mapping_level(translation, va)
         } else {
             if entry.is_valid() {
                 Some(self.level)
@@ -521,14 +555,6 @@ impl<T: Translation + Clone> PageTableWithLevel<T> {
                 None
             }
         }
-    }
-}
-
-impl<T: Translation + Clone> Debug for PageTableWithLevel<T> {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        writeln!(f, "PageTableWithLevel {{ level: {}, table:", self.level)?;
-        self.fmt_indented(f, 0)?;
-        write!(f, "}}")
     }
 }
 
@@ -595,7 +621,7 @@ impl Descriptor {
         self.0 = pa.0 | (flags | Attributes::VALID).bits();
     }
 
-    fn subtable<T: Translation + Clone>(
+    fn subtable<T: Translation>(
         &self,
         translation: &T,
         level: usize,
@@ -603,11 +629,7 @@ impl Descriptor {
         if level < LEAF_LEVEL && self.is_table_or_page() {
             if let Some(output_address) = self.output_address() {
                 let table = translation.physical_to_virtual(output_address);
-                return Some(PageTableWithLevel {
-                    level: level + 1,
-                    table,
-                    translation: translation.clone(),
-                });
+                return Some(PageTableWithLevel::from_pointer(table, level + 1));
             }
         }
         None

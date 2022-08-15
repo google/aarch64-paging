@@ -32,7 +32,7 @@ pub enum VaRange {
     /// will be used with `TTBR0`.
     Lower,
     /// The page table covers the top of the virtual address space (ending at address
-    /// 0xffffffffffffffff), so will be used with `TTBR1`.
+    /// 0xffff_ffff_ffff_ffff), so will be used with `TTBR1`.
     Upper,
 }
 

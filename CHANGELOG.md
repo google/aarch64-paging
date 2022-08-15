@@ -7,9 +7,11 @@
 - Made `Translation` trait responsible for allocating page tables. This should help make it possible
   to use more complex mapping schemes, and to construct page tables in a different context to where
   they are used.
-- Renamed `AddressRangeError` to `MapError`, which is now an enum with two variants and implements
+- Renamed `AddressRangeError` to `MapError`, which is now an enum with three variants and implements
   `Display`.
 - `From<*const T>` and `From<*mut T>` are no longer implemented for `VirtualAddress`.
+- Added support for using TTBR1 as well as TTBR0; this changes various constructors to take an extra
+  parameter.
 
 ### New features
 

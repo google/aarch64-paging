@@ -379,13 +379,13 @@ mod tests {
 
         // The first page in the region covered by TTBR1.
         assert_eq!(
-            translation.virtual_to_physical(VirtualAddress(0xffffff8000000000)),
+            translation.virtual_to_physical(VirtualAddress(0xffff_ff80_0000_0000)),
             Ok(PhysicalAddress(0))
         );
         // The last page in the region covered by TTBR1.
         assert_eq!(
-            translation.virtual_to_physical(VirtualAddress(0xfffffffffffff000)),
-            Ok(PhysicalAddress(0x7ffffff000))
+            translation.virtual_to_physical(VirtualAddress(0xffff_ffff_ffff_f000)),
+            Ok(PhysicalAddress(0x7f_ffff_f000))
         );
     }
 

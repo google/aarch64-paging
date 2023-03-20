@@ -822,4 +822,46 @@ mod tests {
     fn add_physical_address() {
         assert_eq!(PhysicalAddress(0x1234) + 0x42, PhysicalAddress(0x1276));
     }
+
+    #[test]
+    fn invalid_descriptor() {
+        let desc = Descriptor(0usize);
+        assert!(!desc.is_valid());
+        assert!(!desc.flags().unwrap().contains(Attributes::VALID));
+    }
+
+    #[test]
+    fn set_descriptor() {
+        let mut desc = Descriptor(0usize);
+        assert!(!desc.is_valid());
+        desc.set(
+            PhysicalAddress(0x12340000),
+            Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1,
+        );
+        assert!(desc.is_valid());
+        assert_eq!(
+            desc.flags().unwrap(),
+            Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1 | Attributes::VALID
+        );
+        assert_eq!(desc.output_address().unwrap(), PhysicalAddress(0x12340000));
+    }
+
+    #[test]
+    fn modify_descriptor_flags() {
+        let mut desc = Descriptor(0usize);
+        assert!(!desc.is_valid());
+        desc.set(
+            PhysicalAddress(0x12340000),
+            Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1,
+        );
+        desc.modify_flags(
+            Attributes::DBM | Attributes::SWFLAG_3,
+            Attributes::VALID | Attributes::SWFLAG_1,
+        );
+        assert!(!desc.is_valid());
+        assert_eq!(
+            desc.flags().unwrap(),
+            Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_3 | Attributes::DBM
+        );
+    }
 }

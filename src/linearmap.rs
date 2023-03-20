@@ -430,4 +430,47 @@ mod tests {
             Some(2)
         );
     }
+
+    fn make_map() -> LinearMap {
+        let mut lmap = LinearMap::new(1, 1, 4096, VaRange::Lower);
+        // Mapping VA range 0x0 - 0x2000 to PA range 0x1000 - 0x3000
+        lmap.map_range(&MemoryRegion::new(0, PAGE_SIZE * 2), Attributes::NORMAL)
+            .unwrap();
+        lmap
+    }
+
+    #[test]
+    fn update_backwards_range() {
+        let mut lmap = make_map();
+        assert!(lmap
+            .modify_range(
+                &MemoryRegion::new(PAGE_SIZE * 2, 1),
+                &|_range, entry, _level| {
+                    entry
+                        .modify_flags(Attributes::SWFLAG_0, Attributes::from_bits(0usize).unwrap());
+                    Ok(())
+                },
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn update_range() {
+        let mut lmap = make_map();
+        lmap.modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|_range, entry, level| {
+            if level == 3 || !entry.is_table_or_page() {
+                entry.modify_flags(Attributes::SWFLAG_0, Attributes::from_bits(0usize).unwrap());
+            }
+            Ok(())
+        })
+        .unwrap();
+        lmap.modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|range, entry, level| {
+            if level == 3 || !entry.is_table_or_page() {
+                assert!(entry.flags().unwrap().contains(Attributes::SWFLAG_0));
+                assert_eq!(range.end() - range.start(), PAGE_SIZE);
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
 }

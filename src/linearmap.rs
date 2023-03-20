@@ -8,8 +8,8 @@
 
 use crate::{
     paging::{
-        deallocate, is_aligned, Attributes, MemoryRegion, PageTable, PhysicalAddress, Translation,
-        VaRange, VirtualAddress, PAGE_SIZE,
+        deallocate, is_aligned, Attributes, MemoryRegion, PageTable, PhysicalAddress, PteUpdater,
+        Translation, VaRange, VirtualAddress, PAGE_SIZE,
     },
     MapError, Mapping,
 };
@@ -155,6 +155,25 @@ impl LinearMap {
             .translation()
             .virtual_to_physical(range.start())?;
         self.mapping.map_range(range, pa, flags)
+    }
+
+    /// Applies the provided updater function to a number of PTEs corresponding to a given memory range.
+    ///
+    /// The virtual address range passed to the updater function may be expanded compared to the
+    /// `range` parameter, due to alignment to block boundaries.
+    ///
+    /// This should generally only be called while the page table is not active. In particular, any
+    /// change that may require break-before-make per the architecture must be made while the page
+    /// table is inactive. Mapping a previously unmapped memory range may be done while the page
+    /// table is active.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MapError::PteUpdateFault`] if the updater function returns an error.
+    ///
+    /// Returns [`MapError::RegionBackwards`] if the range is backwards.
+    pub fn modify_range(&mut self, range: &MemoryRegion, f: &PteUpdater) -> Result<(), MapError> {
+        self.mapping.modify_range(range, f)
     }
 }
 

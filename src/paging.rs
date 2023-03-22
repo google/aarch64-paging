@@ -654,7 +654,7 @@ pub struct Descriptor(usize);
 impl Descriptor {
     const PHYSICAL_ADDRESS_BITMASK: usize = !(PAGE_SIZE - 1) & !(0xffff << 48);
 
-    fn output_address(&self) -> Option<PhysicalAddress> {
+    fn output_address(self) -> Option<PhysicalAddress> {
         if self.is_valid() {
             Some(PhysicalAddress(self.0 & Self::PHYSICAL_ADDRESS_BITMASK))
         } else {
@@ -692,7 +692,7 @@ impl Descriptor {
     }
 
     fn subtable<T: Translation>(
-        &self,
+        self,
         translation: &T,
         level: usize,
     ) -> Option<PageTableWithLevel<T>> {

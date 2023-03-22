@@ -759,7 +759,7 @@ pub(crate) const fn is_aligned(value: usize, alignment: usize) -> bool {
 mod tests {
     use super::*;
     #[cfg(feature = "alloc")]
-    use alloc::{format, string::ToString};
+    use alloc::{format, string::ToString, vec, vec::Vec};
 
     #[cfg(feature = "alloc")]
     #[test]
@@ -860,6 +860,20 @@ mod tests {
         assert_eq!(
             desc.flags().unwrap(),
             Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_3 | Attributes::DBM
+        );
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn unaligned_chunks() {
+        let region = MemoryRegion::new(0x0000_2000, 0x0020_5000);
+        let chunks = region.split(LEAF_LEVEL - 1).collect::<Vec<_>>();
+        assert_eq!(
+            chunks,
+            vec![
+                MemoryRegion::new(0x0000_2000, 0x0020_0000),
+                MemoryRegion::new(0x0020_0000, 0x0020_5000),
+            ]
         );
     }
 }

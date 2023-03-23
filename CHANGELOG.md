@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- Updated `bitflags` to 2.0.2, which changes the API of `Attributes` a bit.
+
 ### New features
 
 - Added `modify_range` method to `IdMap`, `LinearMap` and `Mapping` to update details of a mapped

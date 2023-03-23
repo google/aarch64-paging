@@ -198,6 +198,24 @@ impl Debug for MemoryRegion {
     }
 }
 
+/// A page table entry updater function; called repeatedly to update the state of a
+/// range of page table entries.
+///
+/// # Arguments
+///
+/// The updater function receives the following arguments:
+///
+/// - The full virtual address range mapped by the page table entry, which may be different than
+///   the original range passed to `modify_range`, due to alignment to block boundaries.
+/// - A page table entry whose state it may update.
+/// - The level of a translation table the entry belongs to.
+///
+/// # Return
+///
+/// - `Ok` to continue updating the remaining entries.
+/// - `Err` to signal an error during an update and stop updating the remaining entries.
+pub type PteUpdater = dyn Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()>;
+
 /// A complete hierarchy of page tables including all levels.
 pub struct RootTable<T: Translation> {
     table: PageTableWithLevel<T>,
@@ -243,28 +261,8 @@ impl<T: Translation> RootTable<T> {
         pa: PhysicalAddress,
         flags: Attributes,
     ) -> Result<(), MapError> {
-        if range.end() < range.start() {
-            return Err(MapError::RegionBackwards(range.clone()));
-        }
-        match self.va_range {
-            VaRange::Lower => {
-                if (range.start().0 as isize) < 0 {
-                    return Err(MapError::AddressRange(range.start()));
-                } else if range.end().0 > self.size() {
-                    return Err(MapError::AddressRange(range.end()));
-                }
-            }
-            VaRange::Upper => {
-                if range.start().0 as isize >= 0
-                    || (range.start().0 as isize).unsigned_abs() > self.size()
-                {
-                    return Err(MapError::AddressRange(range.start()));
-                }
-            }
-        }
-
+        self.verify_region(range)?;
         self.table.map_range(&self.translation, range, pa, flags);
-
         Ok(())
     }
 
@@ -283,6 +281,11 @@ impl<T: Translation> RootTable<T> {
         &self.translation
     }
 
+    pub fn modify_range(&mut self, range: &MemoryRegion, f: &PteUpdater) -> Result<(), MapError> {
+        self.verify_region(range)?;
+        self.table.modify_range(&self.translation, range, f)
+    }
+
     /// Returns the level of mapping used for the given virtual address:
     /// - `None` if it is unmapped
     /// - `Some(LEAF_LEVEL)` if it is mapped as a single page
@@ -290,6 +293,30 @@ impl<T: Translation> RootTable<T> {
     #[cfg(test)]
     pub(crate) fn mapping_level(&self, va: VirtualAddress) -> Option<usize> {
         self.table.mapping_level(&self.translation, va)
+    }
+
+    /// Checks whether the region is within range of the page table.
+    fn verify_region(&self, region: &MemoryRegion) -> Result<(), MapError> {
+        if region.end() < region.start() {
+            return Err(MapError::RegionBackwards(region.clone()));
+        }
+        match self.va_range {
+            VaRange::Lower => {
+                if (region.start().0 as isize) < 0 {
+                    return Err(MapError::AddressRange(region.start()));
+                } else if region.end().0 > self.size() {
+                    return Err(MapError::AddressRange(region.end()));
+                }
+            }
+            VaRange::Upper => {
+                if region.start().0 as isize >= 0
+                    || (region.start().0 as isize).unsigned_abs() > self.size()
+                {
+                    return Err(MapError::AddressRange(region.start()));
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -367,7 +394,14 @@ bitflags! {
         const READ_ONLY     = 1 << 7;
         const ACCESSED      = 1 << 10;
         const NON_GLOBAL    = 1 << 11;
+        const DBM           = 1 << 51;
         const EXECUTE_NEVER = 3 << 53;
+
+        /// Software flags in block and page descriptor entries.
+        const SWFLAG_0 = 1 << 55;
+        const SWFLAG_1 = 1 << 56;
+        const SWFLAG_2 = 1 << 57;
+        const SWFLAG_3 = 1 << 58;
     }
 }
 
@@ -539,6 +573,37 @@ impl<T: Translation> PageTableWithLevel<T> {
         }
     }
 
+    /// Aligns a range to granularity at current level.
+    fn align_to_granularity(&self, range: &MemoryRegion) -> MemoryRegion {
+        let granularity = granularity_at_level(self.level);
+        MemoryRegion::new(
+            align_down(range.0.start.0, granularity),
+            align_up(range.0.end.0, granularity),
+        )
+    }
+
+    /// Modifies a range of page table entries by applying a function to each page table entry.
+    /// If the range is not aligned to block boundaries, it will be expanded.
+    fn modify_range(
+        &mut self,
+        translation: &T,
+        range: &MemoryRegion,
+        f: &PteUpdater,
+    ) -> Result<(), MapError> {
+        let level = self.level;
+        for chunk in range.split(level) {
+            // VA range passed to the updater is aligned to block boundaries, as that region will
+            // be affected by changes to the entry.
+            let affected_range = self.align_to_granularity(&chunk);
+            let entry = self.get_entry_mut(chunk.0.start);
+            f(&affected_range, entry, level).map_err(|_| MapError::PteUpdateFault(*entry))?;
+            if let Some(mut subtable) = entry.subtable(translation, level) {
+                subtable.modify_range(translation, &chunk, f)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Returns the level of mapping used for the given virtual address:
     /// - `None` if it is unmapped
     /// - `Some(LEAF_LEVEL)` if it is mapped as a single page
@@ -582,43 +647,48 @@ impl PageTable {
 ///   - A page mapping, if it is in the lowest level page table.
 ///   - A block mapping, if it is not in the lowest level page table.
 ///   - A pointer to a lower level pagetable, if it is not in the lowest level page table.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
-struct Descriptor(usize);
+pub struct Descriptor(usize);
 
 impl Descriptor {
+    const PHYSICAL_ADDRESS_BITMASK: usize = !(PAGE_SIZE - 1) & !(0xffff << 48);
+
     fn output_address(&self) -> Option<PhysicalAddress> {
         if self.is_valid() {
-            Some(PhysicalAddress(
-                self.0 & (!(PAGE_SIZE - 1) & !(0xffff << 48)),
-            ))
+            Some(PhysicalAddress(self.0 & Self::PHYSICAL_ADDRESS_BITMASK))
         } else {
             None
         }
     }
 
-    fn flags(self) -> Option<Attributes> {
-        if self.is_valid() {
-            Attributes::from_bits(self.0 & ((PAGE_SIZE - 1) | (0xffff << 48)))
-        } else {
-            None
-        }
+    /// Returns the flags of this page table entry, or `None` if its state does not
+    /// contain a valid set of flags.
+    pub fn flags(self) -> Option<Attributes> {
+        Attributes::from_bits(self.0 & !Self::PHYSICAL_ADDRESS_BITMASK)
     }
 
-    fn is_valid(self) -> bool {
+    /// Modifies the page table entry by setting or clearing its flags.
+    pub fn modify_flags(&mut self, set: Attributes, clear: Attributes) {
+        self.0 = (self.0 | set.bits()) & !clear.bits();
+    }
+
+    /// Returns `true` if [`Attributes::VALID`] is set on this entry, e.g. if the entry is mapped.
+    pub fn is_valid(self) -> bool {
         (self.0 & Attributes::VALID.bits()) != 0
     }
 
-    fn is_table_or_page(self) -> bool {
+    /// Returns `true` if this is a valid entry pointing to a next level translation table or a page.
+    pub fn is_table_or_page(self) -> bool {
         if let Some(flags) = self.flags() {
-            flags.contains(Attributes::TABLE_OR_PAGE)
+            flags.contains(Attributes::TABLE_OR_PAGE | Attributes::VALID)
         } else {
             false
         }
     }
 
     fn set(&mut self, pa: PhysicalAddress, flags: Attributes) {
-        self.0 = pa.0 | (flags | Attributes::VALID).bits();
+        self.0 = (pa.0 & Self::PHYSICAL_ADDRESS_BITMASK) | (flags | Attributes::VALID).bits();
     }
 
     fn subtable<T: Translation>(
@@ -751,5 +821,47 @@ mod tests {
     #[test]
     fn add_physical_address() {
         assert_eq!(PhysicalAddress(0x1234) + 0x42, PhysicalAddress(0x1276));
+    }
+
+    #[test]
+    fn invalid_descriptor() {
+        let desc = Descriptor(0usize);
+        assert!(!desc.is_valid());
+        assert!(!desc.flags().unwrap().contains(Attributes::VALID));
+    }
+
+    #[test]
+    fn set_descriptor() {
+        let mut desc = Descriptor(0usize);
+        assert!(!desc.is_valid());
+        desc.set(
+            PhysicalAddress(0x12340000),
+            Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1,
+        );
+        assert!(desc.is_valid());
+        assert_eq!(
+            desc.flags().unwrap(),
+            Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1 | Attributes::VALID
+        );
+        assert_eq!(desc.output_address().unwrap(), PhysicalAddress(0x12340000));
+    }
+
+    #[test]
+    fn modify_descriptor_flags() {
+        let mut desc = Descriptor(0usize);
+        assert!(!desc.is_valid());
+        desc.set(
+            PhysicalAddress(0x12340000),
+            Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1,
+        );
+        desc.modify_flags(
+            Attributes::DBM | Attributes::SWFLAG_3,
+            Attributes::VALID | Attributes::SWFLAG_1,
+        );
+        assert!(!desc.is_valid());
+        assert_eq!(
+            desc.flags().unwrap(),
+            Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_3 | Attributes::DBM
+        );
     }
 }

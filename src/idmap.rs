@@ -8,8 +8,8 @@
 
 use crate::{
     paging::{
-        deallocate, Attributes, MemoryRegion, PageTable, PhysicalAddress, Translation, VaRange,
-        VirtualAddress,
+        deallocate, Attributes, MemoryRegion, PageTable, PhysicalAddress, PteUpdater, Translation,
+        VaRange, VirtualAddress,
     },
     MapError, Mapping,
 };
@@ -140,6 +140,25 @@ impl IdMap {
         let pa = IdTranslation::virtual_to_physical(range.start());
         self.mapping.map_range(range, pa, flags)
     }
+
+    /// Applies the provided updater function to a number of PTEs corresponding to a given memory range.
+    ///
+    /// The virtual address range passed to the updater function may be expanded compared to the
+    /// `range` parameter, due to alignment to block boundaries.
+    ///
+    /// This should generally only be called while the page table is not active. In particular, any
+    /// change that may require break-before-make per the architecture must be made while the page
+    /// table is inactive. Mapping a previously unmapped memory range may be done while the page
+    /// table is active.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MapError::PteUpdateFault`] if the updater function returns an error.
+    ///
+    /// Returns [`MapError::RegionBackwards`] if the range is backwards.
+    pub fn modify_range(&mut self, range: &MemoryRegion, f: &PteUpdater) -> Result<(), MapError> {
+        self.mapping.modify_range(range, f)
+    }
 }
 
 #[cfg(test)]
@@ -147,7 +166,7 @@ mod tests {
     use super::*;
     use crate::{
         paging::{Attributes, MemoryRegion, PAGE_SIZE},
-        MapError,
+        MapError, VirtualAddress,
     };
 
     const MAX_ADDRESS_FOR_ROOT_LEVEL_1: usize = 1 << 39;
@@ -230,5 +249,54 @@ mod tests {
                 MAX_ADDRESS_FOR_ROOT_LEVEL_1 + PAGE_SIZE
             )))
         );
+    }
+
+    fn make_map() -> IdMap {
+        let mut idmap = IdMap::new(1, 1);
+        idmap
+            .map_range(
+                &MemoryRegion::new(0, PAGE_SIZE * 2),
+                Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::READ_ONLY,
+            )
+            .unwrap();
+        idmap
+    }
+
+    #[test]
+    fn update_backwards_range() {
+        let mut idmap = make_map();
+        assert!(idmap
+            .modify_range(
+                &MemoryRegion::new(PAGE_SIZE * 2, 1),
+                &|_range, entry, _level| {
+                    entry
+                        .modify_flags(Attributes::SWFLAG_0, Attributes::from_bits(0usize).unwrap());
+                    Ok(())
+                },
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn update_range() {
+        let mut idmap = make_map();
+        idmap
+            .modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|_range, entry, level| {
+                if level == 3 || !entry.is_table_or_page() {
+                    entry
+                        .modify_flags(Attributes::SWFLAG_0, Attributes::from_bits(0usize).unwrap());
+                }
+                Ok(())
+            })
+            .unwrap();
+        idmap
+            .modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|range, entry, level| {
+                if level == 3 || !entry.is_table_or_page() {
+                    assert!(entry.flags().unwrap().contains(Attributes::SWFLAG_0));
+                    assert_eq!(range.end() - range.start(), PAGE_SIZE);
+                }
+                Ok(())
+            })
+            .unwrap();
     }
 }

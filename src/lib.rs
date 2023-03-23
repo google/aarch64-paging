@@ -54,7 +54,8 @@ extern crate alloc;
 use core::arch::asm;
 use core::fmt::{self, Display, Formatter};
 use paging::{
-    Attributes, MemoryRegion, PhysicalAddress, RootTable, Translation, VaRange, VirtualAddress,
+    Attributes, Descriptor, MemoryRegion, PhysicalAddress, PteUpdater, RootTable, Translation,
+    VaRange, VirtualAddress,
 };
 
 /// An error attempting to map some range in the page table.
@@ -67,6 +68,8 @@ pub enum MapError {
     InvalidVirtualAddress(VirtualAddress),
     /// The end of the memory region is before the start.
     RegionBackwards(MemoryRegion),
+    /// There was an error while updating a page table entry.
+    PteUpdateFault(Descriptor),
 }
 
 impl Display for MapError {
@@ -78,6 +81,9 @@ impl Display for MapError {
             }
             Self::RegionBackwards(region) => {
                 write!(f, "End of memory region {} is before start.", region)
+            }
+            Self::PteUpdateFault(desc) => {
+                write!(f, "Error updating page table entry {:?}", desc)
             }
         }
     }
@@ -196,6 +202,31 @@ impl<T: Translation + Clone> Mapping<T> {
         flags: Attributes,
     ) -> Result<(), MapError> {
         self.root.map_range(range, pa, flags)?;
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            // Safe because this is just a memory barrier.
+            asm!("dsb ishst");
+        }
+        Ok(())
+    }
+
+    /// Applies the provided updater function to a number of PTEs corresponding to a given memory range.
+    ///
+    /// The virtual address range passed to the updater function may be expanded compared to the
+    /// `range` parameter, due to alignment to block boundaries.
+    ///
+    /// This should generally only be called while the page table is not active. In particular, any
+    /// change that may require break-before-make per the architecture must be made while the page
+    /// table is inactive. Mapping a previously unmapped memory range may be done while the page
+    /// table is active.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MapError::PteUpdateFault`] if the updater function returns an error.
+    ///
+    /// Returns [`MapError::RegionBackwards`] if the range is backwards.
+    pub fn modify_range(&mut self, range: &MemoryRegion, f: &PteUpdater) -> Result<(), MapError> {
+        self.root.modify_range(range, f)?;
         #[cfg(target_arch = "aarch64")]
         unsafe {
             // Safe because this is just a memory barrier.

@@ -195,6 +195,13 @@ impl<T: Translation + Clone> Mapping<T> {
     /// change that may require break-before-make per the architecture must be made while the page
     /// table is inactive. Mapping a previously unmapped memory range may be done while the page
     /// table is active.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MapError::RegionBackwards`] if the range is backwards.
+    ///
+    /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
+    /// largest virtual address covered by the page table given its root level.
     pub fn map_range(
         &mut self,
         range: &MemoryRegion,
@@ -225,6 +232,9 @@ impl<T: Translation + Clone> Mapping<T> {
     /// Returns [`MapError::PteUpdateFault`] if the updater function returns an error.
     ///
     /// Returns [`MapError::RegionBackwards`] if the range is backwards.
+    ///
+    /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
+    /// largest virtual address covered by the page table given its root level.
     pub fn modify_range(&mut self, range: &MemoryRegion, f: &PteUpdater) -> Result<(), MapError> {
         self.root.modify_range(range, f)?;
         #[cfg(target_arch = "aarch64")]

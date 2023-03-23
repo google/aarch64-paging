@@ -146,6 +146,8 @@ impl LinearMap {
     /// Returns [`MapError::InvalidVirtualAddress`] if adding the configured offset to any virtual
     /// address within the `range` would result in overflow.
     ///
+    /// Returns [`MapError::RegionBackwards`] if the range is backwards.
+    ///
     /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
     /// largest virtual address covered by the page table given its root level.
     pub fn map_range(&mut self, range: &MemoryRegion, flags: Attributes) -> Result<(), MapError> {
@@ -172,6 +174,9 @@ impl LinearMap {
     /// Returns [`MapError::PteUpdateFault`] if the updater function returns an error.
     ///
     /// Returns [`MapError::RegionBackwards`] if the range is backwards.
+    ///
+    /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
+    /// largest virtual address covered by the page table given its root level.
     pub fn modify_range(&mut self, range: &MemoryRegion, f: &PteUpdater) -> Result<(), MapError> {
         self.mapping.modify_range(range, f)
     }

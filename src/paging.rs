@@ -178,6 +178,20 @@ impl MemoryRegion {
     pub const fn is_empty(&self) -> bool {
         self.0.start.0 == self.0.end.0
     }
+
+    fn split(&self, level: usize) -> ChunkedIterator {
+        ChunkedIterator {
+            range: self,
+            granularity: granularity_at_level(level),
+            start: self.0.start.0,
+        }
+    }
+
+    /// Returns whether this region can be mapped at 'level' using block mappings only.
+    fn is_block(&self, level: usize) -> bool {
+        let gran = granularity_at_level(level);
+        (self.0.start.0 | self.0.end.0) & (gran - 1) == 0
+    }
 }
 
 impl From<Range<VirtualAddress>> for MemoryRegion {
@@ -360,22 +374,6 @@ impl Iterator for ChunkedIterator<'_> {
         let c = MemoryRegion::new(self.start, end);
         self.start = end;
         Some(c)
-    }
-}
-
-impl MemoryRegion {
-    fn split(&self, level: usize) -> ChunkedIterator {
-        ChunkedIterator {
-            range: self,
-            granularity: granularity_at_level(level),
-            start: self.0.start.0,
-        }
-    }
-
-    /// Returns whether this region can be mapped at 'level' using block mappings only.
-    fn is_block(&self, level: usize) -> bool {
-        let gran = granularity_at_level(level);
-        (self.0.start.0 | self.0.end.0) & (gran - 1) == 0
     }
 }
 
@@ -654,7 +652,7 @@ pub struct Descriptor(usize);
 impl Descriptor {
     const PHYSICAL_ADDRESS_BITMASK: usize = !(PAGE_SIZE - 1) & !(0xffff << 48);
 
-    fn output_address(&self) -> Option<PhysicalAddress> {
+    fn output_address(self) -> Option<PhysicalAddress> {
         if self.is_valid() {
             Some(PhysicalAddress(self.0 & Self::PHYSICAL_ADDRESS_BITMASK))
         } else {
@@ -692,7 +690,7 @@ impl Descriptor {
     }
 
     fn subtable<T: Translation>(
-        &self,
+        self,
         translation: &T,
         level: usize,
     ) -> Option<PageTableWithLevel<T>> {

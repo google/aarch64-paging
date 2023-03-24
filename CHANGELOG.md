@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### New features
+
+- Added `modify_range` method to `IdMap`, `LinearMap` and `Mapping` to update details of a mapped
+  range. This can be used e.g. to change flags for some range which is already mapped. As part of
+  this, the `Descriptor` struct was added to the public API.
+- Added `DBM` and software flags to `Attributes`.
+
 ## 0.3.0
 
 ### Breaking changes

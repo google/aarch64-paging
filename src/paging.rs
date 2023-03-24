@@ -192,6 +192,15 @@ impl MemoryRegion {
         let gran = granularity_at_level(level);
         (self.0.start.0 | self.0.end.0) & (gran - 1) == 0
     }
+
+    /// Returns a new `MemoryRegion` based on this one but with the start aligned down and the end
+    /// aligned up to the given alignment.
+    fn align_out(&self, alignment: usize) -> Self {
+        Self(
+            VirtualAddress(align_down(self.0.start.0, alignment))
+                ..VirtualAddress(align_up(self.0.end.0, alignment)),
+        )
+    }
 }
 
 impl From<Range<VirtualAddress>> for MemoryRegion {
@@ -571,15 +580,6 @@ impl<T: Translation> PageTableWithLevel<T> {
         }
     }
 
-    /// Aligns a range to granularity at current level.
-    fn align_to_granularity(&self, range: &MemoryRegion) -> MemoryRegion {
-        let granularity = granularity_at_level(self.level);
-        MemoryRegion::new(
-            align_down(range.0.start.0, granularity),
-            align_up(range.0.end.0, granularity),
-        )
-    }
-
     /// Modifies a range of page table entries by applying a function to each page table entry.
     /// If the range is not aligned to block boundaries, it will be expanded.
     fn modify_range(
@@ -592,7 +592,7 @@ impl<T: Translation> PageTableWithLevel<T> {
         for chunk in range.split(level) {
             // VA range passed to the updater is aligned to block boundaries, as that region will
             // be affected by changes to the entry.
-            let affected_range = self.align_to_granularity(&chunk);
+            let affected_range = chunk.align_out(granularity_at_level(level));
             let entry = self.get_entry_mut(chunk.0.start);
             f(&affected_range, entry, level).map_err(|_| MapError::PteUpdateFault(*entry))?;
             if let Some(mut subtable) = entry.subtable(translation, level) {

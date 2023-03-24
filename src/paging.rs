@@ -388,6 +388,7 @@ impl Iterator for ChunkedIterator<'_> {
 
 bitflags! {
     /// Attribute bits for a mapping in a page table.
+    #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
     pub struct Attributes: usize {
         const VALID         = 1 << 0;
         const TABLE_OR_PAGE = 1 << 1;

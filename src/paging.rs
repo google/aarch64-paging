@@ -538,6 +538,7 @@ impl<T: Translation> PageTableWithLevel<T> {
         translation: &T,
         indentation: usize,
     ) -> Result<(), fmt::Error> {
+        const WIDTH: usize = 3;
         // Safe because we know that the pointer is aligned, initialised and dereferencable, and the
         // PageTable won't be mutated while we are using it.
         let table = unsafe { self.table.as_ref() };
@@ -550,12 +551,16 @@ impl<T: Translation> PageTableWithLevel<T> {
                     i += 1;
                 }
                 if i - 1 == first_zero {
-                    writeln!(f, "{:indentation$}{}: 0", "", first_zero)?;
+                    writeln!(f, "{:indentation$}{: <WIDTH$}: 0", "", first_zero)?;
                 } else {
-                    writeln!(f, "{:indentation$}{}-{}: 0", "", first_zero, i - 1)?;
+                    writeln!(f, "{:indentation$}{: <WIDTH$}-{}: 0", "", first_zero, i - 1)?;
                 }
             } else {
-                writeln!(f, "{:indentation$}{}: {:?}", "", i, table.entries[i])?;
+                writeln!(
+                    f,
+                    "{:indentation$}{: <WIDTH$}: {:?}",
+                    "", i, table.entries[i],
+                )?;
                 if let Some(subtable) = table.entries[i].subtable(translation, self.level) {
                     subtable.fmt_indented(f, translation, indentation + 2)?;
                 }
@@ -708,8 +713,10 @@ impl Descriptor {
 impl Debug for Descriptor {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
         write!(f, "{:#016x}", self.0)?;
-        if let (Some(flags), Some(address)) = (self.flags(), self.output_address()) {
-            write!(f, " ({}, {:?})", address, flags)?;
+        if self.is_valid() {
+            if let Some(flags) = self.flags() {
+                write!(f, " ({}, {:?})", self.output_address(), flags)?;
+            }
         }
         Ok(())
     }

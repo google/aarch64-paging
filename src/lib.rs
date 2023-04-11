@@ -194,7 +194,8 @@ impl<T: Translation + Clone> Mapping<T> {
     /// This should generally only be called while the page table is not active. In particular, any
     /// change that may require break-before-make per the architecture must be made while the page
     /// table is inactive. Mapping a previously unmapped memory range may be done while the page
-    /// table is active.
+    /// table is active. This function writes block and page entries, but only maps them if `flags`
+    /// contains `Attributes::VALID`, otherwise the entries remain invalid.
     ///
     /// # Errors
     ///

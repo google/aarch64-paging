@@ -275,7 +275,8 @@ impl<T: Translation> RootTable<T> {
     }
 
     /// Recursively maps a range into the pagetable hierarchy starting at the root level, mapping
-    /// the pages to the corresponding physical address range starting at `pa`.
+    /// the pages to the corresponding physical address range starting at `pa`. Block and page
+    /// entries will be written to, but will only be mapped if `flags` contains `Attributes::VALID`.
     ///
     /// Returns an error if the virtual address range is out of the range covered by the pagetable
     pub fn map_range(
@@ -469,7 +470,8 @@ impl<T: Translation> PageTableWithLevel<T> {
     }
 
     /// Maps the the given virtual address range in this pagetable to the corresponding physical
-    /// address range starting at the given `pa`, recursing into any subtables as necessary.
+    /// address range starting at the given `pa`, recursing into any subtables as necessary. To map
+    /// block and page entries, `Attributes::VALID` must be set in `flags`.
     ///
     /// Assumes that the entire range is within the range covered by this pagetable.
     ///
@@ -506,19 +508,22 @@ impl<T: Translation> PageTableWithLevel<T> {
                 } else {
                     let old = *entry;
                     let (mut subtable, subtable_pa) = Self::new(translation, level + 1);
-                    if let (Some(old_flags), Some(old_pa)) = (old.flags(), old.output_address()) {
-                        // Old was a valid block entry, so we need to split it.
-                        // Recreate the entire block in the newly added table.
-                        let a = align_down(chunk.0.start.0, granularity);
-                        let b = align_up(chunk.0.end.0, granularity);
-                        subtable.map_range(
-                            translation,
-                            &MemoryRegion::new(a, b),
-                            old_pa,
-                            old_flags,
-                        );
+                    if let Some(old_flags) = old.flags() {
+                        if !old_flags.contains(Attributes::TABLE_OR_PAGE) {
+                            let old_pa = old.output_address();
+                            // `old` was a block entry, so we need to split it.
+                            // Recreate the entire block in the newly added table.
+                            let a = align_down(chunk.0.start.0, granularity);
+                            let b = align_up(chunk.0.end.0, granularity);
+                            subtable.map_range(
+                                translation,
+                                &MemoryRegion::new(a, b),
+                                old_pa,
+                                old_flags,
+                            );
+                        }
                     }
-                    entry.set(subtable_pa, Attributes::TABLE_OR_PAGE);
+                    entry.set(subtable_pa, Attributes::TABLE_OR_PAGE | Attributes::VALID);
                     subtable
                 };
                 subtable.map_range(translation, &chunk, pa, flags);
@@ -653,12 +658,8 @@ pub struct Descriptor(usize);
 impl Descriptor {
     const PHYSICAL_ADDRESS_BITMASK: usize = !(PAGE_SIZE - 1) & !(0xffff << 48);
 
-    fn output_address(self) -> Option<PhysicalAddress> {
-        if self.is_valid() {
-            Some(PhysicalAddress(self.0 & Self::PHYSICAL_ADDRESS_BITMASK))
-        } else {
-            None
-        }
+    fn output_address(self) -> PhysicalAddress {
+        PhysicalAddress(self.0 & Self::PHYSICAL_ADDRESS_BITMASK)
     }
 
     /// Returns the flags of this page table entry, or `None` if its state does not
@@ -687,7 +688,7 @@ impl Descriptor {
     }
 
     fn set(&mut self, pa: PhysicalAddress, flags: Attributes) {
-        self.0 = (pa.0 & Self::PHYSICAL_ADDRESS_BITMASK) | (flags | Attributes::VALID).bits();
+        self.0 = (pa.0 & Self::PHYSICAL_ADDRESS_BITMASK) | flags.bits();
     }
 
     fn subtable<T: Translation>(
@@ -696,10 +697,9 @@ impl Descriptor {
         level: usize,
     ) -> Option<PageTableWithLevel<T>> {
         if level < LEAF_LEVEL && self.is_table_or_page() {
-            if let Some(output_address) = self.output_address() {
-                let table = translation.physical_to_virtual(output_address);
-                return Some(PageTableWithLevel::from_pointer(table, level + 1));
-            }
+            let output_address = self.output_address();
+            let table = translation.physical_to_virtual(output_address);
+            return Some(PageTableWithLevel::from_pointer(table, level + 1));
         }
         None
     }

@@ -71,7 +71,7 @@ impl Translation for IdTranslation {
 /// // Map a 2 MiB region of memory as read-write.
 /// idmap.map_range(
 ///     &MemoryRegion::new(0x80200000, 0x80400000),
-///     Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::EXECUTE_NEVER,
+///     Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::EXECUTE_NEVER | Attributes::VALID,
 /// ).unwrap();
 /// // Set `TTBR0_EL1` to activate the page table.
 /// # #[cfg(target_arch = "aarch64")]
@@ -85,7 +85,7 @@ impl Translation for IdTranslation {
 /// // Now change the mapping to read-only and executable.
 /// idmap.map_range(
 ///     &MemoryRegion::new(0x80200000, 0x80400000),
-///     Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::READ_ONLY,
+///     Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::READ_ONLY | Attributes::VALID,
 /// ).unwrap();
 /// # #[cfg(target_arch = "aarch64")]
 /// idmap.activate();
@@ -182,14 +182,20 @@ mod tests {
         // A single byte at the start of the address space.
         let mut idmap = IdMap::new(1, 1);
         assert_eq!(
-            idmap.map_range(&MemoryRegion::new(0, 1), Attributes::NORMAL),
+            idmap.map_range(
+                &MemoryRegion::new(0, 1),
+                Attributes::NORMAL | Attributes::VALID
+            ),
             Ok(())
         );
 
         // Two pages at the start of the address space.
         let mut idmap = IdMap::new(1, 1);
         assert_eq!(
-            idmap.map_range(&MemoryRegion::new(0, PAGE_SIZE * 2), Attributes::NORMAL),
+            idmap.map_range(
+                &MemoryRegion::new(0, PAGE_SIZE * 2),
+                Attributes::NORMAL | Attributes::VALID
+            ),
             Ok(())
         );
 
@@ -201,7 +207,7 @@ mod tests {
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1 - 1,
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1
                 ),
-                Attributes::NORMAL
+                Attributes::NORMAL | Attributes::VALID
             ),
             Ok(())
         );
@@ -211,7 +217,7 @@ mod tests {
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(PAGE_SIZE * 1023, PAGE_SIZE * 1025),
-                Attributes::NORMAL
+                Attributes::NORMAL | Attributes::VALID
             ),
             Ok(())
         );
@@ -221,7 +227,7 @@ mod tests {
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
-                Attributes::NORMAL
+                Attributes::NORMAL | Attributes::VALID
             ),
             Ok(())
         );
@@ -238,7 +244,7 @@ mod tests {
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1,
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1 + 1,
                 ),
-                Attributes::NORMAL
+                Attributes::NORMAL | Attributes::VALID
             ),
             Err(MapError::AddressRange(VirtualAddress(
                 MAX_ADDRESS_FOR_ROOT_LEVEL_1 + PAGE_SIZE
@@ -249,7 +255,7 @@ mod tests {
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1 + 1,),
-                Attributes::NORMAL
+                Attributes::NORMAL | Attributes::VALID
             ),
             Err(MapError::AddressRange(VirtualAddress(
                 MAX_ADDRESS_FOR_ROOT_LEVEL_1 + PAGE_SIZE
@@ -262,7 +268,10 @@ mod tests {
         idmap
             .map_range(
                 &MemoryRegion::new(0, PAGE_SIZE * 2),
-                Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::READ_ONLY,
+                Attributes::NORMAL
+                    | Attributes::NON_GLOBAL
+                    | Attributes::READ_ONLY
+                    | Attributes::VALID,
             )
             .unwrap();
         idmap
@@ -303,6 +312,37 @@ mod tests {
                 }
                 Ok(())
             })
+            .unwrap();
+    }
+
+    #[test]
+    fn breakup_invalid_block() {
+        const BLOCK_RANGE: usize = 0x200000;
+        let mut idmap = IdMap::new(1, 1);
+        idmap
+            .map_range(
+                &MemoryRegion::new(0, BLOCK_RANGE),
+                Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::SWFLAG_0,
+            )
+            .unwrap();
+        idmap
+            .map_range(
+                &MemoryRegion::new(0, PAGE_SIZE),
+                Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::VALID,
+            )
+            .unwrap();
+        idmap
+            .modify_range(
+                &MemoryRegion::new(0, BLOCK_RANGE),
+                &|range, entry, level| {
+                    if level == 3 {
+                        let has_swflag = entry.flags().unwrap().contains(Attributes::SWFLAG_0);
+                        let is_first_page = range.start().0 == 0usize;
+                        assert!(has_swflag != is_first_page);
+                    }
+                    Ok(())
+                },
+            )
             .unwrap();
     }
 }

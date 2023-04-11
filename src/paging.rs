@@ -838,18 +838,19 @@ mod tests {
 
     #[test]
     fn set_descriptor() {
+        const PHYSICAL_ADDRESS: usize = 0x12340000;
         let mut desc = Descriptor(0usize);
         assert!(!desc.is_valid());
         desc.set(
-            PhysicalAddress(0x12340000),
-            Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1,
+            PhysicalAddress(PHYSICAL_ADDRESS),
+            Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1 | Attributes::VALID,
         );
         assert!(desc.is_valid());
         assert_eq!(
             desc.flags().unwrap(),
             Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1 | Attributes::VALID
         );
-        assert_eq!(desc.output_address().unwrap(), PhysicalAddress(0x12340000));
+        assert_eq!(desc.output_address(), PhysicalAddress(PHYSICAL_ADDRESS));
     }
 
     #[test]

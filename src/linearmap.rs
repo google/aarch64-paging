@@ -139,7 +139,8 @@ impl LinearMap {
     /// This should generally only be called while the page table is not active. In particular, any
     /// change that may require break-before-make per the architecture must be made while the page
     /// table is inactive. Mapping a previously unmapped memory range may be done while the page
-    /// table is active.
+    /// table is active. This function writes block and page entries, but only maps them if `flags`
+    /// contains `Attributes::VALID`, otherwise the entries remain invalid.
     ///
     /// # Errors
     ///
@@ -199,14 +200,20 @@ mod tests {
         // A single byte at the start of the address space.
         let mut pagetable = LinearMap::new(1, 1, 4096, VaRange::Lower);
         assert_eq!(
-            pagetable.map_range(&MemoryRegion::new(0, 1), Attributes::NORMAL),
+            pagetable.map_range(
+                &MemoryRegion::new(0, 1),
+                Attributes::NORMAL | Attributes::VALID
+            ),
             Ok(())
         );
 
         // Two pages at the start of the address space.
         let mut pagetable = LinearMap::new(1, 1, 4096, VaRange::Lower);
         assert_eq!(
-            pagetable.map_range(&MemoryRegion::new(0, PAGE_SIZE * 2), Attributes::NORMAL),
+            pagetable.map_range(
+                &MemoryRegion::new(0, PAGE_SIZE * 2),
+                Attributes::NORMAL | Attributes::VALID
+            ),
             Ok(())
         );
 
@@ -218,7 +225,7 @@ mod tests {
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1 - 1,
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1
                 ),
-                Attributes::NORMAL
+                Attributes::NORMAL | Attributes::VALID
             ),
             Ok(())
         );
@@ -230,7 +237,7 @@ mod tests {
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
-                Attributes::NORMAL
+                Attributes::NORMAL | Attributes::VALID
             ),
             Ok(())
         );
@@ -243,7 +250,7 @@ mod tests {
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(PAGE_SIZE, PAGE_SIZE + 1),
-                Attributes::NORMAL
+                Attributes::NORMAL | Attributes::VALID
             ),
             Ok(())
         );
@@ -253,7 +260,7 @@ mod tests {
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(PAGE_SIZE, PAGE_SIZE * 3),
-                Attributes::NORMAL
+                Attributes::NORMAL | Attributes::VALID
             ),
             Ok(())
         );
@@ -266,7 +273,7 @@ mod tests {
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1 - 1,
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1
                 ),
-                Attributes::NORMAL
+                Attributes::NORMAL | Attributes::VALID
             ),
             Ok(())
         );
@@ -278,7 +285,7 @@ mod tests {
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(LEVEL_2_BLOCK_SIZE, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
-                Attributes::NORMAL
+                Attributes::NORMAL | Attributes::VALID
             ),
             Ok(())
         );
@@ -295,7 +302,7 @@ mod tests {
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1,
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1 + 1,
                 ),
-                Attributes::NORMAL
+                Attributes::NORMAL | Attributes::VALID
             ),
             Err(MapError::AddressRange(VirtualAddress(
                 MAX_ADDRESS_FOR_ROOT_LEVEL_1 + PAGE_SIZE
@@ -306,7 +313,7 @@ mod tests {
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1 + 1),
-                Attributes::NORMAL
+                Attributes::NORMAL | Attributes::VALID
             ),
             Err(MapError::AddressRange(VirtualAddress(
                 MAX_ADDRESS_FOR_ROOT_LEVEL_1 + PAGE_SIZE
@@ -418,7 +425,10 @@ mod tests {
         // Test that block mapping is used when the PA is appropriately aligned...
         let mut pagetable = LinearMap::new(1, 1, 1 << 30, VaRange::Lower);
         pagetable
-            .map_range(&MemoryRegion::new(0, 1 << 30), Attributes::NORMAL)
+            .map_range(
+                &MemoryRegion::new(0, 1 << 30),
+                Attributes::NORMAL | Attributes::VALID,
+            )
             .unwrap();
         assert_eq!(
             pagetable.mapping.root.mapping_level(VirtualAddress(0)),
@@ -428,7 +438,10 @@ mod tests {
         // ...but not when it is not.
         let mut pagetable = LinearMap::new(1, 1, 1 << 29, VaRange::Lower);
         pagetable
-            .map_range(&MemoryRegion::new(0, 1 << 30), Attributes::NORMAL)
+            .map_range(
+                &MemoryRegion::new(0, 1 << 30),
+                Attributes::NORMAL | Attributes::VALID,
+            )
             .unwrap();
         assert_eq!(
             pagetable.mapping.root.mapping_level(VirtualAddress(0)),
@@ -476,6 +489,35 @@ mod tests {
             }
             Ok(())
         })
+        .unwrap();
+    }
+
+    #[test]
+    fn breakup_invalid_block() {
+        const BLOCK_RANGE: usize = 0x200000;
+
+        let mut lmap = LinearMap::new(1, 1, 0x1000, VaRange::Lower);
+        lmap.map_range(
+            &MemoryRegion::new(0, BLOCK_RANGE),
+            Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::SWFLAG_0,
+        )
+        .unwrap();
+        lmap.map_range(
+            &MemoryRegion::new(0, PAGE_SIZE),
+            Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::VALID,
+        )
+        .unwrap();
+        lmap.modify_range(
+            &MemoryRegion::new(0, BLOCK_RANGE),
+            &|range, entry, level| {
+                if level == 3 {
+                    let has_swflag = entry.flags().unwrap().contains(Attributes::SWFLAG_0);
+                    let is_first_page = range.start().0 == 0usize;
+                    assert!(has_swflag != is_first_page);
+                }
+                Ok(())
+            },
+        )
         .unwrap();
     }
 }

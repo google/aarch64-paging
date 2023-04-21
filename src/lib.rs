@@ -31,7 +31,7 @@
 //! // Map a 2 MiB region of memory as read-only.
 //! idmap.map_range(
 //!     &MemoryRegion::new(0x80200000, 0x80400000),
-//!     Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::READ_ONLY,
+//!     Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::READ_ONLY | Attributes::VALID,
 //! ).unwrap();
 //! // Set `TTBR0_EL1` to activate the page table.
 //! # #[cfg(target_arch = "aarch64")]
@@ -194,7 +194,8 @@ impl<T: Translation + Clone> Mapping<T> {
     /// This should generally only be called while the page table is not active. In particular, any
     /// change that may require break-before-make per the architecture must be made while the page
     /// table is inactive. Mapping a previously unmapped memory range may be done while the page
-    /// table is active.
+    /// table is active. This function writes block and page entries, but only maps them if `flags`
+    /// contains `Attributes::VALID`, otherwise the entries remain invalid.
     ///
     /// # Errors
     ///

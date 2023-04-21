@@ -5,6 +5,8 @@
 ### Breaking changes
 
 - Updated `bitflags` to 2.0.2, which changes the API of `Attributes` a bit.
+- Updated `map_range` method to support mapping leaf page table entries without the `VALID` flag.
+  `Attributes::VALID` is no longer implicitly set when mapping leaf page table entries.
 
 ### New features
 

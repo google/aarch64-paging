@@ -426,7 +426,7 @@ struct PageTableWithLevel<T: Translation> {
 
 // SAFETY: The underlying PageTable is process-wide and can be safely accessed from any thread
 // with appropriate synchronization. This type manages ownership for the raw pointer.
-unsafe impl <T: Translation + Send> Send for PageTableWithLevel<T> {}
+unsafe impl<T: Translation + Send> Send for PageTableWithLevel<T> {}
 
 impl<T: Translation> PageTableWithLevel<T> {
     /// Allocates a new, zeroed, appropriately-aligned page table with the given translation,

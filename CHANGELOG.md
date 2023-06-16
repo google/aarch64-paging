@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1
+
+### Bug fixes
+
+- `RootTable`, `Mapping`, `IdMap` and `LinearMap` are now correctly marked as `Send`, as it doesn't
+  matter where they are used from.
+
 ## 0.4.0
 
 ### Breaking changes

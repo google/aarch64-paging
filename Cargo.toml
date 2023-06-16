@@ -1,6 +1,6 @@
 [package]
 name = "aarch64-paging"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A library to manipulate AArch64 VMSA EL1 page tables."

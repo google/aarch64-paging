@@ -455,9 +455,9 @@ impl<T: Translation> PageTableWithLevel<T> {
     fn get_entry(&self, va: VirtualAddress) -> &Descriptor {
         let shift = PAGE_SHIFT + (LEAF_LEVEL - self.level) * BITS_PER_LEVEL;
         let index = (va.0 >> shift) % (1 << BITS_PER_LEVEL);
-        // Safe because we know that the pointer is properly aligned, dereferenced and initialised,
-        // and nothing else can access the page table while we hold a mutable reference to the
-        // PageTableWithLevel (assuming it is not currently active).
+        // SAFETY: Safe because we know that the pointer is properly aligned, dereferenced and
+        // initialised, and nothing else can access the page table while we hold a mutable reference
+        // to the PageTableWithLevel (assuming it is not currently active).
         let table = unsafe { self.table.as_ref() };
         &table.entries[index]
     }
@@ -466,9 +466,9 @@ impl<T: Translation> PageTableWithLevel<T> {
     fn get_entry_mut(&mut self, va: VirtualAddress) -> &mut Descriptor {
         let shift = PAGE_SHIFT + (LEAF_LEVEL - self.level) * BITS_PER_LEVEL;
         let index = (va.0 >> shift) % (1 << BITS_PER_LEVEL);
-        // Safe because we know that the pointer is properly aligned, dereferenced and initialised,
-        // and nothing else can access the page table while we hold a mutable reference to the
-        // PageTableWithLevel (assuming it is not currently active).
+        // SAFETY: Safe because we know that the pointer is properly aligned, dereferenced and
+        // initialised, and nothing else can access the page table while we hold a mutable reference
+        // to the PageTableWithLevel (assuming it is not currently active).
         let table = unsafe { self.table.as_mut() };
         &mut table.entries[index]
     }
@@ -543,8 +543,8 @@ impl<T: Translation> PageTableWithLevel<T> {
         indentation: usize,
     ) -> Result<(), fmt::Error> {
         const WIDTH: usize = 3;
-        // Safe because we know that the pointer is aligned, initialised and dereferencable, and the
-        // PageTable won't be mutated while we are using it.
+        // SAFETY: Safe because we know that the pointer is aligned, initialised and dereferencable,
+        // and the PageTable won't be mutated while we are using it.
         let table = unsafe { self.table.as_ref() };
 
         let mut i = 0;
@@ -577,8 +577,8 @@ impl<T: Translation> PageTableWithLevel<T> {
     /// Frees the memory used by this pagetable and all subtables. It is not valid to access the
     /// page table after this.
     fn free(&mut self, translation: &T) {
-        // Safe because we know that the pointer is aligned, initialised and dereferencable, and the
-        // PageTable won't be mutated while we are freeing it.
+        // SAFETY: Safe because we know that the pointer is aligned, initialised and dereferencable,
+        // and the PageTable won't be mutated while we are freeing it.
         let table = unsafe { self.table.as_ref() };
         for entry in table.entries {
             if let Some(mut subtable) = entry.subtable(translation, self.level) {
@@ -587,7 +587,7 @@ impl<T: Translation> PageTableWithLevel<T> {
                 subtable.free(translation);
             }
         }
-        // Safe because the table was allocated by `PageTableWithLevel::new` with the global
+        // SAFETY: Safe because the table was allocated by `PageTableWithLevel::new` with the global
         // allocator and appropriate layout.
         unsafe {
             // Actually free the memory used by the `PageTable`.
@@ -647,8 +647,8 @@ impl PageTable {
     /// allocator and returns a pointer to it.
     #[cfg(feature = "alloc")]
     pub fn new() -> NonNull<Self> {
-        // Safe because the pointer has been allocated with the appropriate layout by the global
-        // allocator, and the memory is zeroed which is valid initialisation for a PageTable.
+        // SAFETY: Safe because the pointer has been allocated with the appropriate layout by the
+        // global allocator, and the memory is zeroed which is valid initialisation for a PageTable.
         unsafe { allocate_zeroed() }
     }
 }

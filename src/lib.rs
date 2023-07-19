@@ -40,6 +40,7 @@
 //! ```
 
 #![no_std]
+#![deny(clippy::undocumented_unsafe_blocks)]
 
 #[cfg(feature = "alloc")]
 pub mod idmap;
@@ -125,10 +126,10 @@ impl<T: Translation + Clone> Mapping<T> {
         assert!(self.previous_ttbr.is_none());
 
         let mut previous_ttbr;
+        // SAFETY: Safe because we trust that self.root.to_physical() returns a valid physical
+        // address of a page table, and the `Drop` implementation will reset `TTBRn_EL1` before it
+        // becomes invalid.
         unsafe {
-            // Safe because we trust that self.root.to_physical() returns a valid physical address
-            // of a page table, and the `Drop` implementation will reset `TTBRn_EL1` before it
-            // becomes invalid.
             match self.root.va_range() {
                 VaRange::Lower => asm!(
                     "mrs   {previous_ttbr}, ttbr0_el1",
@@ -159,9 +160,9 @@ impl<T: Translation + Clone> Mapping<T> {
     /// called.
     #[cfg(target_arch = "aarch64")]
     pub fn deactivate(&mut self) {
+        // SAFETY: Safe because this just restores the previously saved value of `TTBRn_EL1`, which
+        // must have been valid.
         unsafe {
-            // Safe because this just restores the previously saved value of `TTBRn_EL1`, which must
-            // have been valid.
             match self.root.va_range() {
                 VaRange::Lower => asm!(
                     "msr   ttbr0_el1, {ttbrval}",
@@ -211,8 +212,8 @@ impl<T: Translation + Clone> Mapping<T> {
     ) -> Result<(), MapError> {
         self.root.map_range(range, pa, flags)?;
         #[cfg(target_arch = "aarch64")]
+        // SAFETY: Safe because this is just a memory barrier.
         unsafe {
-            // Safe because this is just a memory barrier.
             asm!("dsb ishst");
         }
         Ok(())
@@ -239,8 +240,8 @@ impl<T: Translation + Clone> Mapping<T> {
     pub fn modify_range(&mut self, range: &MemoryRegion, f: &PteUpdater) -> Result<(), MapError> {
         self.root.modify_range(range, f)?;
         #[cfg(target_arch = "aarch64")]
+        // SAFETY: Safe because this is just a memory barrier.
         unsafe {
-            // Safe because this is just a memory barrier.
             asm!("dsb ishst");
         }
         Ok(())

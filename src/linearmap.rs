@@ -8,8 +8,8 @@
 
 use crate::{
     paging::{
-        deallocate, is_aligned, Attributes, MemoryRegion, PageTable, PhysicalAddress, PteUpdater,
-        Translation, VaRange, VirtualAddress, PAGE_SIZE,
+        deallocate, is_aligned, Attributes, Descriptor, MemoryRegion, PageTable, PhysicalAddress,
+        PteUpdater, Translation, VaRange, VirtualAddress, PAGE_SIZE,
     },
     MapError, Mapping,
 };
@@ -180,6 +180,24 @@ impl LinearMap {
     /// largest virtual address covered by the page table given its root level.
     pub fn modify_range(&mut self, range: &MemoryRegion, f: &PteUpdater) -> Result<(), MapError> {
         self.mapping.modify_range(range, f)
+    }
+
+    /// Applies the provided function to a number of PTEs corresponding to a given memory range.
+    ///
+    /// The virtual address range passed to the updater function may be expanded compared to the
+    /// `range` parameter, due to alignment to block boundaries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MapError::RegionBackwards`] if the range is backwards.
+    ///
+    /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
+    /// largest virtual address covered by the page table given its root level.
+    pub fn walk_range<F>(&self, range: &MemoryRegion, f: &mut F) -> Result<(), MapError>
+    where
+        F: FnMut(&MemoryRegion, &Descriptor, usize),
+    {
+        self.mapping.walk_range(range, f)
     }
 }
 

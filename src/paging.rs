@@ -310,6 +310,14 @@ impl<T: Translation> RootTable<T> {
         self.table.modify_range(&self.translation, range, f)
     }
 
+    pub fn walk_range<F>(&self, range: &MemoryRegion, f: &mut F) -> Result<(), MapError>
+    where
+        F: FnMut(&MemoryRegion, &Descriptor, usize),
+    {
+        self.verify_region(range)?;
+        self.table.walk_range(&self.translation, range, f)
+    }
+
     /// Returns the level of mapping used for the given virtual address:
     /// - `None` if it is unmapped
     /// - `Some(LEAF_LEVEL)` if it is mapped as a single page
@@ -451,7 +459,6 @@ impl<T: Translation> PageTableWithLevel<T> {
     }
 
     /// Returns a reference to the descriptor corresponding to a given virtual address.
-    #[cfg(test)]
     fn get_entry(&self, va: VirtualAddress) -> &Descriptor {
         let shift = PAGE_SHIFT + (LEAF_LEVEL - self.level) * BITS_PER_LEVEL;
         let index = (va.0 >> shift) % (1 << BITS_PER_LEVEL);
@@ -612,6 +619,32 @@ impl<T: Translation> PageTableWithLevel<T> {
             f(&affected_range, entry, level).map_err(|_| MapError::PteUpdateFault(*entry))?;
             if let Some(mut subtable) = entry.subtable(translation, level) {
                 subtable.modify_range(translation, &chunk, f)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Walks a range of page table entries and passes each one to a caller provided function
+    /// If the range is not aligned to block boundaries, it will be expanded.
+    fn walk_range<F>(
+        &self,
+        translation: &T,
+        range: &MemoryRegion,
+        f: &mut F,
+    ) -> Result<(), MapError>
+    where
+        F: FnMut(&MemoryRegion, &Descriptor, usize),
+    {
+        let level = self.level;
+        for chunk in range.split(level) {
+            // VA range passed to the callback function is aligned to block boundaries, as that
+            // entire region is covered by the descriptor in question
+            let entry = self.get_entry(chunk.0.start);
+            if let Some(subtable) = entry.subtable(translation, level) {
+                subtable.walk_range(translation, &chunk, f)?;
+            } else {
+                let affected_range = chunk.align_out(granularity_at_level(level));
+                f(&affected_range, entry, level);
             }
         }
         Ok(())

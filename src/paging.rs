@@ -616,9 +616,10 @@ impl<T: Translation> PageTableWithLevel<T> {
             // be affected by changes to the entry.
             let affected_range = chunk.align_out(granularity_at_level(level));
             let entry = self.get_entry_mut(chunk.0.start);
-            f(&affected_range, entry, level).map_err(|_| MapError::PteUpdateFault(*entry))?;
             if let Some(mut subtable) = entry.subtable(translation, level) {
                 subtable.modify_range(translation, &chunk, f)?;
+            } else {
+                f(&affected_range, entry, level).map_err(|_| MapError::PteUpdateFault(*entry))?;
             }
         }
         Ok(())
@@ -711,8 +712,15 @@ impl Descriptor {
     }
 
     /// Modifies the page table entry by setting or clearing its flags.
+    /// Panics when attempting to convert a table descriptor into a block/page descriptor or vice
+    /// versa - this is not supported via this API.
     pub fn modify_flags(&mut self, set: Attributes, clear: Attributes) {
-        self.0 = (self.0 | set.bits()) & !clear.bits();
+        let flags = (self.0 | set.bits()) & !clear.bits();
+
+        if (self.0 ^ flags) & Attributes::TABLE_OR_PAGE.bits() != 0 {
+            panic!("Cannot convert between table and block/page descriptors\n");
+        }
+        self.0 = flags;
     }
 
     /// Returns `true` if [`Attributes::VALID`] is set on this entry, e.g. if the entry is mapped.
@@ -907,6 +915,18 @@ mod tests {
             desc.flags().unwrap(),
             Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_3 | Attributes::DBM
         );
+    }
+
+    #[test]
+    #[should_panic]
+    fn modify_descriptor_table_or_page_flag() {
+        let mut desc = Descriptor(0usize);
+        assert!(!desc.is_valid());
+        desc.set(
+            PhysicalAddress(0x12340000),
+            Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1,
+        );
+        desc.modify_flags(Attributes::VALID, Attributes::TABLE_OR_PAGE);
     }
 
     #[cfg(feature = "alloc")]

@@ -55,8 +55,8 @@ extern crate alloc;
 use core::arch::asm;
 use core::fmt::{self, Display, Formatter};
 use paging::{
-    Attributes, Descriptor, MemoryRegion, PhysicalAddress, PteUpdater, RootTable, Translation,
-    VaRange, VirtualAddress,
+    Attributes, Descriptor, MemoryRegion, PhysicalAddress, RootTable, Translation, VaRange,
+    VirtualAddress,
 };
 
 /// An error attempting to map some range in the page table.
@@ -237,7 +237,10 @@ impl<T: Translation + Clone> Mapping<T> {
     ///
     /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
     /// largest virtual address covered by the page table given its root level.
-    pub fn modify_range(&mut self, range: &MemoryRegion, f: &PteUpdater) -> Result<(), MapError> {
+    pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
+    where
+        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+    {
         self.root.modify_range(range, f)?;
         #[cfg(target_arch = "aarch64")]
         // SAFETY: Safe because this is just a memory barrier.

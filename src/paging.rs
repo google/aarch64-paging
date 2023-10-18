@@ -305,7 +305,10 @@ impl<T: Translation> RootTable<T> {
         &self.translation
     }
 
-    pub fn modify_range(&mut self, range: &MemoryRegion, f: &PteUpdater) -> Result<(), MapError> {
+    pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
+    where
+        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+    {
         self.verify_region(range)?;
         self.table.modify_range(&self.translation, range, f)
     }
@@ -604,12 +607,15 @@ impl<T: Translation> PageTableWithLevel<T> {
 
     /// Modifies a range of page table entries by applying a function to each page table entry.
     /// If the range is not aligned to block boundaries, it will be expanded.
-    fn modify_range(
+    fn modify_range<F>(
         &mut self,
         translation: &T,
         range: &MemoryRegion,
-        f: &PteUpdater,
-    ) -> Result<(), MapError> {
+        f: &F,
+    ) -> Result<(), MapError>
+    where
+        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+    {
         let level = self.level;
         for chunk in range.split(level) {
             // VA range passed to the updater is aligned to block boundaries, as that region will

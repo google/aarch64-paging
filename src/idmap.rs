@@ -8,8 +8,8 @@
 
 use crate::{
     paging::{
-        deallocate, Attributes, Descriptor, MemoryRegion, PageTable, PhysicalAddress, PteUpdater,
-        Translation, VaRange, VirtualAddress,
+        deallocate, Attributes, Descriptor, MemoryRegion, PageTable, PhysicalAddress, Translation,
+        VaRange, VirtualAddress,
     },
     MapError, Mapping,
 };
@@ -162,7 +162,10 @@ impl IdMap {
     ///
     /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
     /// largest virtual address covered by the page table given its root level.
-    pub fn modify_range(&mut self, range: &MemoryRegion, f: &PteUpdater) -> Result<(), MapError> {
+    pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
+    where
+        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+    {
         self.mapping.modify_range(range, f)
     }
 

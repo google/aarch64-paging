@@ -9,7 +9,7 @@
 use crate::{
     paging::{
         deallocate, is_aligned, Attributes, Descriptor, MemoryRegion, PageTable, PhysicalAddress,
-        PteUpdater, Translation, VaRange, VirtualAddress, PAGE_SIZE,
+        Translation, VaRange, VirtualAddress, PAGE_SIZE,
     },
     MapError, Mapping,
 };
@@ -178,7 +178,10 @@ impl LinearMap {
     ///
     /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
     /// largest virtual address covered by the page table given its root level.
-    pub fn modify_range(&mut self, range: &MemoryRegion, f: &PteUpdater) -> Result<(), MapError> {
+    pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
+    where
+        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+    {
         self.mapping.modify_range(range, f)
     }
 

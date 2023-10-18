@@ -221,8 +221,10 @@ impl<T: Translation + Clone> Mapping<T> {
 
     /// Applies the provided updater function to a number of PTEs corresponding to a given memory range.
     ///
-    /// The virtual address range passed to the updater function may be expanded compared to the
-    /// `range` parameter, due to alignment to block boundaries.
+    /// This may involve splitting block entries if the provided range is not currently mapped
+    /// down to its precise boundaries. For visiting all the descriptors covering a memory range
+    /// without potential splitting (and no descriptor updates), use
+    /// [`walk_range`](Self::walk_range) instead.
     ///
     /// This should generally only be called while the page table is not active. In particular, any
     /// change that may require break-before-make per the architecture must be made while the page

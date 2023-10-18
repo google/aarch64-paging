@@ -483,6 +483,31 @@ impl<T: Translation> PageTableWithLevel<T> {
         &mut table.entries[index]
     }
 
+    /// Convert the descriptor in `entry` from a block mapping to a table mapping of
+    /// the same range with the same attributes
+    fn split_entry(
+        translation: &T,
+        chunk: &MemoryRegion,
+        entry: &mut Descriptor,
+        level: usize,
+    ) -> Self {
+        let granularity = granularity_at_level(level);
+        let old = *entry;
+        let (mut subtable, subtable_pa) = Self::new(translation, level + 1);
+        if let Some(old_flags) = old.flags() {
+            if !old_flags.contains(Attributes::TABLE_OR_PAGE) {
+                let old_pa = old.output_address();
+                // `old` was a block entry, so we need to split it.
+                // Recreate the entire block in the newly added table.
+                let a = align_down(chunk.0.start.0, granularity);
+                let b = align_up(chunk.0.end.0, granularity);
+                subtable.map_range(translation, &MemoryRegion::new(a, b), old_pa, old_flags);
+            }
+        }
+        entry.set(subtable_pa, Attributes::TABLE_OR_PAGE | Attributes::VALID);
+        subtable
+    }
+
     /// Maps the the given virtual address range in this pagetable to the corresponding physical
     /// address range starting at the given `pa`, recursing into any subtables as necessary. To map
     /// block and page entries, `Attributes::VALID` must be set in `flags`.
@@ -517,29 +542,9 @@ impl<T: Translation> PageTableWithLevel<T> {
                 // a table mapping.
                 entry.set(pa, flags | Attributes::ACCESSED);
             } else {
-                let mut subtable = if let Some(subtable) = entry.subtable(translation, level) {
-                    subtable
-                } else {
-                    let old = *entry;
-                    let (mut subtable, subtable_pa) = Self::new(translation, level + 1);
-                    if let Some(old_flags) = old.flags() {
-                        if !old_flags.contains(Attributes::TABLE_OR_PAGE) {
-                            let old_pa = old.output_address();
-                            // `old` was a block entry, so we need to split it.
-                            // Recreate the entire block in the newly added table.
-                            let a = align_down(chunk.0.start.0, granularity);
-                            let b = align_up(chunk.0.end.0, granularity);
-                            subtable.map_range(
-                                translation,
-                                &MemoryRegion::new(a, b),
-                                old_pa,
-                                old_flags,
-                            );
-                        }
-                    }
-                    entry.set(subtable_pa, Attributes::TABLE_OR_PAGE | Attributes::VALID);
-                    subtable
-                };
+                let mut subtable = entry
+                    .subtable(translation, level)
+                    .unwrap_or_else(|| Self::split_entry(translation, &chunk, entry, level));
                 subtable.map_range(translation, &chunk, pa, flags);
             }
             pa.0 += chunk.len();
@@ -606,7 +611,7 @@ impl<T: Translation> PageTableWithLevel<T> {
     }
 
     /// Modifies a range of page table entries by applying a function to each page table entry.
-    /// If the range is not aligned to block boundaries, it will be expanded.
+    /// If the range is not aligned to block boundaries, block descriptors will be split up.
     fn modify_range<F>(
         &mut self,
         translation: &T,
@@ -618,14 +623,19 @@ impl<T: Translation> PageTableWithLevel<T> {
     {
         let level = self.level;
         for chunk in range.split(level) {
-            // VA range passed to the updater is aligned to block boundaries, as that region will
-            // be affected by changes to the entry.
-            let affected_range = chunk.align_out(granularity_at_level(level));
             let entry = self.get_entry_mut(chunk.0.start);
-            if let Some(mut subtable) = entry.subtable(translation, level) {
+            if let Some(mut subtable) = entry.subtable(translation, level).or_else(|| {
+                if !chunk.is_block(level) {
+                    // The current chunk is not aligned to the block size at this level
+                    // Split it before recursing to the next level
+                    Some(Self::split_entry(translation, &chunk, entry, level))
+                } else {
+                    None
+                }
+            }) {
                 subtable.modify_range(translation, &chunk, f)?;
             } else {
-                f(&affected_range, entry, level).map_err(|_| MapError::PteUpdateFault(*entry))?;
+                f(&chunk, entry, level).map_err(|_| MapError::PteUpdateFault(*entry))?;
             }
         }
         Ok(())

@@ -454,7 +454,7 @@ impl<T: Translation> PageTableWithLevel<T> {
         Self {
             table,
             level,
-            _translation: PhantomData::default(),
+            _translation: PhantomData,
         }
     }
 

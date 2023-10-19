@@ -16,7 +16,7 @@
 //!
 //! # Example
 //!
-//! ```
+//! ```no_run
 //! # #[cfg(feature = "alloc")] {
 //! use aarch64_paging::{
 //!     idmap::IdMap,
@@ -34,7 +34,6 @@
 //!     Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::READ_ONLY | Attributes::VALID,
 //! ).unwrap();
 //! // Set `TTBR0_EL1` to activate the page table.
-//! # #[cfg(target_arch = "aarch64")]
 //! idmap.activate();
 //! # }
 //! ```
@@ -116,16 +115,25 @@ impl<T: Translation + Clone> Mapping<T> {
         }
     }
 
+    /// Returns whether this mapping is currently active.
+    pub fn active(&self) -> bool {
+        self.previous_ttbr.is_some()
+    }
+
     /// Activates the page table by setting `TTBRn_EL1` to point to it, and saves the previous value
     /// of `TTBRn_EL1` so that it may later be restored by [`deactivate`](Self::deactivate).
     ///
     /// Panics if a previous value of `TTBRn_EL1` is already saved and not yet used by a call to
     /// `deactivate`.
-    #[cfg(target_arch = "aarch64")]
+    ///
+    /// In test builds or builds that do not target aarch64, the `TTBRn_EL1` access is omitted.
     pub fn activate(&mut self) {
-        assert!(self.previous_ttbr.is_none());
+        assert!(!self.active());
 
-        let mut previous_ttbr;
+        #[allow(unused)]
+        let mut previous_ttbr = usize::MAX;
+
+        #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: Safe because we trust that self.root.to_physical() returns a valid physical
         // address of a page table, and the `Drop` implementation will reset `TTBRn_EL1` before it
         // becomes invalid.
@@ -158,8 +166,12 @@ impl<T: Translation + Clone> Mapping<T> {
     ///
     /// Panics if there is no saved `TTBRn_EL1` value because `activate` has not previously been
     /// called.
-    #[cfg(target_arch = "aarch64")]
+    ///
+    /// In test builds or builds that do not target aarch64, the `TTBRn_EL1` access is omitted.
     pub fn deactivate(&mut self) {
+        assert!(self.active());
+
+        #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: Safe because this just restores the previously saved value of `TTBRn_EL1`, which
         // must have been valid.
         unsafe {

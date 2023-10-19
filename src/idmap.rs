@@ -173,13 +173,15 @@ impl IdMap {
     ///
     /// # Errors
     ///
+    /// Returns [`MapError::PteUpdateFault`] if the callback function returns an error.
+    ///
     /// Returns [`MapError::RegionBackwards`] if the range is backwards.
     ///
     /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
     /// largest virtual address covered by the page table given its root level.
     pub fn walk_range<F>(&self, range: &MemoryRegion, f: &mut F) -> Result<(), MapError>
     where
-        F: FnMut(&MemoryRegion, &Descriptor, usize),
+        F: FnMut(&MemoryRegion, &Descriptor, usize) -> Result<(), ()>,
     {
         self.mapping.walk_range(range, f)
     }

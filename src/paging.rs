@@ -312,7 +312,7 @@ impl<T: Translation> RootTable<T> {
 
     pub fn walk_range<F>(&self, range: &MemoryRegion, f: &mut F) -> Result<(), MapError>
     where
-        F: FnMut(&MemoryRegion, &Descriptor, usize),
+        F: FnMut(&MemoryRegion, &Descriptor, usize) -> Result<(), ()>,
     {
         self.verify_region(range)?;
         self.table.walk_range(&self.translation, range, f)
@@ -633,7 +633,7 @@ impl<T: Translation> PageTableWithLevel<T> {
         f: &mut F,
     ) -> Result<(), MapError>
     where
-        F: FnMut(&MemoryRegion, &Descriptor, usize),
+        F: FnMut(&MemoryRegion, &Descriptor, usize) -> Result<(), ()>,
     {
         let level = self.level;
         for chunk in range.split(level) {
@@ -644,7 +644,7 @@ impl<T: Translation> PageTableWithLevel<T> {
                 subtable.walk_range(translation, &chunk, f)?;
             } else {
                 let affected_range = chunk.align_out(granularity_at_level(level));
-                f(&affected_range, entry, level);
+                f(&affected_range, entry, level).map_err(|_| MapError::PteUpdateFault(*entry))?;
             }
         }
         Ok(())

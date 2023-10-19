@@ -192,15 +192,6 @@ impl MemoryRegion {
         let gran = granularity_at_level(level);
         (self.0.start.0 | self.0.end.0) & (gran - 1) == 0
     }
-
-    /// Returns a new `MemoryRegion` based on this one but with the start aligned down and the end
-    /// aligned up to the given alignment.
-    fn align_out(&self, alignment: usize) -> Self {
-        Self(
-            VirtualAddress(align_down(self.0.start.0, alignment))
-                ..VirtualAddress(align_up(self.0.end.0, alignment)),
-        )
-    }
 }
 
 impl From<Range<VirtualAddress>> for MemoryRegion {
@@ -654,14 +645,11 @@ impl<T: Translation> PageTableWithLevel<T> {
     {
         let level = self.level;
         for chunk in range.split(level) {
-            // VA range passed to the callback function is aligned to block boundaries, as that
-            // entire region is covered by the descriptor in question
             let entry = self.get_entry(chunk.0.start);
             if let Some(subtable) = entry.subtable(translation, level) {
                 subtable.walk_range(translation, &chunk, f)?;
             } else {
-                let affected_range = chunk.align_out(granularity_at_level(level));
-                f(&affected_range, entry, level).map_err(|_| MapError::PteUpdateFault(*entry))?;
+                f(&chunk, entry, level).map_err(|_| MapError::PteUpdateFault(*entry))?;
             }
         }
         Ok(())

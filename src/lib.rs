@@ -72,6 +72,8 @@ pub enum MapError {
     PteUpdateFault(Descriptor),
     /// The requested flags are not supported for this mapping
     InvalidFlags(Attributes),
+    /// Updating the range violates break-before-make rules and the mapping is live
+    BreakBeforeMakeViolation(MemoryRegion),
 }
 
 impl Display for MapError {
@@ -89,6 +91,9 @@ impl Display for MapError {
             }
             Self::InvalidFlags(flags) => {
                 write!(f, "Flags {flags:?} unsupported for mapping.")
+            }
+            Self::BreakBeforeMakeViolation(region) => {
+                write!(f, "Cannot remap region {region} while translation is live.")
             }
         }
     }
@@ -206,6 +211,58 @@ impl<T: Translation + Clone> Mapping<T> {
         self.previous_ttbr = None;
     }
 
+    /// Checks whether the given range can be mapped or updated while the translation is live,
+    /// without violating architectural break-before-make (BBM) requirements.
+    fn check_range_bbm<F>(&self, range: &MemoryRegion, updater: &F) -> Result<(), MapError>
+    where
+        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+    {
+        self.walk_range(
+            range,
+            &mut |mr: &MemoryRegion, d: &Descriptor, level: usize| {
+                if d.is_valid() {
+                    if !mr.is_block(level) {
+                        // Cannot split a live block mapping
+                        return Err(());
+                    }
+
+                    // Get the new flags and output address for this descriptor by applying
+                    // the updater function to a copy
+                    let (flags, oa) = {
+                        let mut dd = *d;
+                        updater(mr, &mut dd, level)?;
+                        (dd.flags().ok_or(())?, dd.output_address())
+                    };
+
+                    if !flags.contains(Attributes::VALID) {
+                        // Removing the valid bit is always ok
+                        return Ok(());
+                    }
+
+                    if oa != d.output_address() {
+                        // Cannot change output address on a live mapping
+                        return Err(());
+                    }
+
+                    let desc_flags = d.flags().unwrap();
+
+                    if (desc_flags ^ flags).intersects(Attributes::NORMAL) {
+                        // Cannot change memory type
+                        return Err(());
+                    }
+
+                    if (desc_flags - flags).contains(Attributes::NON_GLOBAL) {
+                        // Cannot convert from non-global to global
+                        return Err(());
+                    }
+                }
+                Ok(())
+            },
+        )
+        .map_err(|_| MapError::BreakBeforeMakeViolation(range.clone()))?;
+        Ok(())
+    }
+
     /// Maps the given range of virtual addresses to the corresponding range of physical addresses
     /// starting at `pa`, with the given flags, taking the given constraints into account.
     ///
@@ -223,6 +280,9 @@ impl<T: Translation + Clone> Mapping<T> {
     /// largest virtual address covered by the page table given its root level.
     ///
     /// Returns [`MapError::InvalidFlags`] if the `flags` argument has unsupported attributes set.
+    ///
+    /// Returns [`MapError::BreakBeforeMakeViolation'] if the range intersects with live mappings,
+    /// and modifying those would violate architectural break-before-make (BBM) requirements.
     pub fn map_range(
         &mut self,
         range: &MemoryRegion,
@@ -230,6 +290,15 @@ impl<T: Translation + Clone> Mapping<T> {
         flags: Attributes,
         constraints: Constraints,
     ) -> Result<(), MapError> {
+        if self.active() {
+            let c = |mr: &MemoryRegion, d: &mut Descriptor, lvl: usize| {
+                let mask = !(paging::granularity_at_level(lvl) - 1);
+                let pa = (mr.start() - range.start() + pa.0) & mask;
+                d.set(PhysicalAddress(pa), flags);
+                Ok(())
+            };
+            self.check_range_bbm(range, &c)?;
+        }
         self.root.map_range(range, pa, flags, constraints)?;
         #[cfg(target_arch = "aarch64")]
         // SAFETY: Safe because this is just a memory barrier.
@@ -259,10 +328,16 @@ impl<T: Translation + Clone> Mapping<T> {
     ///
     /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
     /// largest virtual address covered by the page table given its root level.
+    ///
+    /// Returns [`MapError::BreakBeforeMakeViolation'] if the range intersects with live mappings,
+    /// and modifying those would violate architectural break-before-make (BBM) requirements.
     pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
     where
         F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
     {
+        if self.active() {
+            self.check_range_bbm(range, f)?;
+        }
         self.root.modify_range(range, f)?;
         #[cfg(target_arch = "aarch64")]
         // SAFETY: Safe because this is just a memory barrier.

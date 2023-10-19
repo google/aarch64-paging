@@ -112,23 +112,25 @@ impl LinearMap {
         }
     }
 
-    /// Activates the page table by setting `TTBR0_EL1` to point to it, and saves the previous value
-    /// of `TTBR0_EL1` so that it may later be restored by [`deactivate`](Self::deactivate).
+    /// Activates the page table by setting `TTBRn_EL1` to point to it, and saves the previous value
+    /// of `TTBRn_EL1` so that it may later be restored by [`deactivate`](Self::deactivate).
     ///
-    /// Panics if a previous value of `TTBR0_EL1` is already saved and not yet used by a call to
+    /// Panics if a previous value of `TTBRn_EL1` is already saved and not yet used by a call to
     /// `deactivate`.
-    #[cfg(target_arch = "aarch64")]
+    ///
+    /// In test builds or builds that do not target aarch64, the `TTBRn_EL1` access is omitted.
     pub fn activate(&mut self) {
         self.mapping.activate()
     }
 
-    /// Deactivates the page table, by setting `TTBR0_EL1` back to the value it had before
+    /// Deactivates the page table, by setting `TTBRn_EL1` back to the value it had before
     /// [`activate`](Self::activate) was called, and invalidating the TLB for this page table's
     /// configured ASID.
     ///
-    /// Panics if there is no saved `TTRB0_EL1` value because `activate` has not previously been
+    /// Panics if there is no saved `TTBRn_EL1` value because `activate` has not previously been
     /// called.
-    #[cfg(target_arch = "aarch64")]
+    ///
+    /// In test builds or builds that do not target aarch64, the `TTBRn_EL1` access is omitted.
     pub fn deactivate(&mut self) {
         self.mapping.deactivate()
     }

@@ -57,7 +57,7 @@ impl Translation for IdTranslation {
 ///
 /// # Example
 ///
-/// ```
+/// ```no_run
 /// use aarch64_paging::{
 ///     idmap::IdMap,
 ///     paging::{Attributes, MemoryRegion},
@@ -74,20 +74,17 @@ impl Translation for IdTranslation {
 ///     Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::EXECUTE_NEVER | Attributes::VALID,
 /// ).unwrap();
 /// // Set `TTBR0_EL1` to activate the page table.
-/// # #[cfg(target_arch = "aarch64")]
 /// idmap.activate();
 ///
 /// // Write something to the memory...
 ///
 /// // Restore `TTBR0_EL1` to its earlier value while we modify the page table.
-/// # #[cfg(target_arch = "aarch64")]
 /// idmap.deactivate();
 /// // Now change the mapping to read-only and executable.
 /// idmap.map_range(
 ///     &MemoryRegion::new(0x80200000, 0x80400000),
 ///     Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::READ_ONLY | Attributes::VALID,
 /// ).unwrap();
-/// # #[cfg(target_arch = "aarch64")]
 /// idmap.activate();
 /// ```
 #[derive(Debug)]
@@ -108,7 +105,8 @@ impl IdMap {
     ///
     /// Panics if a previous value of `TTBR0_EL1` is already saved and not yet used by a call to
     /// `deactivate`.
-    #[cfg(target_arch = "aarch64")]
+    ///
+    /// In test builds or builds that do not target aarch64, the `TTBR0_EL1` access is omitted.
     pub fn activate(&mut self) {
         self.mapping.activate()
     }
@@ -117,9 +115,10 @@ impl IdMap {
     /// [`activate`](Self::activate) was called, and invalidating the TLB for this page table's
     /// configured ASID.
     ///
-    /// Panics if there is no saved `TTRB0_EL1` value because `activate` has not previously been
+    /// Panics if there is no saved `TTBR0_EL1` value because `activate` has not previously been
     /// called.
-    #[cfg(target_arch = "aarch64")]
+    ///
+    /// In test builds or builds that do not target aarch64, the `TTBR0_EL1` access is omitted.
     pub fn deactivate(&mut self) {
         self.mapping.deactivate()
     }

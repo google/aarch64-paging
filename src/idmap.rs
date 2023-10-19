@@ -140,6 +140,9 @@ impl IdMap {
     /// largest virtual address covered by the page table given its root level.
     ///
     /// Returns [`MapError::InvalidFlags`] if the `flags` argument has unsupported attributes set.
+    ///
+    /// Returns [`MapError::BreakBeforeMakeViolation'] if the range intersects with live mappings,
+    /// and modifying those would violate architectural break-before-make (BBM) requirements.
     pub fn map_range(&mut self, range: &MemoryRegion, flags: Attributes) -> Result<(), MapError> {
         self.map_range_with_constraints(range, flags, Constraints::empty())
     }
@@ -161,6 +164,9 @@ impl IdMap {
     /// largest virtual address covered by the page table given its root level.
     ///
     /// Returns [`MapError::InvalidFlags`] if the `flags` argument has unsupported attributes set.
+    ///
+    /// Returns [`MapError::BreakBeforeMakeViolation'] if the range intersects with live mappings,
+    /// and modifying those would violate architectural break-before-make (BBM) requirements.
     pub fn map_range_with_constraints(
         &mut self,
         range: &MemoryRegion,
@@ -223,7 +229,7 @@ impl IdMap {
 mod tests {
     use super::*;
     use crate::{
-        paging::{Attributes, MemoryRegion, PAGE_SIZE},
+        paging::{Attributes, MemoryRegion, BITS_PER_LEVEL, PAGE_SIZE},
         MapError, VirtualAddress,
     };
 
@@ -233,6 +239,7 @@ mod tests {
     fn map_valid() {
         // A single byte at the start of the address space.
         let mut idmap = IdMap::new(1, 1);
+        idmap.activate();
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(0, 1),
@@ -243,6 +250,7 @@ mod tests {
 
         // Two pages at the start of the address space.
         let mut idmap = IdMap::new(1, 1);
+        idmap.activate();
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(0, PAGE_SIZE * 2),
@@ -253,6 +261,7 @@ mod tests {
 
         // A single byte at the end of the address space.
         let mut idmap = IdMap::new(1, 1);
+        idmap.activate();
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(
@@ -266,6 +275,7 @@ mod tests {
 
         // Two pages, on the boundary between two subtables.
         let mut idmap = IdMap::new(1, 1);
+        idmap.activate();
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(PAGE_SIZE * 1023, PAGE_SIZE * 1025),
@@ -276,10 +286,154 @@ mod tests {
 
         // The entire valid address space.
         let mut idmap = IdMap::new(1, 1);
+        idmap.activate();
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
                 Attributes::NORMAL | Attributes::VALID
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn map_break_before_make() {
+        const BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
+        let mut idmap = IdMap::new(1, 1);
+        idmap
+            .map_range_with_constraints(
+                &MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE),
+                Attributes::NORMAL | Attributes::VALID,
+                Constraints::NO_BLOCK_MAPPINGS,
+            )
+            .unwrap();
+        idmap.activate();
+
+        // Splitting a range is permitted if it was mapped down to pages
+        assert_eq!(
+            idmap.map_range(
+                &MemoryRegion::new(BLOCK_SIZE, BLOCK_SIZE + PAGE_SIZE),
+                Attributes::NORMAL | Attributes::VALID,
+            ),
+            Ok(())
+        );
+
+        let mut idmap = IdMap::new(1, 1);
+        idmap
+            .map_range(
+                &MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE),
+                Attributes::NORMAL | Attributes::VALID,
+            )
+            .ok();
+        idmap.activate();
+
+        // Extending a range is fine even if there are block mappings
+        // in the middle
+        assert_eq!(
+            idmap.map_range(
+                &MemoryRegion::new(BLOCK_SIZE - PAGE_SIZE, 2 * BLOCK_SIZE + PAGE_SIZE),
+                Attributes::NORMAL | Attributes::VALID,
+            ),
+            Ok(())
+        );
+
+        // Splitting a range is not permitted
+        assert_eq!(
+            idmap.map_range(
+                &MemoryRegion::new(BLOCK_SIZE, BLOCK_SIZE + PAGE_SIZE),
+                Attributes::NORMAL | Attributes::VALID,
+            ),
+            Err(MapError::BreakBeforeMakeViolation(MemoryRegion::new(
+                BLOCK_SIZE,
+                BLOCK_SIZE + PAGE_SIZE
+            )))
+        );
+
+        // Remapping a partially live range read-only is only permitted
+        // if it does not require splitting
+        assert_eq!(
+            idmap.map_range(
+                &MemoryRegion::new(0, BLOCK_SIZE + PAGE_SIZE),
+                Attributes::NORMAL | Attributes::VALID | Attributes::READ_ONLY,
+            ),
+            Err(MapError::BreakBeforeMakeViolation(MemoryRegion::new(
+                0,
+                BLOCK_SIZE + PAGE_SIZE
+            )))
+        );
+        assert_eq!(
+            idmap.map_range(
+                &MemoryRegion::new(0, BLOCK_SIZE),
+                Attributes::NORMAL | Attributes::VALID | Attributes::READ_ONLY,
+            ),
+            Ok(())
+        );
+
+        // Changing the memory type is not permitted
+        assert_eq!(
+            idmap.map_range(
+                &MemoryRegion::new(0, BLOCK_SIZE),
+                Attributes::DEVICE_NGNRE | Attributes::VALID | Attributes::NON_GLOBAL,
+            ),
+            Err(MapError::BreakBeforeMakeViolation(MemoryRegion::new(
+                0, BLOCK_SIZE
+            )))
+        );
+
+        // Making a range invalid is only permitted if it does not require splitting
+        assert_eq!(
+            idmap.map_range(
+                &MemoryRegion::new(PAGE_SIZE, BLOCK_SIZE + PAGE_SIZE),
+                Attributes::NORMAL,
+            ),
+            Err(MapError::BreakBeforeMakeViolation(MemoryRegion::new(
+                PAGE_SIZE,
+                BLOCK_SIZE + PAGE_SIZE
+            )))
+        );
+        assert_eq!(
+            idmap.map_range(
+                &MemoryRegion::new(PAGE_SIZE, BLOCK_SIZE),
+                Attributes::NORMAL,
+            ),
+            Ok(())
+        );
+
+        // Creating a new valid entry is always permitted
+        assert_eq!(
+            idmap.map_range(
+                &MemoryRegion::new(0, 2 * PAGE_SIZE),
+                Attributes::NORMAL | Attributes::VALID,
+            ),
+            Ok(())
+        );
+
+        // Setting the non-global attribute is permitted
+        assert_eq!(
+            idmap.map_range(
+                &MemoryRegion::new(0, PAGE_SIZE),
+                Attributes::NORMAL | Attributes::VALID | Attributes::NON_GLOBAL,
+            ),
+            Ok(())
+        );
+
+        // Removing the non-global attribute from a live mapping is not permitted
+        assert_eq!(
+            idmap.map_range(
+                &MemoryRegion::new(0, PAGE_SIZE),
+                Attributes::NORMAL | Attributes::VALID,
+            ),
+            Err(MapError::BreakBeforeMakeViolation(MemoryRegion::new(
+                0, PAGE_SIZE
+            )))
+        );
+
+        // Removing the non-global attribute from an inactive mapping is permitted
+        idmap.deactivate();
+        assert_eq!(
+            idmap.map_range(
+                &MemoryRegion::new(0, PAGE_SIZE),
+                Attributes::NORMAL | Attributes::VALID,
             ),
             Ok(())
         );
@@ -326,6 +480,7 @@ mod tests {
                     | Attributes::VALID,
             )
             .unwrap();
+        idmap.activate();
         idmap
     }
 
@@ -347,6 +502,14 @@ mod tests {
     #[test]
     fn update_range() {
         let mut idmap = make_map();
+        assert!(idmap
+            .modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|_range, entry, level| {
+                if level == 3 || !entry.is_table_or_page() {
+                    entry.modify_flags(Attributes::SWFLAG_0, Attributes::NON_GLOBAL);
+                }
+                Ok(())
+            })
+            .is_err());
         idmap
             .modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|_range, entry, level| {
                 if level == 3 || !entry.is_table_or_page() {
@@ -371,6 +534,7 @@ mod tests {
     fn breakup_invalid_block() {
         const BLOCK_RANGE: usize = 0x200000;
         let mut idmap = IdMap::new(1, 1);
+        idmap.activate();
         idmap
             .map_range(
                 &MemoryRegion::new(0, BLOCK_RANGE),

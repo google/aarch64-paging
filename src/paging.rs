@@ -124,7 +124,7 @@ impl Sub<usize> for PhysicalAddress {
 
 /// Returns the size in bytes of the address space covered by a single entry in the page table at
 /// the given level.
-fn granularity_at_level(level: usize) -> usize {
+pub(crate) fn granularity_at_level(level: usize) -> usize {
     PAGE_SIZE << ((LEAF_LEVEL - level) * BITS_PER_LEVEL)
 }
 
@@ -188,7 +188,7 @@ impl MemoryRegion {
     }
 
     /// Returns whether this region can be mapped at 'level' using block mappings only.
-    fn is_block(&self, level: usize) -> bool {
+    pub(crate) fn is_block(&self, level: usize) -> bool {
         let gran = granularity_at_level(level);
         (self.0.start.0 | self.0.end.0) & (gran - 1) == 0
     }
@@ -730,7 +730,7 @@ pub struct Descriptor(usize);
 impl Descriptor {
     const PHYSICAL_ADDRESS_BITMASK: usize = !(PAGE_SIZE - 1) & !(0xffff << 48);
 
-    fn output_address(self) -> PhysicalAddress {
+    pub(crate) fn output_address(self) -> PhysicalAddress {
         PhysicalAddress(self.0 & Self::PHYSICAL_ADDRESS_BITMASK)
     }
 
@@ -766,7 +766,7 @@ impl Descriptor {
         }
     }
 
-    fn set(&mut self, pa: PhysicalAddress, flags: Attributes) {
+    pub(crate) fn set(&mut self, pa: PhysicalAddress, flags: Attributes) {
         self.0 = (pa.0 & Self::PHYSICAL_ADDRESS_BITMASK) | flags.bits();
     }
 

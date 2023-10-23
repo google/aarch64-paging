@@ -54,8 +54,8 @@ extern crate alloc;
 use core::arch::asm;
 use core::fmt::{self, Display, Formatter};
 use paging::{
-    Attributes, Descriptor, MemoryRegion, PhysicalAddress, RootTable, Translation, VaRange,
-    VirtualAddress,
+    Attributes, Constraints, Descriptor, MemoryRegion, PhysicalAddress, RootTable, Translation,
+    VaRange, VirtualAddress,
 };
 
 /// An error attempting to map some range in the page table.
@@ -207,7 +207,7 @@ impl<T: Translation + Clone> Mapping<T> {
     }
 
     /// Maps the given range of virtual addresses to the corresponding range of physical addresses
-    /// starting at `pa`, with the given flags.
+    /// starting at `pa`, with the given flags, taking the given constraints into account.
     ///
     /// This should generally only be called while the page table is not active. In particular, any
     /// change that may require break-before-make per the architecture must be made while the page
@@ -228,8 +228,9 @@ impl<T: Translation + Clone> Mapping<T> {
         range: &MemoryRegion,
         pa: PhysicalAddress,
         flags: Attributes,
+        constraints: Constraints,
     ) -> Result<(), MapError> {
-        self.root.map_range(range, pa, flags)?;
+        self.root.map_range(range, pa, flags, constraints)?;
         #[cfg(target_arch = "aarch64")]
         // SAFETY: Safe because this is just a memory barrier.
         unsafe {

@@ -212,6 +212,17 @@ impl Debug for MemoryRegion {
     }
 }
 
+bitflags! {
+    /// Constraints on page table mappings
+    #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    pub struct Constraints: usize {
+        /// Block mappings are not permitted, only page mappings
+        const NO_BLOCK_MAPPINGS    = 1 << 0;
+        /// Use of the contiguous hint is not permitted
+        const NO_CONTIGUOUS_HINT   = 1 << 1;
+    }
+}
+
 /// A page table entry updater function; called repeatedly to update the state of a
 /// range of page table entries.
 ///
@@ -276,12 +287,14 @@ impl<T: Translation> RootTable<T> {
         range: &MemoryRegion,
         pa: PhysicalAddress,
         flags: Attributes,
+        constraints: Constraints,
     ) -> Result<(), MapError> {
         if flags.contains(Attributes::TABLE_OR_PAGE) {
             return Err(MapError::InvalidFlags(Attributes::TABLE_OR_PAGE));
         }
         self.verify_region(range)?;
-        self.table.map_range(&self.translation, range, pa, flags);
+        self.table
+            .map_range(&self.translation, range, pa, flags, constraints);
         Ok(())
     }
 
@@ -496,7 +509,13 @@ impl<T: Translation> PageTableWithLevel<T> {
                 // Recreate the entire block in the newly added table.
                 let a = align_down(chunk.0.start.0, granularity);
                 let b = align_up(chunk.0.end.0, granularity);
-                subtable.map_range(translation, &MemoryRegion::new(a, b), old_pa, old_flags);
+                subtable.map_range(
+                    translation,
+                    &MemoryRegion::new(a, b),
+                    old_pa,
+                    old_flags,
+                    Constraints::empty(),
+                );
             }
         }
         entry.set(subtable_pa, Attributes::TABLE_OR_PAGE | Attributes::VALID);
@@ -518,6 +537,7 @@ impl<T: Translation> PageTableWithLevel<T> {
         range: &MemoryRegion,
         mut pa: PhysicalAddress,
         flags: Attributes,
+        constraints: Constraints,
     ) {
         let level = self.level;
         let granularity = granularity_at_level(level);
@@ -531,6 +551,7 @@ impl<T: Translation> PageTableWithLevel<T> {
             } else if chunk.is_block(level)
                 && !entry.is_table_or_page()
                 && is_aligned(pa.0, granularity)
+                && !constraints.contains(Constraints::NO_BLOCK_MAPPINGS)
             {
                 // Rather than leak the entire subhierarchy, only put down
                 // a block mapping if the region is not already covered by
@@ -540,7 +561,7 @@ impl<T: Translation> PageTableWithLevel<T> {
                 let mut subtable = entry
                     .subtable(translation, level)
                     .unwrap_or_else(|| Self::split_entry(translation, &chunk, entry, level));
-                subtable.map_range(translation, &chunk, pa, flags);
+                subtable.map_range(translation, &chunk, pa, flags, constraints);
             }
             pa.0 += chunk.len();
         }

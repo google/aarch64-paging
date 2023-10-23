@@ -153,6 +153,8 @@ impl LinearMap {
     ///
     /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
     /// largest virtual address covered by the page table given its root level.
+    ///
+    /// Returns [`MapError::InvalidFlags`] if the `flags` argument has unsupported attributes set.
     pub fn map_range(&mut self, range: &MemoryRegion, flags: Attributes) -> Result<(), MapError> {
         let pa = self
             .mapping

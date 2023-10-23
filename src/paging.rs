@@ -269,13 +269,17 @@ impl<T: Translation> RootTable<T> {
     /// the pages to the corresponding physical address range starting at `pa`. Block and page
     /// entries will be written to, but will only be mapped if `flags` contains `Attributes::VALID`.
     ///
-    /// Returns an error if the virtual address range is out of the range covered by the pagetable
+    /// Returns an error if the virtual address range is out of the range covered by the pagetable,
+    /// or if the `flags` argument has unsupported attributes set.
     pub fn map_range(
         &mut self,
         range: &MemoryRegion,
         pa: PhysicalAddress,
         flags: Attributes,
     ) -> Result<(), MapError> {
+        if flags.contains(Attributes::TABLE_OR_PAGE) {
+            return Err(MapError::InvalidFlags(Attributes::TABLE_OR_PAGE));
+        }
         self.verify_region(range)?;
         self.table.map_range(&self.translation, range, pa, flags);
         Ok(())

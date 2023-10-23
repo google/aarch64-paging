@@ -8,8 +8,8 @@
 
 use crate::{
     paging::{
-        deallocate, Attributes, Descriptor, MemoryRegion, PageTable, PhysicalAddress, Translation,
-        VaRange, VirtualAddress,
+        deallocate, Attributes, Constraints, Descriptor, MemoryRegion, PageTable, PhysicalAddress,
+        Translation, VaRange, VirtualAddress,
     },
     MapError, Mapping,
 };
@@ -141,8 +141,34 @@ impl IdMap {
     ///
     /// Returns [`MapError::InvalidFlags`] if the `flags` argument has unsupported attributes set.
     pub fn map_range(&mut self, range: &MemoryRegion, flags: Attributes) -> Result<(), MapError> {
+        self.map_range_with_constraints(range, flags, Constraints::empty())
+    }
+
+    /// Maps the given range of virtual addresses to the identical physical addresses with the given
+    /// given flags, taking the given constraints into account.
+    ///
+    /// This should generally only be called while the page table is not active. In particular, any
+    /// change that may require break-before-make per the architecture must be made while the page
+    /// table is inactive. Mapping a previously unmapped memory range may be done while the page
+    /// table is active. This function writes block and page entries, but only maps them if `flags`
+    /// contains `Attributes::VALID`, otherwise the entries remain invalid.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MapError::RegionBackwards`] if the range is backwards.
+    ///
+    /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
+    /// largest virtual address covered by the page table given its root level.
+    ///
+    /// Returns [`MapError::InvalidFlags`] if the `flags` argument has unsupported attributes set.
+    pub fn map_range_with_constraints(
+        &mut self,
+        range: &MemoryRegion,
+        flags: Attributes,
+        constraints: Constraints,
+    ) -> Result<(), MapError> {
         let pa = IdTranslation::virtual_to_physical(range.start());
-        self.mapping.map_range(range, pa, flags)
+        self.mapping.map_range(range, pa, flags, constraints)
     }
 
     /// Applies the provided updater function to a number of PTEs corresponding to a given memory range.

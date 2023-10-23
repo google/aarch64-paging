@@ -70,6 +70,8 @@ pub enum MapError {
     RegionBackwards(MemoryRegion),
     /// There was an error while updating a page table entry.
     PteUpdateFault(Descriptor),
+    /// The requested flags are not supported for this mapping
+    InvalidFlags(Attributes),
 }
 
 impl Display for MapError {
@@ -84,6 +86,9 @@ impl Display for MapError {
             }
             Self::PteUpdateFault(desc) => {
                 write!(f, "Error updating page table entry {:?}", desc)
+            }
+            Self::InvalidFlags(flags) => {
+                write!(f, "Flags {flags:?} unsupported for mapping.")
             }
         }
     }
@@ -216,6 +221,8 @@ impl<T: Translation + Clone> Mapping<T> {
     ///
     /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
     /// largest virtual address covered by the page table given its root level.
+    ///
+    /// Returns [`MapError::InvalidFlags`] if the `flags` argument has unsupported attributes set.
     pub fn map_range(
         &mut self,
         range: &MemoryRegion,

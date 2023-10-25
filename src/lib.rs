@@ -28,13 +28,16 @@
 //!
 //! // Create a new page table with identity mapping.
 //! let mut idmap = IdMap::new(ASID, ROOT_LEVEL);
-//! // Map a 2 MiB region of memory as read-only.
+//! // Map a 2 MiB region of memory as read-write.
 //! idmap.map_range(
 //!     &MemoryRegion::new(0x80200000, 0x80400000),
-//!     Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::READ_ONLY | Attributes::VALID,
+//!     Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::VALID,
 //! ).unwrap();
-//! // Set `TTBR0_EL1` to activate the page table.
-//! idmap.activate();
+//! // SAFETY: Everything the program uses is within the 2 MiB region mapped above.
+//! unsafe {
+//!     // Set `TTBR0_EL1` to activate the page table.
+//!     idmap.activate();
+//! }
 //! # }
 //! ```
 
@@ -137,7 +140,14 @@ impl<T: Translation + Clone> Mapping<T> {
     /// `deactivate`.
     ///
     /// In test builds or builds that do not target aarch64, the `TTBRn_EL1` access is omitted.
-    pub fn activate(&mut self) {
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the page table doesn't unmap any memory which the program is
+    /// using, or introduce aliases which break Rust's aliasing rules. The page table must not be
+    /// dropped as long as its mappings are required, as it will automatically be deactivated when
+    /// it is dropped.
+    pub unsafe fn activate(&mut self) {
         assert!(!self.active());
 
         #[allow(unused)]
@@ -178,7 +188,12 @@ impl<T: Translation + Clone> Mapping<T> {
     /// called.
     ///
     /// In test builds or builds that do not target aarch64, the `TTBRn_EL1` access is omitted.
-    pub fn deactivate(&mut self) {
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the previous page table which this is switching back to doesn't
+    /// unmap any memory which the program is using.
+    pub unsafe fn deactivate(&mut self) {
         assert!(self.active());
 
         #[cfg(all(not(test), target_arch = "aarch64"))]
@@ -372,7 +387,11 @@ impl<T: Translation + Clone> Drop for Mapping<T> {
     fn drop(&mut self) {
         if self.previous_ttbr.is_some() {
             #[cfg(target_arch = "aarch64")]
-            self.deactivate();
+            // SAFETY: When activate was called the caller promised that they wouldn't drop the page
+            // table until its mappings were no longer needed.
+            unsafe {
+                self.deactivate();
+            }
         }
     }
 }

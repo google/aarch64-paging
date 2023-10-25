@@ -119,7 +119,14 @@ impl LinearMap {
     /// `deactivate`.
     ///
     /// In test builds or builds that do not target aarch64, the `TTBRn_EL1` access is omitted.
-    pub fn activate(&mut self) {
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the page table doesn't unmap any memory which the program is
+    /// using, or introduce aliases which break Rust's aliasing rules. The page table must not be
+    /// dropped as long as its mappings are required, as it will automatically be deactivated when
+    /// it is dropped.
+    pub unsafe fn activate(&mut self) {
         self.mapping.activate()
     }
 
@@ -131,7 +138,12 @@ impl LinearMap {
     /// called.
     ///
     /// In test builds or builds that do not target aarch64, the `TTBRn_EL1` access is omitted.
-    pub fn deactivate(&mut self) {
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the previous page table which this is switching back to doesn't
+    /// unmap any memory which the program is using.
+    pub unsafe fn deactivate(&mut self) {
         self.mapping.deactivate()
     }
 

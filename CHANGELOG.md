@@ -4,17 +4,16 @@
 
 ### Bug fixes
 
-- Reject the `PAGE_OR_TABLE` flag when passed to `map_range`, which would result
-  in corrupt table mappings to be created.
+- Reject the `PAGE_OR_TABLE` flag when passed to `map_range`, which would result in corrupt table
+  mappings to be created.
 
 ### Breaking changes
 
-- Updated `modify_range` to split block entries before traversing them, and
-  pass only the descriptors and subregions that are completely covered by the
-  given region to the updater callback function.
-- Updated `modify_range` to only pass block or page descriptors to the callback
-  function and prevent them from being converted into table descriptors
-  inadvertently.
+- Updated `modify_range` to split block entries before traversing them, and pass only the
+  descriptors and subregions that are completely covered by the given region to the updater callback
+  function.
+- Updated `modify_range` to only pass block or page descriptors to the callback function and prevent
+  them from being converted into table descriptors inadvertently.
 - Added rigid break-before-make (BBM) checks to `map_range` and `modify_range`.
 - Marked `activate` and `deactivate` methods as unsafe.
 
@@ -22,9 +21,8 @@
 
 - Added new `map_range()` alternative `map_range_with_constraints()` with extra `contraints`
   argument.
-- Added `walk_range` method that iterates over all block or page descriptors
-  that intersect with a given region, without permitting the callback to make
-  changes to the descriptors
+- Added `walk_range` method that iterates over all block or page descriptorsthat intersect with a
+  given region, without permitting the callback to make changes to the descriptors
 
 ## 0.4.1
 

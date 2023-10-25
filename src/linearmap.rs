@@ -211,12 +211,26 @@ impl LinearMap {
         self.mapping.map_range(range, pa, flags, constraints)
     }
 
-    /// Applies the provided updater function to a number of PTEs corresponding to a given memory range.
+    /// Applies the provided updater function to the page table descriptors covering a given
+    /// memory range.
     ///
     /// This may involve splitting block entries if the provided range is not currently mapped
     /// down to its precise boundaries. For visiting all the descriptors covering a memory range
     /// without potential splitting (and no descriptor updates), use
     /// [`walk_range`](Self::walk_range) instead.
+    ///
+    /// The updater function receives the following arguments:
+    ///
+    /// - The virtual address range mapped by each page table descriptor. A new descriptor will
+    ///   have been allocated before the invocation of the updater function if a page table split
+    ///   was needed.
+    /// - A mutable reference to the page table descriptor that permits modifications.
+    /// - The level of a translation table the descriptor belongs to.
+    ///
+    /// The updater function should return:
+    ///
+    /// - `Ok` to continue updating the remaining entries.
+    /// - `Err` to signal an error and stop updating the remaining entries.
     ///
     /// This should generally only be called while the page table is not active. In particular, any
     /// change that may require break-before-make per the architecture must be made while the page
@@ -231,6 +245,9 @@ impl LinearMap {
     ///
     /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
     /// largest virtual address covered by the page table given its root level.
+    ///
+    /// Returns [`MapError::BreakBeforeMakeViolation'] if the range intersects with live mappings,
+    /// and modifying those would violate architectural break-before-make (BBM) requirements.
     pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
     where
         F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
@@ -238,10 +255,20 @@ impl LinearMap {
         self.mapping.modify_range(range, f)
     }
 
-    /// Applies the provided function to a number of PTEs corresponding to a given memory range.
+    /// Applies the provided callback function to the page table descriptors covering a given
+    /// memory range.
     ///
-    /// The virtual address range passed to the updater function may be expanded compared to the
-    /// `range` parameter, due to alignment to block boundaries.
+    /// The callback function receives the following arguments:
+    ///
+    /// - The full virtual address range mapped by each visited page table descriptor, which may
+    ///   exceed the original range passed to `walk_range`, due to alignment to block boundaries.
+    /// - The page table descriptor itself.
+    /// - The level of a translation table the descriptor belongs to.
+    ///
+    /// The callback function should return:
+    ///
+    /// - `Ok` to continue visiting the remaining entries.
+    /// - `Err` to signal an error and stop visiting the remaining entries.
     ///
     /// # Errors
     ///

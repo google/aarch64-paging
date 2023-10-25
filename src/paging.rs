@@ -223,24 +223,6 @@ bitflags! {
     }
 }
 
-/// A page table entry updater function; called repeatedly to update the state of a
-/// range of page table entries.
-///
-/// # Arguments
-///
-/// The updater function receives the following arguments:
-///
-/// - The full virtual address range mapped by the page table entry, which may be different than
-///   the original range passed to `modify_range`, due to alignment to block boundaries.
-/// - A page table entry whose state it may update.
-/// - The level of a translation table the entry belongs to.
-///
-/// # Return
-///
-/// - `Ok` to continue updating the remaining entries.
-/// - `Err` to signal an error during an update and stop updating the remaining entries.
-pub type PteUpdater = dyn Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()>;
-
 /// A complete hierarchy of page tables including all levels.
 pub struct RootTable<T: Translation> {
     table: PageTableWithLevel<T>,
@@ -313,6 +295,43 @@ impl<T: Translation> RootTable<T> {
         &self.translation
     }
 
+    /// Applies the provided updater function to the page table descriptors covering a given
+    /// memory range.
+    ///
+    /// This may involve splitting block entries if the provided range is not currently mapped
+    /// down to its precise boundaries. For visiting all the descriptors covering a memory range
+    /// without potential splitting (and no descriptor updates), use
+    /// [`walk_range`](Self::walk_range) instead.
+    ///
+    /// The updater function receives the following arguments:
+    ///
+    /// - The virtual address range mapped by each page table descriptor. A new descriptor will
+    ///   have been allocated before the invocation of the updater function if a page table split
+    ///   was needed.
+    /// - A mutable reference to the page table descriptor that permits modifications.
+    /// - The level of a translation table the descriptor belongs to.
+    ///
+    /// The updater function should return:
+    ///
+    /// - `Ok` to continue updating the remaining entries.
+    /// - `Err` to signal an error and stop updating the remaining entries.
+    ///
+    /// This should generally only be called while the page table is not active. In particular, any
+    /// change that may require break-before-make per the architecture must be made while the page
+    /// table is inactive. Mapping a previously unmapped memory range may be done while the page
+    /// table is active.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MapError::PteUpdateFault`] if the updater function returns an error.
+    ///
+    /// Returns [`MapError::RegionBackwards`] if the range is backwards.
+    ///
+    /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
+    /// largest virtual address covered by the page table given its root level.
+    ///
+    /// Returns [`MapError::BreakBeforeMakeViolation'] if the range intersects with live mappings,
+    /// and modifying those would violate architectural break-before-make (BBM) requirements.
     pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
     where
         F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
@@ -321,6 +340,29 @@ impl<T: Translation> RootTable<T> {
         self.table.modify_range(&self.translation, range, f)
     }
 
+    /// Applies the provided callback function to the page table descriptors covering a given
+    /// memory range.
+    ///
+    /// The callback function receives the following arguments:
+    ///
+    /// - The full virtual address range mapped by each visited page table descriptor, which may
+    ///   exceed the original range passed to `walk_range`, due to alignment to block boundaries.
+    /// - The page table descriptor itself.
+    /// - The level of a translation table the descriptor belongs to.
+    ///
+    /// The callback function should return:
+    ///
+    /// - `Ok` to continue visiting the remaining entries.
+    /// - `Err` to signal an error and stop visiting the remaining entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MapError::PteUpdateFault`] if the callback function returns an error.
+    ///
+    /// Returns [`MapError::RegionBackwards`] if the range is backwards.
+    ///
+    /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
+    /// largest virtual address covered by the page table given its root level.
     pub fn walk_range<F>(&self, range: &MemoryRegion, f: &mut F) -> Result<(), MapError>
     where
         F: FnMut(&MemoryRegion, &Descriptor, usize) -> Result<(), ()>,

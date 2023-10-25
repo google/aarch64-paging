@@ -1,10 +1,13 @@
 [package]
 name = "aarch64-paging"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A library to manipulate AArch64 VMSA EL1 page tables."
-authors = ["Ard Biesheuvel <ardb@google.com>", "Andrew Walbran <qwandor@google.com>"]
+authors = [
+  "Ard Biesheuvel <ardb@google.com>",
+  "Andrew Walbran <qwandor@google.com>",
+]
 repository = "https://github.com/google/aarch64-paging"
 keywords = ["arm", "aarch64", "cortex-a", "vmsa", "pagetable"]
 categories = ["embedded", "no-std", "hardware-support"]

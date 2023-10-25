@@ -16,7 +16,8 @@
   function and prevent them from being converted into table descriptors
   inadvertently.
 - Added rigid break-before-make (BBM) checks to `map_range` and `modify_range`.
-- Added `constraints` argument to `map_range()`
+- Added `constraints` argument to `map_range()`.
+- Marked `activate` and `deactivate` methods as unsafe.
 
 ### New features
 

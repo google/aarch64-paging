@@ -16,12 +16,12 @@
   function and prevent them from being converted into table descriptors
   inadvertently.
 - Added rigid break-before-make (BBM) checks to `map_range` and `modify_range`.
-- Added `constraints` argument to new `map_range()` alternative
-  `map_range_with_constraints()`.
 - Marked `activate` and `deactivate` methods as unsafe.
 
 ### New features
 
+- Added new `map_range()` alternative `map_range_with_constraints()` with extra `contraints`
+  argument.
 - Added `walk_range` method that iterates over all block or page descriptors
   that intersect with a given region, without permitting the callback to make
   changes to the descriptors

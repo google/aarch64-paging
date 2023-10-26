@@ -274,7 +274,12 @@ impl<T: Translation + Clone> Mapping<T> {
                 Ok(())
             },
         )
-        .map_err(|_| MapError::BreakBeforeMakeViolation(range.clone()))?;
+        .map_err(|e| match e {
+            MapError::PteUpdateFault(_) => {
+                MapError::BreakBeforeMakeViolation(range.clone())
+            }
+            e => e,
+        })?;
         Ok(())
     }
 

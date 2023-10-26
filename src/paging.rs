@@ -367,8 +367,18 @@ impl<T: Translation> RootTable<T> {
     where
         F: FnMut(&MemoryRegion, &Descriptor, usize) -> Result<(), ()>,
     {
+        self.visit_range(range, &mut |mr, desc, level| {
+            f(mr, desc, level).map_err(|_| MapError::PteUpdateFault(*desc))
+        })
+    }
+
+    // Private version of `walk_range` using a closure that returns MapError on error
+    pub(crate) fn visit_range<F>(&self, range: &MemoryRegion, f: &mut F) -> Result<(), MapError>
+    where
+        F: FnMut(&MemoryRegion, &Descriptor, usize) -> Result<(), MapError>,
+    {
         self.verify_region(range)?;
-        self.table.walk_range(&self.translation, range, f)
+        self.table.visit_range(&self.translation, range, f)
     }
 
     /// Returns the level of mapping used for the given virtual address:
@@ -699,24 +709,19 @@ impl<T: Translation> PageTableWithLevel<T> {
         Ok(())
     }
 
-    /// Walks a range of page table entries and passes each one to a caller provided function
-    /// If the range is not aligned to block boundaries, it will be expanded.
-    fn walk_range<F>(
-        &self,
-        translation: &T,
-        range: &MemoryRegion,
-        f: &mut F,
-    ) -> Result<(), MapError>
+    /// Walks a range of page table entries and passes each one to a caller provided function.
+    /// If the function returns an error, the walk is terminated and the error value is passed on
+    fn visit_range<F, E>(&self, translation: &T, range: &MemoryRegion, f: &mut F) -> Result<(), E>
     where
-        F: FnMut(&MemoryRegion, &Descriptor, usize) -> Result<(), ()>,
+        F: FnMut(&MemoryRegion, &Descriptor, usize) -> Result<(), E>,
     {
         let level = self.level;
         for chunk in range.split(level) {
             let entry = self.get_entry(chunk.0.start);
             if let Some(subtable) = entry.subtable(translation, level) {
-                subtable.walk_range(translation, &chunk, f)?;
+                subtable.visit_range(translation, &chunk, f)?;
             } else {
-                f(&chunk, entry, level).map_err(|_| MapError::PteUpdateFault(*entry))?;
+                f(&chunk, entry, level)?;
             }
         }
         Ok(())

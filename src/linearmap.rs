@@ -260,8 +260,8 @@ impl LinearMap {
     ///
     /// The callback function receives the following arguments:
     ///
-    /// - The full virtual address range mapped by each visited page table descriptor, which may
-    ///   exceed the original range passed to `walk_range`, due to alignment to block boundaries.
+    /// - The range covered by the current step in the walk. This is always a subrange of `range`
+    ///   even when the descriptor covers a region that exceeds it.
     /// - The page table descriptor itself.
     /// - The level of a translation table the descriptor belongs to.
     ///

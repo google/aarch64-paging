@@ -232,9 +232,12 @@ impl<T: Translation + Clone> Mapping<T> {
     where
         F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
     {
+        let mut last_visited_region: Option<MemoryRegion> = None;
+
         self.walk_range(
             range,
             &mut |mr: &MemoryRegion, d: &Descriptor, level: usize| {
+                last_visited_region = Some(mr.clone());
                 if d.is_valid() {
                     if !mr.is_block(level) {
                         // Cannot split a live block mapping
@@ -276,7 +279,7 @@ impl<T: Translation + Clone> Mapping<T> {
         )
         .map_err(|e| match e {
             MapError::PteUpdateFault(_) => {
-                MapError::BreakBeforeMakeViolation(range.clone())
+                MapError::BreakBeforeMakeViolation(last_visited_region.unwrap())
             }
             e => e,
         })?;

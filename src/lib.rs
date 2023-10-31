@@ -232,21 +232,23 @@ impl<T: Translation + Clone> Mapping<T> {
     where
         F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
     {
-        self.walk_range(
+        self.root.visit_range(
             range,
             &mut |mr: &MemoryRegion, d: &Descriptor, level: usize| {
                 if d.is_valid() {
+                    let err = MapError::BreakBeforeMakeViolation(mr.clone());
+
                     if !mr.is_block(level) {
                         // Cannot split a live block mapping
-                        return Err(());
+                        return Err(err);
                     }
 
                     // Get the new flags and output address for this descriptor by applying
                     // the updater function to a copy
                     let (flags, oa) = {
                         let mut dd = *d;
-                        updater(mr, &mut dd, level)?;
-                        (dd.flags().ok_or(())?, dd.output_address())
+                        updater(mr, &mut dd, level).or(Err(err.clone()))?;
+                        (dd.flags().ok_or(err.clone())?, dd.output_address())
                     };
 
                     if !flags.contains(Attributes::VALID) {
@@ -256,26 +258,24 @@ impl<T: Translation + Clone> Mapping<T> {
 
                     if oa != d.output_address() {
                         // Cannot change output address on a live mapping
-                        return Err(());
+                        return Err(err);
                     }
 
                     let desc_flags = d.flags().unwrap();
 
                     if (desc_flags ^ flags).intersects(Attributes::NORMAL) {
                         // Cannot change memory type
-                        return Err(());
+                        return Err(err);
                     }
 
                     if (desc_flags - flags).contains(Attributes::NON_GLOBAL) {
                         // Cannot convert from non-global to global
-                        return Err(());
+                        return Err(err);
                     }
                 }
                 Ok(())
             },
         )
-        .map_err(|_| MapError::BreakBeforeMakeViolation(range.clone()))?;
-        Ok(())
     }
 
     /// Maps the given range of virtual addresses to the corresponding range of physical addresses

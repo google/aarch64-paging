@@ -434,7 +434,7 @@ mod tests {
                 Attributes::NORMAL | Attributes::VALID | Attributes::READ_ONLY,
             ),
             Err(MapError::BreakBeforeMakeViolation(MemoryRegion::new(
-                0,
+                BLOCK_SIZE,
                 BLOCK_SIZE + PAGE_SIZE
             )))
         );
@@ -453,7 +453,7 @@ mod tests {
                 Attributes::DEVICE_NGNRE | Attributes::VALID | Attributes::NON_GLOBAL,
             ),
             Err(MapError::BreakBeforeMakeViolation(MemoryRegion::new(
-                0, BLOCK_SIZE
+                0, PAGE_SIZE
             )))
         );
 
@@ -464,7 +464,7 @@ mod tests {
                 Attributes::NORMAL,
             ),
             Err(MapError::BreakBeforeMakeViolation(MemoryRegion::new(
-                PAGE_SIZE,
+                BLOCK_SIZE,
                 BLOCK_SIZE + PAGE_SIZE
             )))
         );

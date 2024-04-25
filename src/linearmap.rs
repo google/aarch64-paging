@@ -288,9 +288,32 @@ impl LinearMap {
     /// Returns the physical address of the root table.
     ///
     /// This may be used to activate the page table by setting the appropriate TTBRn_ELx if you wish
-    /// to do so yourself rather than by calling [`activate`](Self::activate).
+    /// to do so yourself rather than by calling [`activate`](Self::activate). Make sure to call
+    /// [`mark_active`](Self::mark_active) after doing so.
     pub fn root_address(&self) -> PhysicalAddress {
         self.mapping.root_address()
+    }
+
+    /// Marks the page table as active.
+    ///
+    /// This should be called if the page table is manually activated by calling
+    /// [`root_address`](Self::root_address) and setting some TTBR with it. This will cause
+    /// [`map_range`](Self::map_range) and [`modify_range`](Self::modify_range) to perform extra
+    /// checks to avoid violating break-before-make requirements.
+    ///
+    /// It is called automatically by [`activate`](Self::activate).
+    pub fn mark_active(&mut self, previous_ttbr: usize) {
+        self.mapping.mark_active(previous_ttbr);
+    }
+
+    /// Marks the page table as inactive.
+    ///
+    /// This may be called after manually disabling the use of the page table, such as by setting
+    /// the relevant TTBR to a different address.
+    ///
+    /// It is called automatically by [`deactivate`](Self::deactivate).
+    pub fn mark_inactive(&mut self) {
+        self.mapping.mark_inactive();
     }
 }
 

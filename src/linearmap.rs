@@ -284,6 +284,14 @@ impl LinearMap {
     {
         self.mapping.walk_range(range, f)
     }
+
+    /// Returns the physical address of the root table.
+    ///
+    /// This may be used to activate the page table by setting the appropriate TTBRn_ELx if you wish
+    /// to do so yourself rather than by calling [`activate`](Self::activate).
+    pub fn root_address(&self) -> PhysicalAddress {
+        self.mapping.root_address()
+    }
 }
 
 #[cfg(test)]

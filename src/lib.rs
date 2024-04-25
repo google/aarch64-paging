@@ -11,8 +11,7 @@
 //!
 //! Full support is provided for identity mapping ([`IdMap`](idmap::IdMap)) and linear mapping
 //! ([`LinearMap`](linearmap::LinearMap)). If you want to use a different mapping scheme, you must
-//! provide an implementation of the [`Translation`](paging::Translation) trait and then use
-//! [`Mapping`] directly.
+//! provide an implementation of the [`Translation`] trait and then use [`Mapping`] directly.
 //!
 //! # Example
 //!

@@ -125,6 +125,9 @@ impl<T: Translation + Clone> Mapping<T> {
         exception_level: ExceptionLevel,
         va_range: VaRange,
     ) -> Self {
+        if exception_level == ExceptionLevel::El3 && asid != 0 {
+            panic!("EL3 doesn't support ASID, must be 0.");
+        }
         Self {
             root: RootTable::new(translation, rootlevel, exception_level, va_range),
             asid,
@@ -191,7 +194,7 @@ impl<T: Translation + Clone> Mapping<T> {
                     "mrs   {previous_ttbr}, ttbr0_el3",
                     "msr   ttbr0_el3, {ttbrval}",
                     "isb",
-                    ttbrval = in(reg) self.root_address().0 | (self.asid << 48),
+                    ttbrval = in(reg) self.root_address().0,
                     previous_ttbr = out(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
@@ -254,16 +257,9 @@ impl<T: Translation + Clone> Mapping<T> {
                     ttbrval = in(reg) self.previous_ttbr.unwrap(),
                     options(preserves_flags),
                 ),
-                (ExceptionLevel::El3, VaRange::Lower) => asm!(
-                    "msr   ttbr0_el3, {ttbrval}",
-                    "isb",
-                    "tlbi  aside1, {asid}",
-                    "dsb   nsh",
-                    "isb",
-                    asid = in(reg) self.asid << 48,
-                    ttbrval = in(reg) self.previous_ttbr.unwrap(),
-                    options(preserves_flags),
-                ),
+                (ExceptionLevel::El3, VaRange::Lower) => {
+                    panic!("EL3 page table can't safety be deactivated.");
+                }
                 _ => {
                     panic!("Invalid combination of exception level and VA range.");
                 }
@@ -470,5 +466,20 @@ impl<T: Translation + Clone> Drop for Mapping<T> {
                 self.deactivate();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(feature = "alloc")]
+    use self::idmap::IdTranslation;
+    #[cfg(feature = "alloc")]
+    use super::*;
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    #[should_panic]
+    fn no_el3_asid() {
+        Mapping::new(IdTranslation, 1, 1, ExceptionLevel::El3, VaRange::Lower);
     }
 }

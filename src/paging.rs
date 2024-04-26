@@ -37,6 +37,17 @@ pub enum VaRange {
     Upper,
 }
 
+/// Which exception level a page table is for.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ExceptionLevel {
+    /// EL1
+    El1,
+    /// EL2
+    El2,
+    /// EL3
+    El3,
+}
+
 /// An aarch64 virtual address, the input type of a stage 1 page table.
 #[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub struct VirtualAddress(pub usize);
@@ -228,6 +239,7 @@ pub struct RootTable<T: Translation> {
     table: PageTableWithLevel<T>,
     translation: T,
     pa: PhysicalAddress,
+    exception_level: ExceptionLevel,
     va_range: VaRange,
 }
 
@@ -237,15 +249,27 @@ impl<T: Translation> RootTable<T> {
     /// The level must be between 0 and 3; level -1 (for 52-bit addresses with LPA2) is not
     /// currently supported by this library. The value of `TCR_EL1.T0SZ` must be set appropriately
     /// to match.
-    pub fn new(translation: T, level: usize, va_range: VaRange) -> Self {
+    pub fn new(
+        translation: T,
+        level: usize,
+        exception_level: ExceptionLevel,
+        va_range: VaRange,
+    ) -> Self {
         if level > LEAF_LEVEL {
             panic!("Invalid root table level {}.", level);
+        }
+        if va_range != VaRange::Lower && exception_level != ExceptionLevel::El1 {
+            panic!(
+                "{:?} doesn't have an upper virtual address range.",
+                exception_level
+            );
         }
         let (table, pa) = PageTableWithLevel::new(&translation, level);
         RootTable {
             table,
             translation,
             pa,
+            exception_level,
             va_range,
         }
     }
@@ -285,9 +309,16 @@ impl<T: Translation> RootTable<T> {
         self.pa
     }
 
-    /// Returns the TTBR for which this table is intended.
+    /// Returns the virtual address range for which this table is intended.
+    ///
+    /// This affects which TTBR register is used.
     pub fn va_range(&self) -> VaRange {
         self.va_range
+    }
+
+    /// Returns the exception level for which this table is intended.
+    pub fn exception_level(&self) -> ExceptionLevel {
+        self.exception_level
     }
 
     /// Returns a reference to the translation used for this page table.
@@ -898,6 +929,8 @@ pub(crate) const fn is_aligned(value: usize, alignment: usize) -> bool {
 mod tests {
     use super::*;
     #[cfg(feature = "alloc")]
+    use crate::idmap::IdTranslation;
+    #[cfg(feature = "alloc")]
     use alloc::{format, string::ToString, vec, vec::Vec};
 
     #[cfg(feature = "alloc")]
@@ -1027,5 +1060,19 @@ mod tests {
                 MemoryRegion::new(0x0020_0000, 0x0020_5000),
             ]
         );
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    #[should_panic]
+    fn no_el2_ttbr1() {
+        RootTable::<IdTranslation>::new(IdTranslation, 1, ExceptionLevel::El2, VaRange::Upper);
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    #[should_panic]
+    fn no_el3_ttbr1() {
+        RootTable::<IdTranslation>::new(IdTranslation, 1, ExceptionLevel::El3, VaRange::Upper);
     }
 }

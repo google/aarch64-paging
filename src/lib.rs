@@ -6,7 +6,6 @@
 //!
 //! Currently it only supports:
 //!   - stage 1 page tables
-//!   - EL1
 //!   - 4 KiB pages
 //!
 //! Full support is provided for identity mapping ([`IdMap`](idmap::IdMap)) and linear mapping
@@ -19,14 +18,14 @@
 //! # #[cfg(feature = "alloc")] {
 //! use aarch64_paging::{
 //!     idmap::IdMap,
-//!     paging::{Attributes, MemoryRegion},
+//!     paging::{Attributes, ExceptionLevel, MemoryRegion},
 //! };
 //!
 //! const ASID: usize = 1;
 //! const ROOT_LEVEL: usize = 1;
 //!
-//! // Create a new page table with identity mapping.
-//! let mut idmap = IdMap::new(ASID, ROOT_LEVEL);
+//! // Create a new EL1 page table with identity mapping.
+//! let mut idmap = IdMap::new(ASID, ROOT_LEVEL, ExceptionLevel::El1);
 //! // Map a 2 MiB region of memory as read-write.
 //! idmap.map_range(
 //!     &MemoryRegion::new(0x80200000, 0x80400000),
@@ -56,8 +55,8 @@ extern crate alloc;
 use core::arch::asm;
 use core::fmt::{self, Display, Formatter};
 use paging::{
-    Attributes, Constraints, Descriptor, MemoryRegion, PhysicalAddress, RootTable, Translation,
-    VaRange, VirtualAddress,
+    Attributes, Constraints, Descriptor, ExceptionLevel, MemoryRegion, PhysicalAddress, RootTable,
+    Translation, VaRange, VirtualAddress,
 };
 
 /// An error attempting to map some range in the page table.
@@ -119,9 +118,15 @@ pub struct Mapping<T: Translation + Clone> {
 
 impl<T: Translation + Clone> Mapping<T> {
     /// Creates a new page table with the given ASID, root level and translation mapping.
-    pub fn new(translation: T, asid: usize, rootlevel: usize, va_range: VaRange) -> Self {
+    pub fn new(
+        translation: T,
+        asid: usize,
+        rootlevel: usize,
+        exception_level: ExceptionLevel,
+        va_range: VaRange,
+    ) -> Self {
         Self {
-            root: RootTable::new(translation, rootlevel, va_range),
+            root: RootTable::new(translation, rootlevel, exception_level, va_range),
             asid,
             previous_ttbr: None,
         }
@@ -132,13 +137,13 @@ impl<T: Translation + Clone> Mapping<T> {
         self.previous_ttbr.is_some()
     }
 
-    /// Activates the page table by setting `TTBRn_EL1` to point to it, and saves the previous value
-    /// of `TTBRn_EL1` so that it may later be restored by [`deactivate`](Self::deactivate).
+    /// Activates the page table by setting `TTBRn_ELx` to point to it, and saves the previous value
+    /// of `TTBRn_ELx` so that it may later be restored by [`deactivate`](Self::deactivate).
     ///
-    /// Panics if a previous value of `TTBRn_EL1` is already saved and not yet used by a call to
+    /// Panics if a previous value of `TTBRn_ELx` is already saved and not yet used by a call to
     /// `deactivate`.
     ///
-    /// In test builds or builds that do not target aarch64, the `TTBRn_EL1` access is omitted.
+    /// In test builds or builds that do not target aarch64, the `TTBRn_ELx` access is omitted.
     ///
     /// # Safety
     ///
@@ -154,11 +159,11 @@ impl<T: Translation + Clone> Mapping<T> {
 
         #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: Safe because we trust that self.root_address() returns a valid physical address
-        // of a page table, and the `Drop` implementation will reset `TTBRn_EL1` before it becomes
+        // of a page table, and the `Drop` implementation will reset `TTBRn_ELx` before it becomes
         // invalid.
         unsafe {
-            match self.root.va_range() {
-                VaRange::Lower => asm!(
+            match (self.root.exception_level(), self.root.va_range()) {
+                (ExceptionLevel::El1, VaRange::Lower) => asm!(
                     "mrs   {previous_ttbr}, ttbr0_el1",
                     "msr   ttbr0_el1, {ttbrval}",
                     "isb",
@@ -166,7 +171,7 @@ impl<T: Translation + Clone> Mapping<T> {
                     previous_ttbr = out(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
-                VaRange::Upper => asm!(
+                (ExceptionLevel::El1, VaRange::Upper) => asm!(
                     "mrs   {previous_ttbr}, ttbr1_el1",
                     "msr   ttbr1_el1, {ttbrval}",
                     "isb",
@@ -174,19 +179,38 @@ impl<T: Translation + Clone> Mapping<T> {
                     previous_ttbr = out(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
+                (ExceptionLevel::El2, VaRange::Lower) => asm!(
+                    "mrs   {previous_ttbr}, ttbr0_el2",
+                    "msr   ttbr0_el2, {ttbrval}",
+                    "isb",
+                    ttbrval = in(reg) self.root_address().0 | (self.asid << 48),
+                    previous_ttbr = out(reg) previous_ttbr,
+                    options(preserves_flags),
+                ),
+                (ExceptionLevel::El3, VaRange::Lower) => asm!(
+                    "mrs   {previous_ttbr}, ttbr0_el3",
+                    "msr   ttbr0_el3, {ttbrval}",
+                    "isb",
+                    ttbrval = in(reg) self.root_address().0 | (self.asid << 48),
+                    previous_ttbr = out(reg) previous_ttbr,
+                    options(preserves_flags),
+                ),
+                _ => {
+                    panic!("Invalid combination of exception level and VA range.");
+                }
             }
         }
         self.mark_active(previous_ttbr);
     }
 
-    /// Deactivates the page table, by setting `TTBRn_EL1` back to the value it had before
+    /// Deactivates the page table, by setting `TTBRn_ELx` back to the value it had before
     /// [`activate`](Self::activate) was called, and invalidating the TLB for this page table's
     /// configured ASID.
     ///
-    /// Panics if there is no saved `TTBRn_EL1` value because `activate` has not previously been
+    /// Panics if there is no saved `TTBRn_ELx` value because `activate` has not previously been
     /// called.
     ///
-    /// In test builds or builds that do not target aarch64, the `TTBRn_EL1` access is omitted.
+    /// In test builds or builds that do not target aarch64, the `TTBRn_ELx` access is omitted.
     ///
     /// # Safety
     ///
@@ -196,11 +220,11 @@ impl<T: Translation + Clone> Mapping<T> {
         assert!(self.active());
 
         #[cfg(all(not(test), target_arch = "aarch64"))]
-        // SAFETY: Safe because this just restores the previously saved value of `TTBRn_EL1`, which
+        // SAFETY: Safe because this just restores the previously saved value of `TTBRn_ELx`, which
         // must have been valid.
         unsafe {
-            match self.root.va_range() {
-                VaRange::Lower => asm!(
+            match (self.root.exception_level(), self.root.va_range()) {
+                (ExceptionLevel::El1, VaRange::Lower) => asm!(
                     "msr   ttbr0_el1, {ttbrval}",
                     "isb",
                     "tlbi  aside1, {asid}",
@@ -210,7 +234,7 @@ impl<T: Translation + Clone> Mapping<T> {
                     ttbrval = in(reg) self.previous_ttbr.unwrap(),
                     options(preserves_flags),
                 ),
-                VaRange::Upper => asm!(
+                (ExceptionLevel::El1, VaRange::Upper) => asm!(
                     "msr   ttbr1_el1, {ttbrval}",
                     "isb",
                     "tlbi  aside1, {asid}",
@@ -220,6 +244,29 @@ impl<T: Translation + Clone> Mapping<T> {
                     ttbrval = in(reg) self.previous_ttbr.unwrap(),
                     options(preserves_flags),
                 ),
+                (ExceptionLevel::El2, VaRange::Lower) => asm!(
+                    "msr   ttbr0_el2, {ttbrval}",
+                    "isb",
+                    "tlbi  aside1, {asid}",
+                    "dsb   nsh",
+                    "isb",
+                    asid = in(reg) self.asid << 48,
+                    ttbrval = in(reg) self.previous_ttbr.unwrap(),
+                    options(preserves_flags),
+                ),
+                (ExceptionLevel::El3, VaRange::Lower) => asm!(
+                    "msr   ttbr0_el3, {ttbrval}",
+                    "isb",
+                    "tlbi  aside1, {asid}",
+                    "dsb   nsh",
+                    "isb",
+                    asid = in(reg) self.asid << 48,
+                    ttbrval = in(reg) self.previous_ttbr.unwrap(),
+                    options(preserves_flags),
+                ),
+                _ => {
+                    panic!("Invalid combination of exception level and VA range.");
+                }
             }
         }
         self.mark_inactive();

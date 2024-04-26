@@ -11,8 +11,7 @@
 //!
 //! Full support is provided for identity mapping ([`IdMap`](idmap::IdMap)) and linear mapping
 //! ([`LinearMap`](linearmap::LinearMap)). If you want to use a different mapping scheme, you must
-//! provide an implementation of the [`Translation`](paging::Translation) trait and then use
-//! [`Mapping`] directly.
+//! provide an implementation of the [`Translation`] trait and then use [`Mapping`] directly.
 //!
 //! # Example
 //!
@@ -154,16 +153,16 @@ impl<T: Translation + Clone> Mapping<T> {
         let mut previous_ttbr = usize::MAX;
 
         #[cfg(all(not(test), target_arch = "aarch64"))]
-        // SAFETY: Safe because we trust that self.root.to_physical() returns a valid physical
-        // address of a page table, and the `Drop` implementation will reset `TTBRn_EL1` before it
-        // becomes invalid.
+        // SAFETY: Safe because we trust that self.root_address() returns a valid physical address
+        // of a page table, and the `Drop` implementation will reset `TTBRn_EL1` before it becomes
+        // invalid.
         unsafe {
             match self.root.va_range() {
                 VaRange::Lower => asm!(
                     "mrs   {previous_ttbr}, ttbr0_el1",
                     "msr   ttbr0_el1, {ttbrval}",
                     "isb",
-                    ttbrval = in(reg) self.root.to_physical().0 | (self.asid << 48),
+                    ttbrval = in(reg) self.root_address().0 | (self.asid << 48),
                     previous_ttbr = out(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
@@ -171,13 +170,13 @@ impl<T: Translation + Clone> Mapping<T> {
                     "mrs   {previous_ttbr}, ttbr1_el1",
                     "msr   ttbr1_el1, {ttbrval}",
                     "isb",
-                    ttbrval = in(reg) self.root.to_physical().0 | (self.asid << 48),
+                    ttbrval = in(reg) self.root_address().0 | (self.asid << 48),
                     previous_ttbr = out(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
             }
         }
-        self.previous_ttbr = Some(previous_ttbr);
+        self.mark_active(previous_ttbr);
     }
 
     /// Deactivates the page table, by setting `TTBRn_EL1` back to the value it had before
@@ -223,7 +222,7 @@ impl<T: Translation + Clone> Mapping<T> {
                 ),
             }
         }
-        self.previous_ttbr = None;
+        self.mark_inactive();
     }
 
     /// Checks whether the given range can be mapped or updated while the translation is live,
@@ -380,6 +379,37 @@ impl<T: Translation + Clone> Mapping<T> {
         F: FnMut(&MemoryRegion, &Descriptor, usize) -> Result<(), ()>,
     {
         self.root.walk_range(range, f)
+    }
+
+    /// Returns the physical address of the root table.
+    ///
+    /// This may be used to activate the page table by setting the appropriate TTBRn_ELx if you wish
+    /// to do so yourself rather than by calling [`activate`](Self::activate). Make sure to call
+    /// [`mark_active`](Self::mark_active) after doing so.
+    pub fn root_address(&self) -> PhysicalAddress {
+        self.root.to_physical()
+    }
+
+    /// Marks the page table as active.
+    ///
+    /// This should be called if the page table is manually activated by calling
+    /// [`root_address`](Self::root_address) and setting some TTBR with it. This will cause
+    /// [`map_range`](Self::map_range) and [`modify_range`](Self::modify_range) to perform extra
+    /// checks to avoid violating break-before-make requirements.
+    ///
+    /// It is called automatically by [`activate`](Self::activate).
+    pub fn mark_active(&mut self, previous_ttbr: usize) {
+        self.previous_ttbr = Some(previous_ttbr);
+    }
+
+    /// Marks the page table as inactive.
+    ///
+    /// This may be called after manually disabling the use of the page table, such as by setting
+    /// the relevant TTBR to a different address.
+    ///
+    /// It is called automatically by [`deactivate`](Self::deactivate).
+    pub fn mark_inactive(&mut self) {
+        self.previous_ttbr = None;
     }
 }
 

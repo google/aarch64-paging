@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### New features
+
+- Added `root_address`, `mark_active` and `mark_inactive` methods to `IdMap`, `LinearMap` and
+  `Mapping`. These may be used to activate and deactivate the page table manually rather than
+  calling `activate` and `deactivate`.
+
 ## 0.5.0
 
 ### Bug fixes

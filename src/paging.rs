@@ -429,7 +429,11 @@ impl<T: Translation> Debug for RootTable<T> {
 
 impl<T: Translation> Drop for RootTable<T> {
     fn drop(&mut self) {
-        self.table.free(&self.translation)
+        // SAFETY: We created the table in `RootTable::new` by calling `PageTableWithLevel::new`
+        // with `self.translation`. Subtables were similarly created by
+        // `PageTableWithLevel::split_entry` calling `PageTableWithLevel::new` with the same
+        // translation.
+        unsafe { self.table.free(&self.translation) }
     }
 }
 
@@ -659,19 +663,25 @@ impl<T: Translation> PageTableWithLevel<T> {
 
     /// Frees the memory used by this pagetable and all subtables. It is not valid to access the
     /// page table after this.
-    fn free(&mut self, translation: &T) {
+    ///
+    /// # Safety
+    ///
+    /// The table and all its subtables must have been created by `PageTableWithLevel::new` with the
+    /// same `translation`.
+    unsafe fn free(&mut self, translation: &T) {
         // SAFETY: Safe because we know that the pointer is aligned, initialised and dereferencable,
         // and the PageTable won't be mutated while we are freeing it.
         let table = unsafe { self.table.as_ref() };
         for entry in table.entries {
             if let Some(mut subtable) = entry.subtable(translation, self.level) {
-                // Safe because the subtable was allocated by `PageTableWithLevel::new` with the
-                // global allocator and appropriate layout.
+                // Safe because our caller promised that all our subtables were created by
+                // `PageTableWithLevel::new` with the same `translation`.
                 subtable.free(translation);
             }
         }
-        // SAFETY: Safe because the table was allocated by `PageTableWithLevel::new` with the global
-        // allocator and appropriate layout.
+        // SAFETY: Safe because our caller promised that the table was created by
+        // `PageTableWithLevel::new` with `translation`, which then allocated it by calling
+        // `allocate_table` on `translation`.
         unsafe {
             // Actually free the memory used by the `PageTable`.
             translation.deallocate_table(self.table);

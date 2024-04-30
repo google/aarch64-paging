@@ -7,6 +7,9 @@
 - Added support for EL2 and EL3 page tables. This requires a new parameter to `IdMap::new`,
   `LinearMap::new`, `Mapping::new` and `RootTable::new`.
 - `Attributes::EXECUTE_NEVER` renamed to `Attributes::UXN`.
+- `Attributes::DEVICE_NGNRE` and `NORMAL` have been removed in favour of `ATTRIBUTE_INDEX_*`,
+  `OUTER_SHAREABLE` and `INNER_SHAREABLE`, to avoid making assumptions about how the MAIR registers
+  are programmed.
 
 ### New features
 

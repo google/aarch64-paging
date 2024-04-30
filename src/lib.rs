@@ -23,13 +23,14 @@
 //!
 //! const ASID: usize = 1;
 //! const ROOT_LEVEL: usize = 1;
+//! const NORMAL_CACHEABLE: Attributes = Attributes::ATTRIBUTE_INDEX_1.union(Attributes::INNER_SHAREABLE);
 //!
 //! // Create a new EL1 page table with identity mapping.
 //! let mut idmap = IdMap::new(ASID, ROOT_LEVEL, TranslationRegime::El1And0);
 //! // Map a 2 MiB region of memory as read-write.
 //! idmap.map_range(
 //!     &MemoryRegion::new(0x80200000, 0x80400000),
-//!     Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::VALID,
+//!     NORMAL_CACHEABLE | Attributes::NON_GLOBAL | Attributes::VALID,
 //! ).unwrap();
 //! // SAFETY: Everything the program uses is within the 2 MiB region mapped above.
 //! unsafe {
@@ -334,7 +335,9 @@ impl<T: Translation + Clone> Mapping<T> {
 
                     let desc_flags = d.flags().unwrap();
 
-                    if (desc_flags ^ flags).intersects(Attributes::NORMAL) {
+                    if (desc_flags ^ flags).intersects(
+                        Attributes::ATTRIBUTE_INDEX_MASK | Attributes::SHAREABILITY_MASK,
+                    ) {
                         // Cannot change memory type
                         return Err(err);
                     }

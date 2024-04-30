@@ -513,10 +513,17 @@ bitflags! {
         const VALID         = 1 << 0;
         const TABLE_OR_PAGE = 1 << 1;
 
-        // The following memory types assume that the MAIR registers
-        // have been programmed accordingly.
-        const DEVICE_NGNRE  = 0 << 2;
-        const NORMAL        = 1 << 2 | 3 << 8; // inner shareable
+        const ATTRIBUTE_INDEX_0 = 0 << 2;
+        const ATTRIBUTE_INDEX_1 = 1 << 2;
+        const ATTRIBUTE_INDEX_2 = 2 << 2;
+        const ATTRIBUTE_INDEX_3 = 3 << 2;
+        const ATTRIBUTE_INDEX_4 = 4 << 2;
+        const ATTRIBUTE_INDEX_5 = 5 << 2;
+        const ATTRIBUTE_INDEX_6 = 6 << 2;
+        const ATTRIBUTE_INDEX_7 = 7 << 2;
+
+        const OUTER_SHAREABLE = 2 << 8;
+        const INNER_SHAREABLE = 3 << 8;
 
         const NS            = 1 << 5;
         const USER          = 1 << 6;
@@ -536,6 +543,14 @@ bitflags! {
         const SWFLAG_2 = 1 << 57;
         const SWFLAG_3 = 1 << 58;
     }
+}
+
+impl Attributes {
+    /// Mask for the bits determining the shareability of the mapping.
+    pub const SHAREABILITY_MASK: Self = Self::INNER_SHAREABLE;
+
+    /// Mask for the bits determining the attribute index of the mapping.
+    pub const ATTRIBUTE_INDEX_MASK: Self = Self::ATTRIBUTE_INDEX_7;
 }
 
 /// Smart pointer which owns a [`PageTable`] and knows what level it is at. This allows it to

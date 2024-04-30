@@ -6,12 +6,14 @@
 
 - Added support for EL2 and EL3 page tables. This requires a new parameter to `IdMap::new`,
   `LinearMap::new`, `Mapping::new` and `RootTable::new`.
+- `Attributes::EXECUTE_NEVER` renamed to `Attributes::UXN`.
 
 ### New features
 
 - Added `root_address`, `mark_active` and `mark_inactive` methods to `IdMap`, `LinearMap` and
   `Mapping`. These may be used to activate and deactivate the page table manually rather than
   calling `activate` and `deactivate`.
+- Added `NS` and `PXN` bits to `Attributes`.
 
 ## 0.5.0
 

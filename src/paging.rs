@@ -524,7 +524,11 @@ bitflags! {
         const ACCESSED      = 1 << 10;
         const NON_GLOBAL    = 1 << 11;
         const DBM           = 1 << 51;
-        const EXECUTE_NEVER = 3 << 53;
+        /// Privileged Execute-never, if two privilege levels are supported.
+        const PXN           = 1 << 53;
+        /// Unprivileged Execute-never, or just Execute-never if only one privilege level is
+        /// supported.
+        const UXN           = 1 << 54;
 
         // Software flags in block and page descriptor entries.
         const SWFLAG_0 = 1 << 55;

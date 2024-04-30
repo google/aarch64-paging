@@ -518,6 +518,7 @@ bitflags! {
         const DEVICE_NGNRE  = 0 << 2;
         const NORMAL        = 1 << 2 | 3 << 8; // inner shareable
 
+        const NS            = 1 << 5;
         const USER          = 1 << 6;
         const READ_ONLY     = 1 << 7;
         const ACCESSED      = 1 << 10;

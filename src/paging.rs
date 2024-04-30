@@ -526,7 +526,7 @@ bitflags! {
         const DBM           = 1 << 51;
         const EXECUTE_NEVER = 3 << 53;
 
-        /// Software flags in block and page descriptor entries.
+        // Software flags in block and page descriptor entries.
         const SWFLAG_0 = 1 << 55;
         const SWFLAG_1 = 1 << 56;
         const SWFLAG_2 = 1 << 57;

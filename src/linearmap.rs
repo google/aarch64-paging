@@ -8,8 +8,8 @@
 
 use crate::{
     paging::{
-        deallocate, is_aligned, Attributes, Constraints, Descriptor, ExceptionLevel, MemoryRegion,
-        PageTable, PhysicalAddress, Translation, VaRange, VirtualAddress, PAGE_SIZE,
+        deallocate, is_aligned, Attributes, Constraints, Descriptor, MemoryRegion, PageTable,
+        PhysicalAddress, Translation, TranslationRegime, VaRange, VirtualAddress, PAGE_SIZE,
     },
     MapError, Mapping,
 };
@@ -110,7 +110,7 @@ impl LinearMap {
         asid: usize,
         rootlevel: usize,
         offset: isize,
-        exception_level: ExceptionLevel,
+        translation_regime: TranslationRegime,
         va_range: VaRange,
     ) -> Self {
         Self {
@@ -118,7 +118,7 @@ impl LinearMap {
                 LinearTranslation::new(offset),
                 asid,
                 rootlevel,
-                exception_level,
+                translation_regime,
                 va_range,
             ),
         }
@@ -344,7 +344,7 @@ mod tests {
     #[test]
     fn map_valid() {
         // A single byte at the start of the address space.
-        let mut pagetable = LinearMap::new(1, 1, 4096, ExceptionLevel::El1, VaRange::Lower);
+        let mut pagetable = LinearMap::new(1, 1, 4096, TranslationRegime::El1, VaRange::Lower);
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(0, 1),
@@ -354,7 +354,7 @@ mod tests {
         );
 
         // Two pages at the start of the address space.
-        let mut pagetable = LinearMap::new(1, 1, 4096, ExceptionLevel::El1, VaRange::Lower);
+        let mut pagetable = LinearMap::new(1, 1, 4096, TranslationRegime::El1, VaRange::Lower);
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(0, PAGE_SIZE * 2),
@@ -364,7 +364,7 @@ mod tests {
         );
 
         // A single byte at the end of the address space.
-        let mut pagetable = LinearMap::new(1, 1, 4096, ExceptionLevel::El1, VaRange::Lower);
+        let mut pagetable = LinearMap::new(1, 1, 4096, TranslationRegime::El1, VaRange::Lower);
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(
@@ -383,7 +383,7 @@ mod tests {
             1,
             1,
             LEVEL_2_BLOCK_SIZE as isize,
-            ExceptionLevel::El1,
+            TranslationRegime::El1,
             VaRange::Lower,
         );
         assert_eq!(
@@ -402,7 +402,7 @@ mod tests {
             1,
             1,
             -(PAGE_SIZE as isize),
-            ExceptionLevel::El1,
+            TranslationRegime::El1,
             VaRange::Lower,
         );
         assert_eq!(
@@ -418,7 +418,7 @@ mod tests {
             1,
             1,
             -(PAGE_SIZE as isize),
-            ExceptionLevel::El1,
+            TranslationRegime::El1,
             VaRange::Lower,
         );
         assert_eq!(
@@ -434,7 +434,7 @@ mod tests {
             1,
             1,
             -(PAGE_SIZE as isize),
-            ExceptionLevel::El1,
+            TranslationRegime::El1,
             VaRange::Lower,
         );
         assert_eq!(
@@ -455,7 +455,7 @@ mod tests {
             1,
             1,
             -(LEVEL_2_BLOCK_SIZE as isize),
-            ExceptionLevel::El1,
+            TranslationRegime::El1,
             VaRange::Lower,
         );
         assert_eq!(
@@ -469,7 +469,7 @@ mod tests {
 
     #[test]
     fn map_out_of_range() {
-        let mut pagetable = LinearMap::new(1, 1, 4096, ExceptionLevel::El1, VaRange::Lower);
+        let mut pagetable = LinearMap::new(1, 1, 4096, TranslationRegime::El1, VaRange::Lower);
 
         // One byte, just past the edge of the valid range.
         assert_eq!(
@@ -499,7 +499,7 @@ mod tests {
 
     #[test]
     fn map_invalid_offset() {
-        let mut pagetable = LinearMap::new(1, 1, -4096, ExceptionLevel::El1, VaRange::Lower);
+        let mut pagetable = LinearMap::new(1, 1, -4096, TranslationRegime::El1, VaRange::Lower);
 
         // One byte, with an offset which would map it to a negative IPA.
         assert_eq!(
@@ -599,7 +599,7 @@ mod tests {
     #[test]
     fn block_mapping() {
         // Test that block mapping is used when the PA is appropriately aligned...
-        let mut pagetable = LinearMap::new(1, 1, 1 << 30, ExceptionLevel::El1, VaRange::Lower);
+        let mut pagetable = LinearMap::new(1, 1, 1 << 30, TranslationRegime::El1, VaRange::Lower);
         pagetable
             .map_range(
                 &MemoryRegion::new(0, 1 << 30),
@@ -612,7 +612,7 @@ mod tests {
         );
 
         // ...but not when it is not.
-        let mut pagetable = LinearMap::new(1, 1, 1 << 29, ExceptionLevel::El1, VaRange::Lower);
+        let mut pagetable = LinearMap::new(1, 1, 1 << 29, TranslationRegime::El1, VaRange::Lower);
         pagetable
             .map_range(
                 &MemoryRegion::new(0, 1 << 30),
@@ -626,7 +626,7 @@ mod tests {
     }
 
     fn make_map() -> LinearMap {
-        let mut lmap = LinearMap::new(1, 1, 4096, ExceptionLevel::El1, VaRange::Lower);
+        let mut lmap = LinearMap::new(1, 1, 4096, TranslationRegime::El1, VaRange::Lower);
         // Mapping VA range 0x0 - 0x2000 to PA range 0x1000 - 0x3000
         lmap.map_range(&MemoryRegion::new(0, PAGE_SIZE * 2), Attributes::NORMAL)
             .unwrap();
@@ -672,7 +672,7 @@ mod tests {
     fn breakup_invalid_block() {
         const BLOCK_RANGE: usize = 0x200000;
 
-        let mut lmap = LinearMap::new(1, 1, 0x1000, ExceptionLevel::El1, VaRange::Lower);
+        let mut lmap = LinearMap::new(1, 1, 0x1000, TranslationRegime::El1, VaRange::Lower);
         lmap.map_range(
             &MemoryRegion::new(0, BLOCK_RANGE),
             Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::SWFLAG_0,

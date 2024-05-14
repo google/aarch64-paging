@@ -37,9 +37,11 @@ pub enum VaRange {
     Upper,
 }
 
-/// Which exception level a page table is for.
+/// Which translation regime a page table is for.
+///
+/// This depends on the exception level, among other things.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum ExceptionLevel {
+pub enum TranslationRegime {
     /// EL1
     El1,
     /// EL2
@@ -239,7 +241,7 @@ pub struct RootTable<T: Translation> {
     table: PageTableWithLevel<T>,
     translation: T,
     pa: PhysicalAddress,
-    exception_level: ExceptionLevel,
+    translation_regime: TranslationRegime,
     va_range: VaRange,
 }
 
@@ -252,16 +254,16 @@ impl<T: Translation> RootTable<T> {
     pub fn new(
         translation: T,
         level: usize,
-        exception_level: ExceptionLevel,
+        translation_regime: TranslationRegime,
         va_range: VaRange,
     ) -> Self {
         if level > LEAF_LEVEL {
             panic!("Invalid root table level {}.", level);
         }
-        if va_range != VaRange::Lower && exception_level != ExceptionLevel::El1 {
+        if va_range != VaRange::Lower && translation_regime != TranslationRegime::El1 {
             panic!(
                 "{:?} doesn't have an upper virtual address range.",
-                exception_level
+                translation_regime
             );
         }
         let (table, pa) = PageTableWithLevel::new(&translation, level);
@@ -269,7 +271,7 @@ impl<T: Translation> RootTable<T> {
             table,
             translation,
             pa,
-            exception_level,
+            translation_regime,
             va_range,
         }
     }
@@ -316,9 +318,9 @@ impl<T: Translation> RootTable<T> {
         self.va_range
     }
 
-    /// Returns the exception level for which this table is intended.
-    pub fn exception_level(&self) -> ExceptionLevel {
-        self.exception_level
+    /// Returns the translation regime for which this table is intended.
+    pub fn translation_regime(&self) -> TranslationRegime {
+        self.translation_regime
     }
 
     /// Returns a reference to the translation used for this page table.
@@ -1066,13 +1068,13 @@ mod tests {
     #[test]
     #[should_panic]
     fn no_el2_ttbr1() {
-        RootTable::<IdTranslation>::new(IdTranslation, 1, ExceptionLevel::El2, VaRange::Upper);
+        RootTable::<IdTranslation>::new(IdTranslation, 1, TranslationRegime::El2, VaRange::Upper);
     }
 
     #[cfg(feature = "alloc")]
     #[test]
     #[should_panic]
     fn no_el3_ttbr1() {
-        RootTable::<IdTranslation>::new(IdTranslation, 1, ExceptionLevel::El3, VaRange::Upper);
+        RootTable::<IdTranslation>::new(IdTranslation, 1, TranslationRegime::El3, VaRange::Upper);
     }
 }

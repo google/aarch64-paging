@@ -18,14 +18,14 @@
 //! # #[cfg(feature = "alloc")] {
 //! use aarch64_paging::{
 //!     idmap::IdMap,
-//!     paging::{Attributes, ExceptionLevel, MemoryRegion},
+//!     paging::{Attributes, MemoryRegion, TranslationRegime},
 //! };
 //!
 //! const ASID: usize = 1;
 //! const ROOT_LEVEL: usize = 1;
 //!
 //! // Create a new EL1 page table with identity mapping.
-//! let mut idmap = IdMap::new(ASID, ROOT_LEVEL, ExceptionLevel::El1);
+//! let mut idmap = IdMap::new(ASID, ROOT_LEVEL, TranslationRegime::El1);
 //! // Map a 2 MiB region of memory as read-write.
 //! idmap.map_range(
 //!     &MemoryRegion::new(0x80200000, 0x80400000),
@@ -55,8 +55,8 @@ extern crate alloc;
 use core::arch::asm;
 use core::fmt::{self, Display, Formatter};
 use paging::{
-    Attributes, Constraints, Descriptor, ExceptionLevel, MemoryRegion, PhysicalAddress, RootTable,
-    Translation, VaRange, VirtualAddress,
+    Attributes, Constraints, Descriptor, MemoryRegion, PhysicalAddress, RootTable, Translation,
+    TranslationRegime, VaRange, VirtualAddress,
 };
 
 /// An error attempting to map some range in the page table.
@@ -122,14 +122,14 @@ impl<T: Translation + Clone> Mapping<T> {
         translation: T,
         asid: usize,
         rootlevel: usize,
-        exception_level: ExceptionLevel,
+        translation_regime: TranslationRegime,
         va_range: VaRange,
     ) -> Self {
-        if exception_level == ExceptionLevel::El3 && asid != 0 {
+        if translation_regime == TranslationRegime::El3 && asid != 0 {
             panic!("EL3 doesn't support ASID, must be 0.");
         }
         Self {
-            root: RootTable::new(translation, rootlevel, exception_level, va_range),
+            root: RootTable::new(translation, rootlevel, translation_regime, va_range),
             asid,
             previous_ttbr: None,
         }
@@ -165,8 +165,8 @@ impl<T: Translation + Clone> Mapping<T> {
         // of a page table, and the `Drop` implementation will reset `TTBRn_ELx` before it becomes
         // invalid.
         unsafe {
-            match (self.root.exception_level(), self.root.va_range()) {
-                (ExceptionLevel::El1, VaRange::Lower) => asm!(
+            match (self.root.translation_regime(), self.root.va_range()) {
+                (TranslationRegime::El1, VaRange::Lower) => asm!(
                     "mrs   {previous_ttbr}, ttbr0_el1",
                     "msr   ttbr0_el1, {ttbrval}",
                     "isb",
@@ -174,7 +174,7 @@ impl<T: Translation + Clone> Mapping<T> {
                     previous_ttbr = out(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
-                (ExceptionLevel::El1, VaRange::Upper) => asm!(
+                (TranslationRegime::El1, VaRange::Upper) => asm!(
                     "mrs   {previous_ttbr}, ttbr1_el1",
                     "msr   ttbr1_el1, {ttbrval}",
                     "isb",
@@ -182,7 +182,7 @@ impl<T: Translation + Clone> Mapping<T> {
                     previous_ttbr = out(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
-                (ExceptionLevel::El2, VaRange::Lower) => asm!(
+                (TranslationRegime::El2, VaRange::Lower) => asm!(
                     "mrs   {previous_ttbr}, ttbr0_el2",
                     "msr   ttbr0_el2, {ttbrval}",
                     "isb",
@@ -190,7 +190,7 @@ impl<T: Translation + Clone> Mapping<T> {
                     previous_ttbr = out(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
-                (ExceptionLevel::El3, VaRange::Lower) => asm!(
+                (TranslationRegime::El3, VaRange::Lower) => asm!(
                     "mrs   {previous_ttbr}, ttbr0_el3",
                     "msr   ttbr0_el3, {ttbrval}",
                     "isb",
@@ -226,8 +226,8 @@ impl<T: Translation + Clone> Mapping<T> {
         // SAFETY: Safe because this just restores the previously saved value of `TTBRn_ELx`, which
         // must have been valid.
         unsafe {
-            match (self.root.exception_level(), self.root.va_range()) {
-                (ExceptionLevel::El1, VaRange::Lower) => asm!(
+            match (self.root.translation_regime(), self.root.va_range()) {
+                (TranslationRegime::El1, VaRange::Lower) => asm!(
                     "msr   ttbr0_el1, {ttbrval}",
                     "isb",
                     "tlbi  aside1, {asid}",
@@ -237,7 +237,7 @@ impl<T: Translation + Clone> Mapping<T> {
                     ttbrval = in(reg) self.previous_ttbr.unwrap(),
                     options(preserves_flags),
                 ),
-                (ExceptionLevel::El1, VaRange::Upper) => asm!(
+                (TranslationRegime::El1, VaRange::Upper) => asm!(
                     "msr   ttbr1_el1, {ttbrval}",
                     "isb",
                     "tlbi  aside1, {asid}",
@@ -247,7 +247,7 @@ impl<T: Translation + Clone> Mapping<T> {
                     ttbrval = in(reg) self.previous_ttbr.unwrap(),
                     options(preserves_flags),
                 ),
-                (ExceptionLevel::El2, VaRange::Lower) => asm!(
+                (TranslationRegime::El2, VaRange::Lower) => asm!(
                     "msr   ttbr0_el2, {ttbrval}",
                     "isb",
                     "tlbi  aside1, {asid}",
@@ -257,7 +257,7 @@ impl<T: Translation + Clone> Mapping<T> {
                     ttbrval = in(reg) self.previous_ttbr.unwrap(),
                     options(preserves_flags),
                 ),
-                (ExceptionLevel::El3, VaRange::Lower) => {
+                (TranslationRegime::El3, VaRange::Lower) => {
                     panic!("EL3 page table can't safety be deactivated.");
                 }
                 _ => {
@@ -480,6 +480,6 @@ mod tests {
     #[test]
     #[should_panic]
     fn no_el3_asid() {
-        Mapping::new(IdTranslation, 1, 1, ExceptionLevel::El3, VaRange::Lower);
+        Mapping::new(IdTranslation, 1, 1, TranslationRegime::El3, VaRange::Lower);
     }
 }

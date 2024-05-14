@@ -46,8 +46,19 @@ pub enum TranslationRegime {
     El3,
     /// Non-secure EL2.
     El2,
+    /// Non-secure EL2&0, with VHE.
+    El2And0,
     /// Non-secure EL1&0, stage 1.
     El1And0,
+}
+
+impl TranslationRegime {
+    /// Returns whether this translation regime supports use of an ASID.
+    ///
+    /// This also implies that it supports two VA ranges.
+    pub(crate) fn supports_asid(self) -> bool {
+        matches!(self, Self::El2And0 | Self::El1And0)
+    }
 }
 
 /// An aarch64 virtual address, the input type of a stage 1 page table.
@@ -260,7 +271,7 @@ impl<T: Translation> RootTable<T> {
         if level > LEAF_LEVEL {
             panic!("Invalid root table level {}.", level);
         }
-        if va_range != VaRange::Lower && translation_regime != TranslationRegime::El1 {
+        if !translation_regime.supports_asid() && va_range != VaRange::Lower {
             panic!(
                 "{:?} doesn't have an upper virtual address range.",
                 translation_regime

@@ -125,8 +125,8 @@ impl<T: Translation + Clone> Mapping<T> {
         translation_regime: TranslationRegime,
         va_range: VaRange,
     ) -> Self {
-        if translation_regime == TranslationRegime::El3 && asid != 0 {
-            panic!("EL3 doesn't support ASID, must be 0.");
+        if !translation_regime.supports_asid() && asid != 0 {
+            panic!("{:?} doesn't support ASID, must be 0.", translation_regime);
         }
         Self {
             root: RootTable::new(translation, rootlevel, translation_regime, va_range),
@@ -182,11 +182,27 @@ impl<T: Translation + Clone> Mapping<T> {
                     previous_ttbr = out(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
-                (TranslationRegime::El2, VaRange::Lower) => asm!(
+                (TranslationRegime::El2And0, VaRange::Lower) => asm!(
                     "mrs   {previous_ttbr}, ttbr0_el2",
                     "msr   ttbr0_el2, {ttbrval}",
                     "isb",
                     ttbrval = in(reg) self.root_address().0 | (self.asid << 48),
+                    previous_ttbr = out(reg) previous_ttbr,
+                    options(preserves_flags),
+                ),
+                (TranslationRegime::El2And0, VaRange::Upper) => asm!(
+                    "mrs   {previous_ttbr}, s3_4_c2_c0_1", // ttbr1_el2
+                    "msr   s3_4_c2_c0_1, {ttbrval}",
+                    "isb",
+                    ttbrval = in(reg) self.root_address().0 | (self.asid << 48),
+                    previous_ttbr = out(reg) previous_ttbr,
+                    options(preserves_flags),
+                ),
+                (TranslationRegime::El2, VaRange::Lower) => asm!(
+                    "mrs   {previous_ttbr}, ttbr0_el2",
+                    "msr   ttbr0_el2, {ttbrval}",
+                    "isb",
+                    ttbrval = in(reg) self.root_address().0,
                     previous_ttbr = out(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
@@ -247,7 +263,7 @@ impl<T: Translation + Clone> Mapping<T> {
                     ttbrval = in(reg) self.previous_ttbr.unwrap(),
                     options(preserves_flags),
                 ),
-                (TranslationRegime::El2, VaRange::Lower) => asm!(
+                (TranslationRegime::El2And0, VaRange::Lower) => asm!(
                     "msr   ttbr0_el2, {ttbrval}",
                     "isb",
                     "tlbi  aside1, {asid}",
@@ -257,6 +273,19 @@ impl<T: Translation + Clone> Mapping<T> {
                     ttbrval = in(reg) self.previous_ttbr.unwrap(),
                     options(preserves_flags),
                 ),
+                (TranslationRegime::El2And0, VaRange::Upper) => asm!(
+                    "msr   s3_4_c2_c0_1, {ttbrval}", // ttbr1_el2
+                    "isb",
+                    "tlbi  aside1, {asid}",
+                    "dsb   nsh",
+                    "isb",
+                    asid = in(reg) self.asid << 48,
+                    ttbrval = in(reg) self.previous_ttbr.unwrap(),
+                    options(preserves_flags),
+                ),
+                (TranslationRegime::El2, VaRange::Lower) => {
+                    panic!("EL2 page table can't safety be deactivated.");
+                }
                 (TranslationRegime::El3, VaRange::Lower) => {
                     panic!("EL3 page table can't safety be deactivated.");
                 }
@@ -475,6 +504,13 @@ mod tests {
     use self::idmap::IdTranslation;
     #[cfg(feature = "alloc")]
     use super::*;
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    #[should_panic]
+    fn no_el2_asid() {
+        Mapping::new(IdTranslation, 1, 1, TranslationRegime::El2, VaRange::Lower);
+    }
 
     #[cfg(feature = "alloc")]
     #[test]

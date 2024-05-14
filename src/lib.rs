@@ -25,7 +25,7 @@
 //! const ROOT_LEVEL: usize = 1;
 //!
 //! // Create a new EL1 page table with identity mapping.
-//! let mut idmap = IdMap::new(ASID, ROOT_LEVEL, TranslationRegime::El1);
+//! let mut idmap = IdMap::new(ASID, ROOT_LEVEL, TranslationRegime::El1And0);
 //! // Map a 2 MiB region of memory as read-write.
 //! idmap.map_range(
 //!     &MemoryRegion::new(0x80200000, 0x80400000),
@@ -166,7 +166,7 @@ impl<T: Translation + Clone> Mapping<T> {
         // invalid.
         unsafe {
             match (self.root.translation_regime(), self.root.va_range()) {
-                (TranslationRegime::El1, VaRange::Lower) => asm!(
+                (TranslationRegime::El1And0, VaRange::Lower) => asm!(
                     "mrs   {previous_ttbr}, ttbr0_el1",
                     "msr   ttbr0_el1, {ttbrval}",
                     "isb",
@@ -174,7 +174,7 @@ impl<T: Translation + Clone> Mapping<T> {
                     previous_ttbr = out(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
-                (TranslationRegime::El1, VaRange::Upper) => asm!(
+                (TranslationRegime::El1And0, VaRange::Upper) => asm!(
                     "mrs   {previous_ttbr}, ttbr1_el1",
                     "msr   ttbr1_el1, {ttbrval}",
                     "isb",
@@ -227,7 +227,7 @@ impl<T: Translation + Clone> Mapping<T> {
         // must have been valid.
         unsafe {
             match (self.root.translation_regime(), self.root.va_range()) {
-                (TranslationRegime::El1, VaRange::Lower) => asm!(
+                (TranslationRegime::El1And0, VaRange::Lower) => asm!(
                     "msr   ttbr0_el1, {ttbrval}",
                     "isb",
                     "tlbi  aside1, {asid}",
@@ -237,7 +237,7 @@ impl<T: Translation + Clone> Mapping<T> {
                     ttbrval = in(reg) self.previous_ttbr.unwrap(),
                     options(preserves_flags),
                 ),
-                (TranslationRegime::El1, VaRange::Upper) => asm!(
+                (TranslationRegime::El1And0, VaRange::Upper) => asm!(
                     "msr   ttbr1_el1, {ttbrval}",
                     "isb",
                     "tlbi  aside1, {asid}",

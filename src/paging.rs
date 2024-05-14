@@ -42,12 +42,12 @@ pub enum VaRange {
 /// This depends on the exception level, among other things.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum TranslationRegime {
-    /// EL1
-    El1,
-    /// EL2
-    El2,
-    /// EL3
+    /// Secure EL3.
     El3,
+    /// Non-secure EL2.
+    El2,
+    /// Non-secure EL1&0, stage 1.
+    El1And0,
 }
 
 /// An aarch64 virtual address, the input type of a stage 1 page table.

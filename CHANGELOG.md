@@ -6,12 +6,17 @@
 
 - Added support for EL2 and EL3 page tables. This requires a new parameter to `IdMap::new`,
   `LinearMap::new`, `Mapping::new` and `RootTable::new`.
+- `Attributes::EXECUTE_NEVER` renamed to `Attributes::UXN`.
+- `Attributes::DEVICE_NGNRE` and `NORMAL` have been removed in favour of `ATTRIBUTE_INDEX_*`,
+  `OUTER_SHAREABLE` and `INNER_SHAREABLE`, to avoid making assumptions about how the MAIR registers
+  are programmed.
 
 ### New features
 
 - Added `root_address`, `mark_active` and `mark_inactive` methods to `IdMap`, `LinearMap` and
   `Mapping`. These may be used to activate and deactivate the page table manually rather than
   calling `activate` and `deactivate`.
+- Added `NS` and `PXN` bits to `Attributes`.
 
 ## 0.5.0
 

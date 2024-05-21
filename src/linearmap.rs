@@ -340,6 +340,8 @@ mod tests {
     const MAX_ADDRESS_FOR_ROOT_LEVEL_1: usize = 1 << 39;
     const GIB_512_S: isize = 512 * 1024 * 1024 * 1024;
     const GIB_512: usize = 512 * 1024 * 1024 * 1024;
+    const NORMAL_CACHEABLE: Attributes =
+        Attributes::ATTRIBUTE_INDEX_1.union(Attributes::INNER_SHAREABLE);
 
     #[test]
     fn map_valid() {
@@ -348,7 +350,7 @@ mod tests {
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(0, 1),
-                Attributes::NORMAL | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID
             ),
             Ok(())
         );
@@ -358,7 +360,7 @@ mod tests {
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(0, PAGE_SIZE * 2),
-                Attributes::NORMAL | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID
             ),
             Ok(())
         );
@@ -371,7 +373,7 @@ mod tests {
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1 - 1,
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1
                 ),
-                Attributes::NORMAL | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID
             ),
             Ok(())
         );
@@ -389,7 +391,7 @@ mod tests {
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
-                Attributes::NORMAL | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID
             ),
             Ok(())
         );
@@ -408,7 +410,7 @@ mod tests {
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(PAGE_SIZE, PAGE_SIZE + 1),
-                Attributes::NORMAL | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID
             ),
             Ok(())
         );
@@ -424,7 +426,7 @@ mod tests {
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(PAGE_SIZE, PAGE_SIZE * 3),
-                Attributes::NORMAL | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID
             ),
             Ok(())
         );
@@ -443,7 +445,7 @@ mod tests {
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1 - 1,
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1
                 ),
-                Attributes::NORMAL | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID
             ),
             Ok(())
         );
@@ -461,7 +463,7 @@ mod tests {
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(LEVEL_2_BLOCK_SIZE, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
-                Attributes::NORMAL | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID
             ),
             Ok(())
         );
@@ -478,7 +480,7 @@ mod tests {
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1,
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1 + 1,
                 ),
-                Attributes::NORMAL | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID
             ),
             Err(MapError::AddressRange(VirtualAddress(
                 MAX_ADDRESS_FOR_ROOT_LEVEL_1 + PAGE_SIZE
@@ -489,7 +491,7 @@ mod tests {
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1 + 1),
-                Attributes::NORMAL | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID
             ),
             Err(MapError::AddressRange(VirtualAddress(
                 MAX_ADDRESS_FOR_ROOT_LEVEL_1 + PAGE_SIZE
@@ -503,7 +505,7 @@ mod tests {
 
         // One byte, with an offset which would map it to a negative IPA.
         assert_eq!(
-            pagetable.map_range(&MemoryRegion::new(0, 1), Attributes::NORMAL,),
+            pagetable.map_range(&MemoryRegion::new(0, 1), NORMAL_CACHEABLE),
             Err(MapError::InvalidVirtualAddress(VirtualAddress(0)))
         );
     }
@@ -604,7 +606,7 @@ mod tests {
         pagetable
             .map_range(
                 &MemoryRegion::new(0, 1 << 30),
-                Attributes::NORMAL | Attributes::VALID,
+                NORMAL_CACHEABLE | Attributes::VALID,
             )
             .unwrap();
         assert_eq!(
@@ -618,7 +620,7 @@ mod tests {
         pagetable
             .map_range(
                 &MemoryRegion::new(0, 1 << 30),
-                Attributes::NORMAL | Attributes::VALID,
+                NORMAL_CACHEABLE | Attributes::VALID,
             )
             .unwrap();
         assert_eq!(
@@ -630,7 +632,7 @@ mod tests {
     fn make_map() -> LinearMap {
         let mut lmap = LinearMap::new(1, 1, 4096, TranslationRegime::El1And0, VaRange::Lower);
         // Mapping VA range 0x0 - 0x2000 to PA range 0x1000 - 0x3000
-        lmap.map_range(&MemoryRegion::new(0, PAGE_SIZE * 2), Attributes::NORMAL)
+        lmap.map_range(&MemoryRegion::new(0, PAGE_SIZE * 2), NORMAL_CACHEABLE)
             .unwrap();
         lmap
     }
@@ -677,12 +679,12 @@ mod tests {
         let mut lmap = LinearMap::new(1, 1, 0x1000, TranslationRegime::El1And0, VaRange::Lower);
         lmap.map_range(
             &MemoryRegion::new(0, BLOCK_RANGE),
-            Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::SWFLAG_0,
+            NORMAL_CACHEABLE | Attributes::NON_GLOBAL | Attributes::SWFLAG_0,
         )
         .unwrap();
         lmap.map_range(
             &MemoryRegion::new(0, PAGE_SIZE),
-            Attributes::NORMAL | Attributes::NON_GLOBAL | Attributes::VALID,
+            NORMAL_CACHEABLE | Attributes::NON_GLOBAL | Attributes::VALID,
         )
         .unwrap();
         lmap.modify_range(

@@ -37,6 +37,30 @@ pub enum VaRange {
     Upper,
 }
 
+/// Which translation regime a page table is for.
+///
+/// This depends on the exception level, among other things.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum TranslationRegime {
+    /// Secure EL3.
+    El3,
+    /// Non-secure EL2.
+    El2,
+    /// Non-secure EL2&0, with VHE.
+    El2And0,
+    /// Non-secure EL1&0, stage 1.
+    El1And0,
+}
+
+impl TranslationRegime {
+    /// Returns whether this translation regime supports use of an ASID.
+    ///
+    /// This also implies that it supports two VA ranges.
+    pub(crate) fn supports_asid(self) -> bool {
+        matches!(self, Self::El2And0 | Self::El1And0)
+    }
+}
+
 /// An aarch64 virtual address, the input type of a stage 1 page table.
 #[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub struct VirtualAddress(pub usize);
@@ -228,6 +252,7 @@ pub struct RootTable<T: Translation> {
     table: PageTableWithLevel<T>,
     translation: T,
     pa: PhysicalAddress,
+    translation_regime: TranslationRegime,
     va_range: VaRange,
 }
 
@@ -237,15 +262,27 @@ impl<T: Translation> RootTable<T> {
     /// The level must be between 0 and 3; level -1 (for 52-bit addresses with LPA2) is not
     /// currently supported by this library. The value of `TCR_EL1.T0SZ` must be set appropriately
     /// to match.
-    pub fn new(translation: T, level: usize, va_range: VaRange) -> Self {
+    pub fn new(
+        translation: T,
+        level: usize,
+        translation_regime: TranslationRegime,
+        va_range: VaRange,
+    ) -> Self {
         if level > LEAF_LEVEL {
             panic!("Invalid root table level {}.", level);
+        }
+        if !translation_regime.supports_asid() && va_range != VaRange::Lower {
+            panic!(
+                "{:?} doesn't have an upper virtual address range.",
+                translation_regime
+            );
         }
         let (table, pa) = PageTableWithLevel::new(&translation, level);
         RootTable {
             table,
             translation,
             pa,
+            translation_regime,
             va_range,
         }
     }
@@ -285,9 +322,16 @@ impl<T: Translation> RootTable<T> {
         self.pa
     }
 
-    /// Returns the TTBR for which this table is intended.
+    /// Returns the virtual address range for which this table is intended.
+    ///
+    /// This affects which TTBR register is used.
     pub fn va_range(&self) -> VaRange {
         self.va_range
+    }
+
+    /// Returns the translation regime for which this table is intended.
+    pub fn translation_regime(&self) -> TranslationRegime {
+        self.translation_regime
     }
 
     /// Returns a reference to the translation used for this page table.
@@ -898,6 +942,8 @@ pub(crate) const fn is_aligned(value: usize, alignment: usize) -> bool {
 mod tests {
     use super::*;
     #[cfg(feature = "alloc")]
+    use crate::idmap::IdTranslation;
+    #[cfg(feature = "alloc")]
     use alloc::{format, string::ToString, vec, vec::Vec};
 
     #[cfg(feature = "alloc")]
@@ -1027,5 +1073,19 @@ mod tests {
                 MemoryRegion::new(0x0020_0000, 0x0020_5000),
             ]
         );
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    #[should_panic]
+    fn no_el2_ttbr1() {
+        RootTable::<IdTranslation>::new(IdTranslation, 1, TranslationRegime::El2, VaRange::Upper);
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    #[should_panic]
+    fn no_el3_ttbr1() {
+        RootTable::<IdTranslation>::new(IdTranslation, 1, TranslationRegime::El3, VaRange::Upper);
     }
 }

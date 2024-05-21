@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- Added support for EL2 and EL3 page tables. This requires a new parameter to `IdMap::new`,
+  `LinearMap::new`, `Mapping::new` and `RootTable::new`.
+
 ### New features
 
 - Added `root_address`, `mark_active` and `mark_inactive` methods to `IdMap`, `LinearMap` and

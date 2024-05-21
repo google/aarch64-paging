@@ -9,7 +9,7 @@
 use crate::{
     paging::{
         deallocate, Attributes, Constraints, Descriptor, MemoryRegion, PageTable, PhysicalAddress,
-        Translation, VaRange, VirtualAddress,
+        Translation, TranslationRegime, VaRange, VirtualAddress,
     },
     MapError, Mapping,
 };
@@ -60,14 +60,14 @@ impl Translation for IdTranslation {
 /// ```no_run
 /// use aarch64_paging::{
 ///     idmap::IdMap,
-///     paging::{Attributes, MemoryRegion},
+///     paging::{Attributes, MemoryRegion, TranslationRegime},
 /// };
 ///
 /// const ASID: usize = 1;
 /// const ROOT_LEVEL: usize = 1;
 ///
-/// // Create a new page table with identity mapping.
-/// let mut idmap = IdMap::new(ASID, ROOT_LEVEL);
+/// // Create a new EL1 page table with identity mapping.
+/// let mut idmap = IdMap::new(ASID, ROOT_LEVEL, TranslationRegime::El1And0);
 /// // Map a 2 MiB region of memory as read-write.
 /// idmap.map_range(
 ///     &MemoryRegion::new(0x80200000, 0x80400000),
@@ -104,9 +104,15 @@ pub struct IdMap {
 
 impl IdMap {
     /// Creates a new identity-mapping page table with the given ASID and root level.
-    pub fn new(asid: usize, rootlevel: usize) -> Self {
+    pub fn new(asid: usize, rootlevel: usize, translation_regime: TranslationRegime) -> Self {
         Self {
-            mapping: Mapping::new(IdTranslation, asid, rootlevel, VaRange::Lower),
+            mapping: Mapping::new(
+                IdTranslation,
+                asid,
+                rootlevel,
+                translation_regime,
+                VaRange::Lower,
+            ),
         }
     }
 
@@ -318,7 +324,7 @@ mod tests {
     #[test]
     fn map_valid() {
         // A single byte at the start of the address space.
-        let mut idmap = IdMap::new(1, 1);
+        let mut idmap = IdMap::new(1, 1, TranslationRegime::El1And0);
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
         unsafe {
@@ -333,7 +339,7 @@ mod tests {
         );
 
         // Two pages at the start of the address space.
-        let mut idmap = IdMap::new(1, 1);
+        let mut idmap = IdMap::new(1, 1, TranslationRegime::El1And0);
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
         unsafe {
@@ -348,7 +354,7 @@ mod tests {
         );
 
         // A single byte at the end of the address space.
-        let mut idmap = IdMap::new(1, 1);
+        let mut idmap = IdMap::new(1, 1, TranslationRegime::El1And0);
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
         unsafe {
@@ -366,7 +372,7 @@ mod tests {
         );
 
         // Two pages, on the boundary between two subtables.
-        let mut idmap = IdMap::new(1, 1);
+        let mut idmap = IdMap::new(1, 1, TranslationRegime::El1And0);
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
         unsafe {
@@ -381,7 +387,7 @@ mod tests {
         );
 
         // The entire valid address space.
-        let mut idmap = IdMap::new(1, 1);
+        let mut idmap = IdMap::new(1, 1, TranslationRegime::El1And0);
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
         unsafe {
@@ -399,7 +405,7 @@ mod tests {
     #[test]
     fn map_break_before_make() {
         const BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
-        let mut idmap = IdMap::new(1, 1);
+        let mut idmap = IdMap::new(1, 1, TranslationRegime::El1And0);
         idmap
             .map_range_with_constraints(
                 &MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE),
@@ -422,7 +428,7 @@ mod tests {
             Ok(())
         );
 
-        let mut idmap = IdMap::new(1, 1);
+        let mut idmap = IdMap::new(1, 1, TranslationRegime::El1And0);
         idmap
             .map_range(
                 &MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE),
@@ -553,7 +559,7 @@ mod tests {
 
     #[test]
     fn map_out_of_range() {
-        let mut idmap = IdMap::new(1, 1);
+        let mut idmap = IdMap::new(1, 1, TranslationRegime::El1And0);
 
         // One byte, just past the edge of the valid range.
         assert_eq!(
@@ -582,7 +588,7 @@ mod tests {
     }
 
     fn make_map() -> IdMap {
-        let mut idmap = IdMap::new(1, 1);
+        let mut idmap = IdMap::new(1, 1, TranslationRegime::El1And0);
         idmap
             .map_range(
                 &MemoryRegion::new(0, PAGE_SIZE * 2),
@@ -649,7 +655,7 @@ mod tests {
     #[test]
     fn breakup_invalid_block() {
         const BLOCK_RANGE: usize = 0x200000;
-        let mut idmap = IdMap::new(1, 1);
+        let mut idmap = IdMap::new(1, 1, TranslationRegime::El1And0);
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
         unsafe {

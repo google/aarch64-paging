@@ -688,4 +688,28 @@ mod tests {
             )
             .unwrap();
     }
+
+    /// When an unmapped entry is split into a table, all entries should be zero.
+    #[test]
+    fn split_table_zero() {
+        let mut idmap = IdMap::new(1, 1, TranslationRegime::El1And0);
+
+        idmap
+            .map_range(
+                &MemoryRegion::new(0, PAGE_SIZE),
+                NORMAL_CACHEABLE | Attributes::VALID,
+            )
+            .unwrap();
+        idmap
+            .walk_range(
+                &MemoryRegion::new(PAGE_SIZE, PAGE_SIZE * 20),
+                &mut |_, descriptor, _| {
+                    assert!(!descriptor.is_valid());
+                    assert_eq!(descriptor.flags(), Some(Attributes::empty()));
+                    assert_eq!(descriptor.output_address(), PhysicalAddress(0));
+                    Ok(())
+                },
+            )
+            .unwrap();
+    }
 }

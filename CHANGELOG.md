@@ -18,6 +18,11 @@
   calling `activate` and `deactivate`.
 - Added `NS` and `PXN` bits to `Attributes`.
 
+### Bug fixes
+
+- When an invalid descriptor is split into a table, the table descriptors aren't set unless to
+  non-zero values unless the original descriptor was.
+
 ## 0.5.0
 
 ### Bug fixes

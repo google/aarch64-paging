@@ -623,8 +623,10 @@ impl<T: Translation> PageTableWithLevel<T> {
         let old = *entry;
         let (mut subtable, subtable_pa) = Self::new(translation, level + 1);
         if let Some(old_flags) = old.flags() {
-            if !old_flags.contains(Attributes::TABLE_OR_PAGE) {
-                let old_pa = old.output_address();
+            let old_pa = old.output_address();
+            if !old_flags.contains(Attributes::TABLE_OR_PAGE)
+                && (!old_flags.is_empty() || old_pa.0 != 0)
+            {
                 // `old` was a block entry, so we need to split it.
                 // Recreate the entire block in the newly added table.
                 let a = align_down(chunk.0.start.0, granularity);

@@ -30,7 +30,7 @@
 //! // Map a 2 MiB region of memory as read-write.
 //! idmap.map_range(
 //!     &MemoryRegion::new(0x80200000, 0x80400000),
-//!     NORMAL_CACHEABLE | Attributes::NON_GLOBAL | Attributes::VALID,
+//!     NORMAL_CACHEABLE | Attributes::NON_GLOBAL | Attributes::VALID | Attributes::ACCESSED,
 //! ).unwrap();
 //! // SAFETY: Everything the program uses is within the 2 MiB region mapped above.
 //! unsafe {

@@ -669,7 +669,7 @@ impl<T: Translation> PageTableWithLevel<T> {
 
             if level == LEAF_LEVEL {
                 // Put down a page mapping.
-                entry.set(pa, flags | Attributes::ACCESSED | Attributes::TABLE_OR_PAGE);
+                entry.set(pa, flags | Attributes::TABLE_OR_PAGE);
             } else if chunk.is_block(level)
                 && !entry.is_table_or_page()
                 && is_aligned(pa.0, granularity)
@@ -678,7 +678,7 @@ impl<T: Translation> PageTableWithLevel<T> {
                 // Rather than leak the entire subhierarchy, only put down
                 // a block mapping if the region is not already covered by
                 // a table mapping.
-                entry.set(pa, flags | Attributes::ACCESSED);
+                entry.set(pa, flags);
             } else {
                 let mut subtable = entry
                     .subtable(translation, level)

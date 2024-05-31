@@ -350,7 +350,7 @@ mod tests {
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(0, 1),
-                NORMAL_CACHEABLE | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED
             ),
             Ok(())
         );
@@ -360,7 +360,7 @@ mod tests {
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(0, PAGE_SIZE * 2),
-                NORMAL_CACHEABLE | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED
             ),
             Ok(())
         );
@@ -373,7 +373,7 @@ mod tests {
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1 - 1,
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1
                 ),
-                NORMAL_CACHEABLE | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED
             ),
             Ok(())
         );
@@ -391,7 +391,7 @@ mod tests {
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
-                NORMAL_CACHEABLE | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED
             ),
             Ok(())
         );
@@ -410,7 +410,7 @@ mod tests {
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(PAGE_SIZE, PAGE_SIZE + 1),
-                NORMAL_CACHEABLE | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED
             ),
             Ok(())
         );
@@ -426,7 +426,7 @@ mod tests {
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(PAGE_SIZE, PAGE_SIZE * 3),
-                NORMAL_CACHEABLE | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED
             ),
             Ok(())
         );
@@ -445,7 +445,7 @@ mod tests {
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1 - 1,
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1
                 ),
-                NORMAL_CACHEABLE | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED
             ),
             Ok(())
         );
@@ -463,7 +463,7 @@ mod tests {
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(LEVEL_2_BLOCK_SIZE, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
-                NORMAL_CACHEABLE | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED
             ),
             Ok(())
         );
@@ -480,7 +480,7 @@ mod tests {
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1,
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1 + 1,
                 ),
-                NORMAL_CACHEABLE | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED
             ),
             Err(MapError::AddressRange(VirtualAddress(
                 MAX_ADDRESS_FOR_ROOT_LEVEL_1 + PAGE_SIZE
@@ -491,7 +491,7 @@ mod tests {
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1 + 1),
-                NORMAL_CACHEABLE | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED
             ),
             Err(MapError::AddressRange(VirtualAddress(
                 MAX_ADDRESS_FOR_ROOT_LEVEL_1 + PAGE_SIZE
@@ -606,7 +606,7 @@ mod tests {
         pagetable
             .map_range(
                 &MemoryRegion::new(0, 1 << 30),
-                NORMAL_CACHEABLE | Attributes::VALID,
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED,
             )
             .unwrap();
         assert_eq!(
@@ -620,7 +620,7 @@ mod tests {
         pagetable
             .map_range(
                 &MemoryRegion::new(0, 1 << 30),
-                NORMAL_CACHEABLE | Attributes::VALID,
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED,
             )
             .unwrap();
         assert_eq!(
@@ -684,7 +684,7 @@ mod tests {
         .unwrap();
         lmap.map_range(
             &MemoryRegion::new(0, PAGE_SIZE),
-            NORMAL_CACHEABLE | Attributes::NON_GLOBAL | Attributes::VALID,
+            NORMAL_CACHEABLE | Attributes::NON_GLOBAL | Attributes::VALID | Attributes::ACCESSED,
         )
         .unwrap();
         lmap.modify_range(

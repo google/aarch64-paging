@@ -7,6 +7,7 @@
 //! Currently it only supports:
 //!   - stage 1 page tables
 //!   - 4 KiB pages
+//!   - EL3, NS-EL2, NS-EL2&0 and NS-EL1&0 translation regimes
 //!
 //! Full support is provided for identity mapping ([`IdMap`](idmap::IdMap)) and linear mapping
 //! ([`LinearMap`](linearmap::LinearMap)). If you want to use a different mapping scheme, you must

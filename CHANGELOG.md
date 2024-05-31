@@ -23,6 +23,12 @@
 - When an invalid descriptor is split into a table, the table descriptors aren't set unless to
   non-zero values unless the original descriptor was.
 
+### Other changes
+
+- `Attributes::ACCESSED` is no longer automatically set on all new mappings. To maintain existing
+  behaviour you should explicitly set `Attributes::ACCESSED` whenever calling `map_range` for a
+  valid mapping.
+
 ## 0.5.0
 
 ### Bug fixes

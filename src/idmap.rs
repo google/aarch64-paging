@@ -72,7 +72,7 @@ impl Translation for IdTranslation {
 /// // Map a 2 MiB region of memory as read-write.
 /// idmap.map_range(
 ///     &MemoryRegion::new(0x80200000, 0x80400000),
-///     NORMAL_CACHEABLE | Attributes::NON_GLOBAL | Attributes::VALID,
+///     NORMAL_CACHEABLE | Attributes::NON_GLOBAL | Attributes::VALID | Attributes::ACCESSED,
 /// ).unwrap();
 /// // SAFETY: Everything the program uses is within the 2 MiB region mapped above.
 /// unsafe {
@@ -91,7 +91,8 @@ impl Translation for IdTranslation {
 /// // Now change the mapping to read-only and executable.
 /// idmap.map_range(
 ///     &MemoryRegion::new(0x80200000, 0x80400000),
-///     NORMAL_CACHEABLE | Attributes::NON_GLOBAL | Attributes::READ_ONLY | Attributes::VALID,
+///     NORMAL_CACHEABLE | Attributes::NON_GLOBAL | Attributes::READ_ONLY | Attributes::VALID
+///     | Attributes::ACCESSED,
 /// ).unwrap();
 /// // SAFETY: Everything the program will used is mapped in by this page table.
 /// unsafe {
@@ -337,7 +338,7 @@ mod tests {
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(0, 1),
-                NORMAL_CACHEABLE | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED
             ),
             Ok(())
         );
@@ -352,7 +353,7 @@ mod tests {
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(0, PAGE_SIZE * 2),
-                NORMAL_CACHEABLE | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED
             ),
             Ok(())
         );
@@ -370,7 +371,7 @@ mod tests {
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1 - 1,
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1
                 ),
-                NORMAL_CACHEABLE | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED
             ),
             Ok(())
         );
@@ -385,7 +386,7 @@ mod tests {
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(PAGE_SIZE * 1023, PAGE_SIZE * 1025),
-                NORMAL_CACHEABLE | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED
             ),
             Ok(())
         );
@@ -400,7 +401,7 @@ mod tests {
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
-                NORMAL_CACHEABLE | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED
             ),
             Ok(())
         );
@@ -413,7 +414,7 @@ mod tests {
         idmap
             .map_range_with_constraints(
                 &MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE),
-                NORMAL_CACHEABLE | Attributes::VALID,
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED,
                 Constraints::NO_BLOCK_MAPPINGS,
             )
             .unwrap();
@@ -427,7 +428,7 @@ mod tests {
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(BLOCK_SIZE, BLOCK_SIZE + PAGE_SIZE),
-                NORMAL_CACHEABLE | Attributes::VALID,
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED,
             ),
             Ok(())
         );
@@ -436,7 +437,7 @@ mod tests {
         idmap
             .map_range(
                 &MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE),
-                NORMAL_CACHEABLE | Attributes::VALID,
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED,
             )
             .ok();
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
@@ -450,7 +451,7 @@ mod tests {
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(BLOCK_SIZE - PAGE_SIZE, 2 * BLOCK_SIZE + PAGE_SIZE),
-                NORMAL_CACHEABLE | Attributes::VALID,
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED,
             ),
             Ok(())
         );
@@ -459,7 +460,7 @@ mod tests {
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(BLOCK_SIZE, BLOCK_SIZE + PAGE_SIZE),
-                NORMAL_CACHEABLE | Attributes::VALID,
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED,
             ),
             Err(MapError::BreakBeforeMakeViolation(MemoryRegion::new(
                 BLOCK_SIZE,
@@ -472,7 +473,7 @@ mod tests {
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(0, BLOCK_SIZE + PAGE_SIZE),
-                NORMAL_CACHEABLE | Attributes::VALID | Attributes::READ_ONLY,
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED | Attributes::READ_ONLY,
             ),
             Err(MapError::BreakBeforeMakeViolation(MemoryRegion::new(
                 BLOCK_SIZE,
@@ -482,7 +483,7 @@ mod tests {
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(0, BLOCK_SIZE),
-                NORMAL_CACHEABLE | Attributes::VALID | Attributes::READ_ONLY,
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED | Attributes::READ_ONLY,
             ),
             Ok(())
         );
@@ -491,7 +492,7 @@ mod tests {
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(0, BLOCK_SIZE),
-                DEVICE_NGNRE | Attributes::VALID | Attributes::NON_GLOBAL,
+                DEVICE_NGNRE | Attributes::VALID | Attributes::ACCESSED | Attributes::NON_GLOBAL,
             ),
             Err(MapError::BreakBeforeMakeViolation(MemoryRegion::new(
                 0, PAGE_SIZE
@@ -518,7 +519,7 @@ mod tests {
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(0, 2 * PAGE_SIZE),
-                NORMAL_CACHEABLE | Attributes::VALID,
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED,
             ),
             Ok(())
         );
@@ -527,7 +528,10 @@ mod tests {
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(0, PAGE_SIZE),
-                NORMAL_CACHEABLE | Attributes::VALID | Attributes::NON_GLOBAL,
+                NORMAL_CACHEABLE
+                    | Attributes::VALID
+                    | Attributes::ACCESSED
+                    | Attributes::NON_GLOBAL,
             ),
             Ok(())
         );
@@ -536,7 +540,7 @@ mod tests {
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(0, PAGE_SIZE),
-                NORMAL_CACHEABLE | Attributes::VALID,
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED,
             ),
             Err(MapError::BreakBeforeMakeViolation(MemoryRegion::new(
                 0, PAGE_SIZE
@@ -552,7 +556,7 @@ mod tests {
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(0, PAGE_SIZE),
-                NORMAL_CACHEABLE | Attributes::VALID,
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED,
             ),
             Ok(())
         );
@@ -569,7 +573,7 @@ mod tests {
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1,
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1 + 1,
                 ),
-                NORMAL_CACHEABLE | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED
             ),
             Err(MapError::AddressRange(VirtualAddress(
                 MAX_ADDRESS_FOR_ROOT_LEVEL_1 + PAGE_SIZE
@@ -580,7 +584,7 @@ mod tests {
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1 + 1),
-                NORMAL_CACHEABLE | Attributes::VALID
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED
             ),
             Err(MapError::AddressRange(VirtualAddress(
                 MAX_ADDRESS_FOR_ROOT_LEVEL_1 + PAGE_SIZE
@@ -596,7 +600,8 @@ mod tests {
                 NORMAL_CACHEABLE
                     | Attributes::NON_GLOBAL
                     | Attributes::READ_ONLY
-                    | Attributes::VALID,
+                    | Attributes::VALID
+                    | Attributes::ACCESSED,
             )
             .unwrap();
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
@@ -671,7 +676,10 @@ mod tests {
         idmap
             .map_range(
                 &MemoryRegion::new(0, PAGE_SIZE),
-                NORMAL_CACHEABLE | Attributes::NON_GLOBAL | Attributes::VALID,
+                NORMAL_CACHEABLE
+                    | Attributes::NON_GLOBAL
+                    | Attributes::VALID
+                    | Attributes::ACCESSED,
             )
             .unwrap();
         idmap
@@ -697,7 +705,7 @@ mod tests {
         idmap
             .map_range(
                 &MemoryRegion::new(0, PAGE_SIZE),
-                NORMAL_CACHEABLE | Attributes::VALID,
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED,
             )
             .unwrap();
         idmap

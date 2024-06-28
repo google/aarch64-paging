@@ -48,7 +48,7 @@ impl LinearTranslation {
 }
 
 impl Translation for LinearTranslation {
-    fn allocate_table(&self) -> (NonNull<PageTable>, PhysicalAddress) {
+    fn allocate_table(&mut self) -> (NonNull<PageTable>, PhysicalAddress) {
         let table = PageTable::new();
         // Assume that the same linear mapping is used everywhere.
         let va = VirtualAddress(table.as_ptr() as usize);
@@ -59,7 +59,7 @@ impl Translation for LinearTranslation {
         (table, pa)
     }
 
-    unsafe fn deallocate_table(&self, page_table: NonNull<PageTable>) {
+    unsafe fn deallocate_table(&mut self, page_table: NonNull<PageTable>) {
         deallocate(page_table);
     }
 

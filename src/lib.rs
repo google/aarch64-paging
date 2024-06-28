@@ -110,7 +110,7 @@ impl Display for MapError {
 /// switch back to a previous static page table, and then `activate` again after making the desired
 /// changes.
 #[derive(Debug)]
-pub struct Mapping<T: Translation + Clone> {
+pub struct Mapping<T: Translation> {
     root: RootTable<T>,
     #[allow(unused)]
     asid: usize,
@@ -118,7 +118,7 @@ pub struct Mapping<T: Translation + Clone> {
     previous_ttbr: Option<usize>,
 }
 
-impl<T: Translation + Clone> Mapping<T> {
+impl<T: Translation> Mapping<T> {
     /// Creates a new page table with the given ASID, root level and translation mapping.
     pub fn new(
         translation: T,
@@ -489,7 +489,7 @@ impl<T: Translation + Clone> Mapping<T> {
     }
 }
 
-impl<T: Translation + Clone> Drop for Mapping<T> {
+impl<T: Translation> Drop for Mapping<T> {
     fn drop(&mut self) {
         if self.previous_ttbr.is_some() {
             #[cfg(target_arch = "aarch64")]

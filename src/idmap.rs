@@ -26,7 +26,7 @@ impl IdTranslation {
 }
 
 impl Translation for IdTranslation {
-    fn allocate_table(&self) -> (NonNull<PageTable>, PhysicalAddress) {
+    fn allocate_table(&mut self) -> (NonNull<PageTable>, PhysicalAddress) {
         let table = PageTable::new();
 
         // Physical address is the same as the virtual address because we are using identity mapping
@@ -34,7 +34,7 @@ impl Translation for IdTranslation {
         (table, PhysicalAddress(table.as_ptr() as usize))
     }
 
-    unsafe fn deallocate_table(&self, page_table: NonNull<PageTable>) {
+    unsafe fn deallocate_table(&mut self, page_table: NonNull<PageTable>) {
         deallocate(page_table);
     }
 

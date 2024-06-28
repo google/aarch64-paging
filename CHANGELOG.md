@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Other changes
+
+- The `Translation` type parameter to `Mappping` no longer needs to be `Clone`.
+
 ## 0.6.0
 
 ### Breaking changes

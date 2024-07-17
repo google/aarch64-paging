@@ -158,7 +158,7 @@ pub(crate) fn granularity_at_level(level: usize) -> usize {
 pub trait Translation {
     /// Allocates a zeroed page, which is already mapped, to be used for a new subtable of some
     /// pagetable. Returns both a pointer to the page and its physical address.
-    fn allocate_table(&self) -> (NonNull<PageTable>, PhysicalAddress);
+    fn allocate_table(&mut self) -> (NonNull<PageTable>, PhysicalAddress);
 
     /// Deallocates the page which was previous allocated by [`allocate_table`](Self::allocate_table).
     ///
@@ -166,7 +166,7 @@ pub trait Translation {
     ///
     /// The memory must have been allocated by `allocate_table` on the same `Translation`, and not
     /// yet deallocated.
-    unsafe fn deallocate_table(&self, page_table: NonNull<PageTable>);
+    unsafe fn deallocate_table(&mut self, page_table: NonNull<PageTable>);
 
     /// Given the physical address of a subtable, returns the virtual address at which it is mapped.
     fn physical_to_virtual(&self, pa: PhysicalAddress) -> NonNull<PageTable>;
@@ -263,7 +263,7 @@ impl<T: Translation> RootTable<T> {
     /// currently supported by this library. The value of `TCR_EL1.T0SZ` must be set appropriately
     /// to match.
     pub fn new(
-        translation: T,
+        mut translation: T,
         level: usize,
         translation_regime: TranslationRegime,
         va_range: VaRange,
@@ -277,7 +277,7 @@ impl<T: Translation> RootTable<T> {
                 translation_regime
             );
         }
-        let (table, pa) = PageTableWithLevel::new(&translation, level);
+        let (table, pa) = PageTableWithLevel::new(&mut translation, level);
         RootTable {
             table,
             translation,
@@ -313,7 +313,7 @@ impl<T: Translation> RootTable<T> {
         }
         self.verify_region(range)?;
         self.table
-            .map_range(&self.translation, range, pa, flags, constraints);
+            .map_range(&mut self.translation, range, pa, flags, constraints);
         Ok(())
     }
 
@@ -381,7 +381,7 @@ impl<T: Translation> RootTable<T> {
         F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
     {
         self.verify_region(range)?;
-        self.table.modify_range(&self.translation, range, f)
+        self.table.modify_range(&mut self.translation, range, f)
     }
 
     /// Applies the provided callback function to the page table descriptors covering a given
@@ -477,7 +477,7 @@ impl<T: Translation> Drop for RootTable<T> {
         // with `self.translation`. Subtables were similarly created by
         // `PageTableWithLevel::split_entry` calling `PageTableWithLevel::new` with the same
         // translation.
-        unsafe { self.table.free(&self.translation) }
+        unsafe { self.table.free(&mut self.translation) }
     }
 }
 
@@ -570,7 +570,7 @@ unsafe impl<T: Translation + Send> Send for PageTableWithLevel<T> {}
 impl<T: Translation> PageTableWithLevel<T> {
     /// Allocates a new, zeroed, appropriately-aligned page table with the given translation,
     /// returning both a pointer to it and its physical address.
-    fn new(translation: &T, level: usize) -> (Self, PhysicalAddress) {
+    fn new(translation: &mut T, level: usize) -> (Self, PhysicalAddress) {
         assert!(level <= LEAF_LEVEL);
         let (table, pa) = translation.allocate_table();
         (
@@ -614,7 +614,7 @@ impl<T: Translation> PageTableWithLevel<T> {
     /// Convert the descriptor in `entry` from a block mapping to a table mapping of
     /// the same range with the same attributes
     fn split_entry(
-        translation: &T,
+        translation: &mut T,
         chunk: &MemoryRegion,
         entry: &mut Descriptor,
         level: usize,
@@ -655,7 +655,7 @@ impl<T: Translation> PageTableWithLevel<T> {
     /// should be checked by the caller beforehand.
     fn map_range(
         &mut self,
-        translation: &T,
+        translation: &mut T,
         range: &MemoryRegion,
         mut pa: PhysicalAddress,
         flags: Attributes,
@@ -734,7 +734,7 @@ impl<T: Translation> PageTableWithLevel<T> {
     ///
     /// The table and all its subtables must have been created by `PageTableWithLevel::new` with the
     /// same `translation`.
-    unsafe fn free(&mut self, translation: &T) {
+    unsafe fn free(&mut self, translation: &mut T) {
         // SAFETY: Safe because we know that the pointer is aligned, initialised and dereferencable,
         // and the PageTable won't be mutated while we are freeing it.
         let table = unsafe { self.table.as_ref() };
@@ -758,7 +758,7 @@ impl<T: Translation> PageTableWithLevel<T> {
     /// If the range is not aligned to block boundaries, block descriptors will be split up.
     fn modify_range<F>(
         &mut self,
-        translation: &T,
+        translation: &mut T,
         range: &MemoryRegion,
         f: &F,
     ) -> Result<(), MapError>

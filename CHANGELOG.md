@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+
+- `Translation::allocate_table` and `Translation::deallocate_table` now takes `&mut self` rather
+  than `&self.
+
+### Other changes
+
+- The `Translation` type parameter to `Mappping` no longer needs to be `Clone`.
+
 ## 0.6.0
 
 ### Breaking changes

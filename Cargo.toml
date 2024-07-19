@@ -1,6 +1,6 @@
 [package]
 name = "aarch64-paging"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A library to manipulate AArch64 VMSA page tables."
@@ -13,7 +13,7 @@ keywords = ["arm", "aarch64", "cortex-a", "vmsa", "pagetable"]
 categories = ["embedded", "no-std", "hardware-support"]
 
 [dependencies]
-bitflags = "2.0.2"
+bitflags = "2.6.0"
 
 [features]
 default = ["alloc"]

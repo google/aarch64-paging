@@ -567,6 +567,9 @@ struct PageTableWithLevel<T: Translation> {
 // with appropriate synchronization. This type manages ownership for the raw pointer.
 unsafe impl<T: Translation + Send> Send for PageTableWithLevel<T> {}
 
+// SAFETY: &Self only allows reading from the page table, which is safe to do from any thread.
+unsafe impl<T: Translation + Sync> Sync for PageTableWithLevel<T> {}
+
 impl<T: Translation> PageTableWithLevel<T> {
     /// Allocates a new, zeroed, appropriately-aligned page table with the given translation,
     /// returning both a pointer to it and its physical address.

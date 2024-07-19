@@ -9,7 +9,8 @@
 
 ### Other changes
 
-- The `Translation` type parameter to `Mappping` no longer needs to be `Clone`.
+- The `Translation` type parameter to `Mapping` no longer needs to be `Clone`.
+- `IdMap`, `LinearMap`, `Mapping` and `RootTable` are now `Sync`.
 
 ## 0.6.0
 

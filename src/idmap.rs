@@ -35,7 +35,12 @@ impl Translation for IdTranslation {
     }
 
     unsafe fn deallocate_table(&mut self, page_table: NonNull<PageTable>) {
-        deallocate(page_table);
+        // SAFETY: Our caller promises that the memory was allocated by `allocate_table` on this
+        // `IdTranslation` and not yet deallocated. `allocate_table` used the global allocator and
+        // appropriate layout by calling `PageTable::new()`.
+        unsafe {
+            deallocate(page_table);
+        }
     }
 
     fn physical_to_virtual(&self, pa: PhysicalAddress) -> NonNull<PageTable> {
@@ -133,7 +138,10 @@ impl IdMap {
     /// dropped as long as its mappings are required, as it will automatically be deactivated when
     /// it is dropped.
     pub unsafe fn activate(&mut self) {
-        self.mapping.activate()
+        // SAFETY: We delegate the safety requirements to our caller.
+        unsafe {
+            self.mapping.activate();
+        }
     }
 
     /// Deactivates the page table, by setting `TTBR0_EL1` back to the value it had before
@@ -150,7 +158,10 @@ impl IdMap {
     /// The caller must ensure that the previous page table which this is switching back to doesn't
     /// unmap any memory which the program is using.
     pub unsafe fn deactivate(&mut self) {
-        self.mapping.deactivate()
+        // SAFETY: We delegate the safety requirements to our caller.
+        unsafe {
+            self.mapping.deactivate();
+        }
     }
 
     /// Maps the given range of virtual addresses to the identical physical addresses with the given

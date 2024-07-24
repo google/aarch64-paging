@@ -50,6 +50,8 @@ pub mod idmap;
 #[cfg(feature = "alloc")]
 pub mod linearmap;
 pub mod paging;
+#[cfg(feature = "alloc")]
+pub mod target;
 
 #[cfg(feature = "alloc")]
 extern crate alloc;

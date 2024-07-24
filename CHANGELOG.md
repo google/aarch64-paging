@@ -7,6 +7,7 @@
 - Added `Mapping::translation` method.
 - Derived zerocopy traits for `VirtualAddress`, `PhysicalAddress`, `PageTable` and `Descriptor`.
   This is guarded behind the `zerocopy` feature so the dependency can be avoided if not desired.
+- Added `TargetAllocator` for pregenerating a static pagetable for a target device.
 
 ## 0.7.0
 

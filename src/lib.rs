@@ -138,6 +138,11 @@ impl<T: Translation> Mapping<T> {
         }
     }
 
+    /// Returns a reference to the translation used for this page table.
+    pub fn translation(&self) -> &T {
+        self.root.translation()
+    }
+
     /// Returns whether this mapping is currently active.
     pub fn active(&self) -> bool {
         self.previous_ttbr.is_some()

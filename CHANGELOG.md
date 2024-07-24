@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### New features
+
+- Added `Mapping::translation` method.
+
 ## 0.7.0
 
 ### Breaking changes

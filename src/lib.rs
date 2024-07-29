@@ -43,6 +43,7 @@
 
 #![no_std]
 #![deny(clippy::undocumented_unsafe_blocks)]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 #[cfg(feature = "alloc")]
 pub mod idmap;
@@ -163,9 +164,8 @@ impl<T: Translation> Mapping<T> {
         let mut previous_ttbr = usize::MAX;
 
         #[cfg(all(not(test), target_arch = "aarch64"))]
-        // SAFETY: Safe because we trust that self.root_address() returns a valid physical address
-        // of a page table, and the `Drop` implementation will reset `TTBRn_ELx` before it becomes
-        // invalid.
+        // SAFETY: We trust that self.root_address() returns a valid physical address of a page
+        // table, and the `Drop` implementation will reset `TTBRn_ELx` before it becomes invalid.
         unsafe {
             match (self.root.translation_regime(), self.root.va_range()) {
                 (TranslationRegime::El1And0, VaRange::Lower) => asm!(
@@ -241,8 +241,8 @@ impl<T: Translation> Mapping<T> {
         assert!(self.active());
 
         #[cfg(all(not(test), target_arch = "aarch64"))]
-        // SAFETY: Safe because this just restores the previously saved value of `TTBRn_ELx`, which
-        // must have been valid.
+        // SAFETY: This just restores the previously saved value of `TTBRn_ELx`, which must have
+        // been valid.
         unsafe {
             match (self.root.translation_regime(), self.root.va_range()) {
                 (TranslationRegime::El1And0, VaRange::Lower) => asm!(
@@ -391,7 +391,7 @@ impl<T: Translation> Mapping<T> {
         }
         self.root.map_range(range, pa, flags, constraints)?;
         #[cfg(target_arch = "aarch64")]
-        // SAFETY: Safe because this is just a memory barrier.
+        // SAFETY: This is just a memory barrier.
         unsafe {
             asm!("dsb ishst");
         }
@@ -430,7 +430,7 @@ impl<T: Translation> Mapping<T> {
         }
         self.root.modify_range(range, f)?;
         #[cfg(target_arch = "aarch64")]
-        // SAFETY: Safe because this is just a memory barrier.
+        // SAFETY: This is just a memory barrier.
         unsafe {
             asm!("dsb ishst");
         }

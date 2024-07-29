@@ -50,6 +50,8 @@ pub mod idmap;
 #[cfg(feature = "alloc")]
 pub mod linearmap;
 pub mod paging;
+#[cfg(feature = "alloc")]
+pub mod target;
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -136,6 +138,11 @@ impl<T: Translation> Mapping<T> {
             asid,
             previous_ttbr: None,
         }
+    }
+
+    /// Returns a reference to the translation used for this page table.
+    pub fn translation(&self) -> &T {
+        self.root.translation()
     }
 
     /// Returns whether this mapping is currently active.

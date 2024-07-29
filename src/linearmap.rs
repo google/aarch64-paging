@@ -228,7 +228,6 @@ impl LinearMap {
     ) -> Result<(), MapError> {
         let pa = self
             .mapping
-            .root
             .translation()
             .virtual_to_physical(range.start())?;
         self.mapping.map_range(range, pa, flags, constraints)

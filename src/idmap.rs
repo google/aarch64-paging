@@ -123,6 +123,14 @@ impl IdMap {
         }
     }
 
+    /// Returns the size in bytes of the virtual address space which can be mapped in this page
+    /// table.
+    ///
+    /// This is a function of the chosen root level.
+    pub fn size(&self) -> usize {
+        self.mapping.size()
+    }
+
     /// Activates the page table by setting `TTBR0_EL1` to point to it, and saves the previous value
     /// of `TTBR0_EL1` so that it may later be restored by [`deactivate`](Self::deactivate).
     ///

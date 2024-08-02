@@ -150,6 +150,14 @@ impl<T: Translation> Mapping<T> {
         self.previous_ttbr.is_some()
     }
 
+    /// Returns the size in bytes of the virtual address space which can be mapped in this page
+    /// table.
+    ///
+    /// This is a function of the chosen root level.
+    pub fn size(&self) -> usize {
+        self.root.size()
+    }
+
     /// Activates the page table by setting `TTBRn_ELx` to point to it, and saves the previous value
     /// of `TTBRn_ELx` so that it may later be restored by [`deactivate`](Self::deactivate).
     ///

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### New features
+
+- Added `mair` module with types to build MAIR values.
+
 ## 0.7.1
 
 ### New features

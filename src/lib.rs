@@ -19,7 +19,7 @@
 //! # #[cfg(feature = "alloc")] {
 //! use aarch64_paging::{
 //!     idmap::IdMap,
-//!     paging::{attributes::AttributesEl1, MemoryRegion, TranslationRegime},
+//!     paging::{attributes::AttributesEl1, MemoryRegion},
 //! };
 //!
 //! const ASID: usize = 1;
@@ -28,7 +28,7 @@
 //!     AttributesEl1::ATTRIBUTE_INDEX_1.union(AttributesEl1::INNER_SHAREABLE);
 //!
 //! // Create a new EL1 page table with identity mapping.
-//! let mut idmap = IdMap::new(ASID, ROOT_LEVEL, TranslationRegime::El1And0);
+//! let mut idmap = IdMap::new(ASID, ROOT_LEVEL);
 //! // Map a 2 MiB region of memory as read-write.
 //! idmap
 //!     .map_range(
@@ -66,10 +66,12 @@ extern crate alloc;
 #[cfg(target_arch = "aarch64")]
 use core::arch::asm;
 use core::fmt::{self, Display, Formatter};
+#[cfg(target_arch = "aarch64")]
+use paging::TranslationRegime;
 use paging::{
     attributes::{Attributes, CommonAttributes},
-    Constraints, Descriptor, MemoryRegion, PhysicalAddress, RootTable, Translation,
-    TranslationRegime, VaRange, VirtualAddress,
+    Constraints, Descriptor, MemoryRegion, PhysicalAddress, RootTable, Translation, VaRange,
+    VirtualAddress,
 };
 
 /// An error attempting to map some range in the page table.
@@ -131,18 +133,15 @@ pub struct Mapping<T: Translation<A>, A: Attributes> {
 
 impl<T: Translation<A>, A: Attributes> Mapping<T, A> {
     /// Creates a new page table with the given ASID, root level and translation mapping.
-    pub fn new(
-        translation: T,
-        asid: usize,
-        rootlevel: usize,
-        translation_regime: TranslationRegime,
-        va_range: VaRange,
-    ) -> Self {
-        if !translation_regime.supports_asid() && asid != 0 {
-            panic!("{:?} doesn't support ASID, must be 0.", translation_regime);
+    pub fn new(translation: T, asid: usize, rootlevel: usize, va_range: VaRange) -> Self {
+        if !A::TRANSLATION_REGIME.supports_asid() && asid != 0 {
+            panic!(
+                "{:?} doesn't support ASID, must be 0.",
+                A::TRANSLATION_REGIME
+            );
         }
         Self {
-            root: RootTable::new(translation, rootlevel, translation_regime, va_range),
+            root: RootTable::new(translation, rootlevel, va_range),
             asid,
             previous_ttbr: None,
         }
@@ -190,7 +189,7 @@ impl<T: Translation<A>, A: Attributes> Mapping<T, A> {
         // SAFETY: We trust that self.root_address() returns a valid physical address of a page
         // table, and the `Drop` implementation will reset `TTBRn_ELx` before it becomes invalid.
         unsafe {
-            match (self.root.translation_regime(), self.root.va_range()) {
+            match (A::TRANSLATION_REGIME, self.root.va_range()) {
                 (TranslationRegime::El1And0, VaRange::Lower) => asm!(
                     "mrs   {previous_ttbr}, ttbr0_el1",
                     "msr   ttbr0_el1, {ttbrval}",
@@ -267,7 +266,7 @@ impl<T: Translation<A>, A: Attributes> Mapping<T, A> {
         // SAFETY: This just restores the previously saved value of `TTBRn_ELx`, which must have
         // been valid.
         unsafe {
-            match (self.root.translation_regime(), self.root.va_range()) {
+            match (A::TRANSLATION_REGIME, self.root.va_range()) {
                 (TranslationRegime::El1And0, VaRange::Lower) => asm!(
                     "msr   ttbr0_el1, {ttbrval}",
                     "isb",
@@ -540,25 +539,13 @@ mod tests {
     #[test]
     #[should_panic]
     fn no_el2_asid() {
-        Mapping::<IdTranslation, AttributesEl2>::new(
-            IdTranslation,
-            1,
-            1,
-            TranslationRegime::El2,
-            VaRange::Lower,
-        );
+        Mapping::<IdTranslation, AttributesEl2>::new(IdTranslation, 1, 1, VaRange::Lower);
     }
 
     #[cfg(feature = "alloc")]
     #[test]
     #[should_panic]
     fn no_el3_asid() {
-        Mapping::<IdTranslation, AttributesEl3>::new(
-            IdTranslation,
-            1,
-            1,
-            TranslationRegime::El3,
-            VaRange::Lower,
-        );
+        Mapping::<IdTranslation, AttributesEl3>::new(IdTranslation, 1, 1, VaRange::Lower);
     }
 }

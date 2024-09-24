@@ -261,7 +261,6 @@ pub struct RootTable<T: Translation<A>, A: Attributes> {
     table: PageTableWithLevel<T, A>,
     translation: T,
     pa: PhysicalAddress,
-    translation_regime: TranslationRegime,
     va_range: VaRange,
 }
 
@@ -271,19 +270,14 @@ impl<T: Translation<A>, A: Attributes> RootTable<T, A> {
     /// The level must be between 0 and 3; level -1 (for 52-bit addresses with LPA2) is not
     /// currently supported by this library. The value of `TCR_EL1.T0SZ` must be set appropriately
     /// to match.
-    pub fn new(
-        mut translation: T,
-        level: usize,
-        translation_regime: TranslationRegime,
-        va_range: VaRange,
-    ) -> Self {
+    pub fn new(mut translation: T, level: usize, va_range: VaRange) -> Self {
         if level > LEAF_LEVEL {
             panic!("Invalid root table level {}.", level);
         }
-        if !translation_regime.supports_asid() && va_range != VaRange::Lower {
+        if !A::TRANSLATION_REGIME.supports_asid() && va_range != VaRange::Lower {
             panic!(
                 "{:?} doesn't have an upper virtual address range.",
-                translation_regime
+                A::TRANSLATION_REGIME
             );
         }
         let (table, pa) = PageTableWithLevel::new(&mut translation, level);
@@ -291,7 +285,6 @@ impl<T: Translation<A>, A: Attributes> RootTable<T, A> {
             table,
             translation,
             pa,
-            translation_regime,
             va_range,
         }
     }
@@ -338,11 +331,6 @@ impl<T: Translation<A>, A: Attributes> RootTable<T, A> {
     /// This affects which TTBR register is used.
     pub fn va_range(&self) -> VaRange {
         self.va_range
-    }
-
-    /// Returns the translation regime for which this table is intended.
-    pub fn translation_regime(&self) -> TranslationRegime {
-        self.translation_regime
     }
 
     /// Returns a reference to the translation used for this page table.
@@ -1111,23 +1099,13 @@ mod tests {
     #[test]
     #[should_panic]
     fn no_el2_ttbr1() {
-        RootTable::<IdTranslation, AttributesEl2>::new(
-            IdTranslation,
-            1,
-            TranslationRegime::El2,
-            VaRange::Upper,
-        );
+        RootTable::<IdTranslation, AttributesEl2>::new(IdTranslation, 1, VaRange::Upper);
     }
 
     #[cfg(feature = "alloc")]
     #[test]
     #[should_panic]
     fn no_el3_ttbr1() {
-        RootTable::<IdTranslation, AttributesEl3>::new(
-            IdTranslation,
-            1,
-            TranslationRegime::El3,
-            VaRange::Upper,
-        );
+        RootTable::<IdTranslation, AttributesEl3>::new(IdTranslation, 1, VaRange::Upper);
     }
 }

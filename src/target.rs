@@ -31,7 +31,6 @@ use zerocopy::AsBytes;
 /// let mut map = RootTable::new(
 ///     TargetAllocator::new(0x1_0000),
 ///     ROOT_LEVEL,
-///     TranslationRegime::El1And0,
 ///     VaRange::Lower,
 /// );
 /// map.map_range(
@@ -143,20 +142,13 @@ impl<A: Attributes> Translation<A> for TargetAllocator<A> {
 #[cfg(all(test, feature = "zerocopy"))]
 mod tests {
     use super::*;
-    use crate::paging::{
-        attributes::AttributesEl1, Constraints, MemoryRegion, RootTable, TranslationRegime, VaRange,
-    };
+    use crate::paging::{attributes::AttributesEl1, Constraints, MemoryRegion, RootTable, VaRange};
 
     const ROOT_LEVEL: usize = 1;
 
     #[test]
     fn map_one_page() {
-        let mut map = RootTable::new(
-            TargetAllocator::new(0x1_0000),
-            ROOT_LEVEL,
-            TranslationRegime::El1And0,
-            VaRange::Lower,
-        );
+        let mut map = RootTable::new(TargetAllocator::new(0x1_0000), ROOT_LEVEL, VaRange::Lower);
         map.map_range(
             &MemoryRegion::new(0x0, 0x1000),
             PhysicalAddress(0x4_2000),

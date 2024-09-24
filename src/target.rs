@@ -45,8 +45,10 @@ use zerocopy::AsBytes;
 /// )
 /// .unwrap();
 ///
+/// # #[cfg(feature = "zerocopy")] {
 /// let bytes = map.translation().as_bytes();
 /// // Build the bytes into a binary image for the target device...
+/// # }
 /// ```
 #[derive(Debug)]
 pub struct TargetAllocator {
@@ -138,7 +140,7 @@ impl Translation for TargetAllocator {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "zerocopy"))]
 mod tests {
     use super::*;
     use crate::paging::{

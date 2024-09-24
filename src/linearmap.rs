@@ -8,8 +8,9 @@
 
 use crate::{
     paging::{
-        deallocate, is_aligned, Attributes, Constraints, Descriptor, MemoryRegion, PageTable,
-        PhysicalAddress, Translation, TranslationRegime, VaRange, VirtualAddress, PAGE_SIZE,
+        attributes::Attributes, deallocate, is_aligned, Constraints, Descriptor, MemoryRegion,
+        PageTable, PhysicalAddress, Translation, TranslationRegime, VaRange, VirtualAddress,
+        PAGE_SIZE,
     },
     MapError, Mapping,
 };
@@ -350,10 +351,7 @@ impl LinearMap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        paging::{Attributes, MemoryRegion, BITS_PER_LEVEL, PAGE_SIZE},
-        MapError,
-    };
+    use crate::paging::BITS_PER_LEVEL;
 
     const MAX_ADDRESS_FOR_ROOT_LEVEL_1: usize = 1 << 39;
     const GIB_512_S: isize = 512 * 1024 * 1024 * 1024;

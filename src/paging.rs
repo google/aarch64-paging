@@ -5,12 +5,12 @@
 //! Generic aarch64 page table manipulation functionality which doesn't assume anything about how
 //! addresses are mapped.
 
-mod attributes;
+pub mod attributes;
 
 use crate::MapError;
 #[cfg(feature = "alloc")]
 use alloc::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
-pub use attributes::Attributes;
+use attributes::Attributes;
 use bitflags::bitflags;
 use core::fmt::{self, Debug, Display, Formatter};
 use core::marker::PhantomData;

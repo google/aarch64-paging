@@ -19,7 +19,7 @@
 //! # #[cfg(feature = "alloc")] {
 //! use aarch64_paging::{
 //!     idmap::IdMap,
-//!     paging::{Attributes, MemoryRegion, TranslationRegime},
+//!     paging::{attributes::Attributes, MemoryRegion, TranslationRegime},
 //! };
 //!
 //! const ASID: usize = 1;
@@ -61,8 +61,8 @@ extern crate alloc;
 use core::arch::asm;
 use core::fmt::{self, Display, Formatter};
 use paging::{
-    Attributes, Constraints, Descriptor, MemoryRegion, PhysicalAddress, RootTable, Translation,
-    TranslationRegime, VaRange, VirtualAddress,
+    attributes::Attributes, Constraints, Descriptor, MemoryRegion, PhysicalAddress, RootTable,
+    Translation, TranslationRegime, VaRange, VirtualAddress,
 };
 
 /// An error attempting to map some range in the page table.

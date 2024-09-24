@@ -20,8 +20,8 @@ use zerocopy::AsBytes;
 /// ```
 /// use aarch64_paging::{
 ///     paging::{
-///         Attributes, Constraints, MemoryRegion, PhysicalAddress, RootTable, TranslationRegime,
-///         VaRange,
+///         attributes::Attributes, Constraints, MemoryRegion, PhysicalAddress, RootTable,
+///         TranslationRegime, VaRange,
 ///     },
 ///     target::TargetAllocator,
 /// };
@@ -142,7 +142,7 @@ impl Translation for TargetAllocator {
 mod tests {
     use super::*;
     use crate::paging::{
-        Attributes, Constraints, MemoryRegion, RootTable, TranslationRegime, VaRange,
+        attributes::Attributes, Constraints, MemoryRegion, RootTable, TranslationRegime, VaRange,
     };
 
     const ROOT_LEVEL: usize = 1;

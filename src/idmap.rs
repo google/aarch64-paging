@@ -8,8 +8,8 @@
 
 use crate::{
     paging::{
-        deallocate, Attributes, Constraints, Descriptor, MemoryRegion, PageTable, PhysicalAddress,
-        Translation, TranslationRegime, VaRange, VirtualAddress,
+        attributes::Attributes, deallocate, Constraints, Descriptor, MemoryRegion, PageTable,
+        PhysicalAddress, Translation, TranslationRegime, VaRange, VirtualAddress,
     },
     MapError, Mapping,
 };
@@ -65,7 +65,7 @@ impl Translation for IdTranslation {
 /// ```no_run
 /// use aarch64_paging::{
 ///     idmap::IdMap,
-///     paging::{Attributes, MemoryRegion, TranslationRegime},
+///     paging::{attributes::Attributes, MemoryRegion, TranslationRegime},
 /// };
 ///
 /// const ASID: usize = 1;
@@ -335,10 +335,7 @@ impl IdMap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        paging::{Attributes, MemoryRegion, BITS_PER_LEVEL, PAGE_SIZE},
-        MapError, VirtualAddress,
-    };
+    use crate::paging::{BITS_PER_LEVEL, PAGE_SIZE};
 
     const MAX_ADDRESS_FOR_ROOT_LEVEL_1: usize = 1 << 39;
     const DEVICE_NGNRE: Attributes = Attributes::ATTRIBUTE_INDEX_0;

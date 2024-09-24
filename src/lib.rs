@@ -19,20 +19,26 @@
 //! # #[cfg(feature = "alloc")] {
 //! use aarch64_paging::{
 //!     idmap::IdMap,
-//!     paging::{Attributes, MemoryRegion, TranslationRegime},
+//!     paging::{attributes::AttributesEl1, MemoryRegion},
 //! };
 //!
 //! const ASID: usize = 1;
 //! const ROOT_LEVEL: usize = 1;
-//! const NORMAL_CACHEABLE: Attributes = Attributes::ATTRIBUTE_INDEX_1.union(Attributes::INNER_SHAREABLE);
+//! const NORMAL_CACHEABLE: AttributesEl1 =
+//!     AttributesEl1::ATTRIBUTE_INDEX_1.union(AttributesEl1::INNER_SHAREABLE);
 //!
 //! // Create a new EL1 page table with identity mapping.
-//! let mut idmap = IdMap::new(ASID, ROOT_LEVEL, TranslationRegime::El1And0);
+//! let mut idmap = IdMap::new(ASID, ROOT_LEVEL);
 //! // Map a 2 MiB region of memory as read-write.
-//! idmap.map_range(
-//!     &MemoryRegion::new(0x80200000, 0x80400000),
-//!     NORMAL_CACHEABLE | Attributes::NON_GLOBAL | Attributes::VALID | Attributes::ACCESSED,
-//! ).unwrap();
+//! idmap
+//!     .map_range(
+//!         &MemoryRegion::new(0x80200000, 0x80400000),
+//!         NORMAL_CACHEABLE
+//!             | AttributesEl1::NON_GLOBAL
+//!             | AttributesEl1::VALID
+//!             | AttributesEl1::ACCESSED,
+//!     )
+//!     .unwrap();
 //! // SAFETY: Everything the program uses is within the 2 MiB region mapped above.
 //! unsafe {
 //!     // Set `TTBR0_EL1` to activate the page table.
@@ -60,14 +66,17 @@ extern crate alloc;
 #[cfg(target_arch = "aarch64")]
 use core::arch::asm;
 use core::fmt::{self, Display, Formatter};
+#[cfg(target_arch = "aarch64")]
+use paging::TranslationRegime;
 use paging::{
-    Attributes, Constraints, Descriptor, MemoryRegion, PhysicalAddress, RootTable, Translation,
-    TranslationRegime, VaRange, VirtualAddress,
+    attributes::{Attributes, CommonAttributes},
+    Constraints, Descriptor, MemoryRegion, PhysicalAddress, RootTable, Translation, VaRange,
+    VirtualAddress,
 };
 
 /// An error attempting to map some range in the page table.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum MapError {
+pub enum MapError<A: Attributes> {
     /// The address requested to be mapped was out of the range supported by the page table
     /// configuration.
     AddressRange(VirtualAddress),
@@ -76,14 +85,14 @@ pub enum MapError {
     /// The end of the memory region is before the start.
     RegionBackwards(MemoryRegion),
     /// There was an error while updating a page table entry.
-    PteUpdateFault(Descriptor),
+    PteUpdateFault(Descriptor<A>),
     /// The requested flags are not supported for this mapping
-    InvalidFlags(Attributes),
+    InvalidFlags(A),
     /// Updating the range violates break-before-make rules and the mapping is live
     BreakBeforeMakeViolation(MemoryRegion),
 }
 
-impl Display for MapError {
+impl<A: Attributes> Display for MapError<A> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
             Self::AddressRange(va) => write!(f, "Virtual address {} out of range", va),
@@ -114,28 +123,25 @@ impl Display for MapError {
 /// switch back to a previous static page table, and then `activate` again after making the desired
 /// changes.
 #[derive(Debug)]
-pub struct Mapping<T: Translation> {
-    root: RootTable<T>,
+pub struct Mapping<T: Translation<A>, A: Attributes> {
+    root: RootTable<T, A>,
     #[allow(unused)]
     asid: usize,
     #[allow(unused)]
     previous_ttbr: Option<usize>,
 }
 
-impl<T: Translation> Mapping<T> {
+impl<T: Translation<A>, A: Attributes> Mapping<T, A> {
     /// Creates a new page table with the given ASID, root level and translation mapping.
-    pub fn new(
-        translation: T,
-        asid: usize,
-        rootlevel: usize,
-        translation_regime: TranslationRegime,
-        va_range: VaRange,
-    ) -> Self {
-        if !translation_regime.supports_asid() && asid != 0 {
-            panic!("{:?} doesn't support ASID, must be 0.", translation_regime);
+    pub fn new(translation: T, asid: usize, rootlevel: usize, va_range: VaRange) -> Self {
+        if !A::TRANSLATION_REGIME.supports_asid() && asid != 0 {
+            panic!(
+                "{:?} doesn't support ASID, must be 0.",
+                A::TRANSLATION_REGIME
+            );
         }
         Self {
-            root: RootTable::new(translation, rootlevel, translation_regime, va_range),
+            root: RootTable::new(translation, rootlevel, va_range),
             asid,
             previous_ttbr: None,
         }
@@ -183,7 +189,7 @@ impl<T: Translation> Mapping<T> {
         // SAFETY: We trust that self.root_address() returns a valid physical address of a page
         // table, and the `Drop` implementation will reset `TTBRn_ELx` before it becomes invalid.
         unsafe {
-            match (self.root.translation_regime(), self.root.va_range()) {
+            match (A::TRANSLATION_REGIME, self.root.va_range()) {
                 (TranslationRegime::El1And0, VaRange::Lower) => asm!(
                     "mrs   {previous_ttbr}, ttbr0_el1",
                     "msr   ttbr0_el1, {ttbrval}",
@@ -260,7 +266,7 @@ impl<T: Translation> Mapping<T> {
         // SAFETY: This just restores the previously saved value of `TTBRn_ELx`, which must have
         // been valid.
         unsafe {
-            match (self.root.translation_regime(), self.root.va_range()) {
+            match (A::TRANSLATION_REGIME, self.root.va_range()) {
                 (TranslationRegime::El1And0, VaRange::Lower) => asm!(
                     "msr   ttbr0_el1, {ttbrval}",
                     "isb",
@@ -317,13 +323,13 @@ impl<T: Translation> Mapping<T> {
 
     /// Checks whether the given range can be mapped or updated while the translation is live,
     /// without violating architectural break-before-make (BBM) requirements.
-    fn check_range_bbm<F>(&self, range: &MemoryRegion, updater: &F) -> Result<(), MapError>
+    fn check_range_bbm<F>(&self, range: &MemoryRegion, updater: &F) -> Result<(), MapError<A>>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut Descriptor<A>, usize) -> Result<(), ()> + ?Sized,
     {
         self.root.visit_range(
             range,
-            &mut |mr: &MemoryRegion, d: &Descriptor, level: usize| {
+            &mut |mr: &MemoryRegion, d: &Descriptor<A>, level: usize| {
                 if d.is_valid() {
                     let err = MapError::BreakBeforeMakeViolation(mr.clone());
 
@@ -340,7 +346,7 @@ impl<T: Translation> Mapping<T> {
                         (dd.flags().ok_or(err.clone())?, dd.output_address())
                     };
 
-                    if !flags.contains(Attributes::VALID) {
+                    if !flags.contains(CommonAttributes::VALID.into()) {
                         // Removing the valid bit is always ok
                         return Ok(());
                     }
@@ -353,13 +359,15 @@ impl<T: Translation> Mapping<T> {
                     let desc_flags = d.flags().unwrap();
 
                     if (desc_flags ^ flags).intersects(
-                        Attributes::ATTRIBUTE_INDEX_MASK | Attributes::SHAREABILITY_MASK,
+                        (CommonAttributes::ATTRIBUTE_INDEX_MASK
+                            | CommonAttributes::SHAREABILITY_MASK)
+                            .into(),
                     ) {
                         // Cannot change memory type
                         return Err(err);
                     }
 
-                    if (desc_flags - flags).contains(Attributes::NON_GLOBAL) {
+                    if (desc_flags - flags).contains(CommonAttributes::NON_GLOBAL.into()) {
                         // Cannot convert from non-global to global
                         return Err(err);
                     }
@@ -393,11 +401,11 @@ impl<T: Translation> Mapping<T> {
         &mut self,
         range: &MemoryRegion,
         pa: PhysicalAddress,
-        flags: Attributes,
+        flags: A,
         constraints: Constraints,
-    ) -> Result<(), MapError> {
+    ) -> Result<(), MapError<A>> {
         if self.active() {
-            let c = |mr: &MemoryRegion, d: &mut Descriptor, lvl: usize| {
+            let c = |mr: &MemoryRegion, d: &mut Descriptor<A>, lvl: usize| {
                 let mask = !(paging::granularity_at_level(lvl) - 1);
                 let pa = (mr.start() - range.start() + pa.0) & mask;
                 d.set(PhysicalAddress(pa), flags);
@@ -437,9 +445,9 @@ impl<T: Translation> Mapping<T> {
     ///
     /// Returns [`MapError::BreakBeforeMakeViolation'] if the range intersects with live mappings,
     /// and modifying those would violate architectural break-before-make (BBM) requirements.
-    pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
+    pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError<A>>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut Descriptor<A>, usize) -> Result<(), ()> + ?Sized,
     {
         if self.active() {
             self.check_range_bbm(range, f)?;
@@ -466,9 +474,9 @@ impl<T: Translation> Mapping<T> {
     ///
     /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
     /// largest virtual address covered by the page table given its root level.
-    pub fn walk_range<F>(&self, range: &MemoryRegion, f: &mut F) -> Result<(), MapError>
+    pub fn walk_range<F>(&self, range: &MemoryRegion, f: &mut F) -> Result<(), MapError<A>>
     where
-        F: FnMut(&MemoryRegion, &Descriptor, usize) -> Result<(), ()>,
+        F: FnMut(&MemoryRegion, &Descriptor<A>, usize) -> Result<(), ()>,
     {
         self.root.walk_range(range, f)
     }
@@ -505,7 +513,7 @@ impl<T: Translation> Mapping<T> {
     }
 }
 
-impl<T: Translation> Drop for Mapping<T> {
+impl<T: Translation<A>, A: Attributes> Drop for Mapping<T, A> {
     fn drop(&mut self) {
         if self.previous_ttbr.is_some() {
             #[cfg(target_arch = "aarch64")]
@@ -524,18 +532,20 @@ mod tests {
     use self::idmap::IdTranslation;
     #[cfg(feature = "alloc")]
     use super::*;
+    #[cfg(feature = "alloc")]
+    use crate::paging::attributes::{AttributesEl2, AttributesEl3};
 
     #[cfg(feature = "alloc")]
     #[test]
     #[should_panic]
     fn no_el2_asid() {
-        Mapping::new(IdTranslation, 1, 1, TranslationRegime::El2, VaRange::Lower);
+        Mapping::<IdTranslation, AttributesEl2>::new(IdTranslation, 1, 1, VaRange::Lower);
     }
 
     #[cfg(feature = "alloc")]
     #[test]
     #[should_panic]
     fn no_el3_asid() {
-        Mapping::new(IdTranslation, 1, 1, TranslationRegime::El3, VaRange::Lower);
+        Mapping::<IdTranslation, AttributesEl3>::new(IdTranslation, 1, 1, VaRange::Lower);
     }
 }

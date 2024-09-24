@@ -5,9 +5,12 @@
 //! Generic aarch64 page table manipulation functionality which doesn't assume anything about how
 //! addresses are mapped.
 
+pub mod attributes;
+
 use crate::MapError;
 #[cfg(feature = "alloc")]
 use alloc::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
+use attributes::{Attributes, CommonAttributes};
 use bitflags::bitflags;
 use core::fmt::{self, Debug, Display, Formatter};
 use core::marker::PhantomData;
@@ -161,10 +164,10 @@ pub(crate) fn granularity_at_level(level: usize) -> usize {
 /// An implementation of this trait needs to be provided to the mapping routines, so that the
 /// physical addresses used in the page tables can be converted into virtual addresses that can be
 /// used to access their contents from the code.
-pub trait Translation {
+pub trait Translation<A: Attributes> {
     /// Allocates a zeroed page, which is already mapped, to be used for a new subtable of some
     /// pagetable. Returns both a pointer to the page and its physical address.
-    fn allocate_table(&mut self) -> (NonNull<PageTable>, PhysicalAddress);
+    fn allocate_table(&mut self) -> (NonNull<PageTable<A>>, PhysicalAddress);
 
     /// Deallocates the page which was previous allocated by [`allocate_table`](Self::allocate_table).
     ///
@@ -172,10 +175,10 @@ pub trait Translation {
     ///
     /// The memory must have been allocated by `allocate_table` on the same `Translation`, and not
     /// yet deallocated.
-    unsafe fn deallocate_table(&mut self, page_table: NonNull<PageTable>);
+    unsafe fn deallocate_table(&mut self, page_table: NonNull<PageTable<A>>);
 
     /// Given the physical address of a subtable, returns the virtual address at which it is mapped.
-    fn physical_to_virtual(&self, pa: PhysicalAddress) -> NonNull<PageTable>;
+    fn physical_to_virtual(&self, pa: PhysicalAddress) -> NonNull<PageTable<A>>;
 }
 
 impl MemoryRegion {
@@ -254,33 +257,27 @@ bitflags! {
 }
 
 /// A complete hierarchy of page tables including all levels.
-pub struct RootTable<T: Translation> {
-    table: PageTableWithLevel<T>,
+pub struct RootTable<T: Translation<A>, A: Attributes> {
+    table: PageTableWithLevel<T, A>,
     translation: T,
     pa: PhysicalAddress,
-    translation_regime: TranslationRegime,
     va_range: VaRange,
 }
 
-impl<T: Translation> RootTable<T> {
+impl<T: Translation<A>, A: Attributes> RootTable<T, A> {
     /// Creates a new page table starting at the given root level.
     ///
     /// The level must be between 0 and 3; level -1 (for 52-bit addresses with LPA2) is not
     /// currently supported by this library. The value of `TCR_EL1.T0SZ` must be set appropriately
     /// to match.
-    pub fn new(
-        mut translation: T,
-        level: usize,
-        translation_regime: TranslationRegime,
-        va_range: VaRange,
-    ) -> Self {
+    pub fn new(mut translation: T, level: usize, va_range: VaRange) -> Self {
         if level > LEAF_LEVEL {
             panic!("Invalid root table level {}.", level);
         }
-        if !translation_regime.supports_asid() && va_range != VaRange::Lower {
+        if !A::TRANSLATION_REGIME.supports_asid() && va_range != VaRange::Lower {
             panic!(
                 "{:?} doesn't have an upper virtual address range.",
-                translation_regime
+                A::TRANSLATION_REGIME
             );
         }
         let (table, pa) = PageTableWithLevel::new(&mut translation, level);
@@ -288,7 +285,6 @@ impl<T: Translation> RootTable<T> {
             table,
             translation,
             pa,
-            translation_regime,
             va_range,
         }
     }
@@ -311,11 +307,13 @@ impl<T: Translation> RootTable<T> {
         &mut self,
         range: &MemoryRegion,
         pa: PhysicalAddress,
-        flags: Attributes,
+        flags: A,
         constraints: Constraints,
-    ) -> Result<(), MapError> {
-        if flags.contains(Attributes::TABLE_OR_PAGE) {
-            return Err(MapError::InvalidFlags(Attributes::TABLE_OR_PAGE));
+    ) -> Result<(), MapError<A>> {
+        if flags.contains(CommonAttributes::TABLE_OR_PAGE.into()) {
+            return Err(MapError::InvalidFlags(
+                CommonAttributes::TABLE_OR_PAGE.into(),
+            ));
         }
         self.verify_region(range)?;
         self.table
@@ -333,11 +331,6 @@ impl<T: Translation> RootTable<T> {
     /// This affects which TTBR register is used.
     pub fn va_range(&self) -> VaRange {
         self.va_range
-    }
-
-    /// Returns the translation regime for which this table is intended.
-    pub fn translation_regime(&self) -> TranslationRegime {
-        self.translation_regime
     }
 
     /// Returns a reference to the translation used for this page table.
@@ -382,9 +375,9 @@ impl<T: Translation> RootTable<T> {
     ///
     /// Returns [`MapError::BreakBeforeMakeViolation'] if the range intersects with live mappings,
     /// and modifying those would violate architectural break-before-make (BBM) requirements.
-    pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
+    pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError<A>>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut Descriptor<A>, usize) -> Result<(), ()> + ?Sized,
     {
         self.verify_region(range)?;
         self.table.modify_range(&mut self.translation, range, f)
@@ -413,9 +406,9 @@ impl<T: Translation> RootTable<T> {
     ///
     /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
     /// largest virtual address covered by the page table given its root level.
-    pub fn walk_range<F>(&self, range: &MemoryRegion, f: &mut F) -> Result<(), MapError>
+    pub fn walk_range<F>(&self, range: &MemoryRegion, f: &mut F) -> Result<(), MapError<A>>
     where
-        F: FnMut(&MemoryRegion, &Descriptor, usize) -> Result<(), ()>,
+        F: FnMut(&MemoryRegion, &Descriptor<A>, usize) -> Result<(), ()>,
     {
         self.visit_range(range, &mut |mr, desc, level| {
             f(mr, desc, level).map_err(|_| MapError::PteUpdateFault(*desc))
@@ -423,9 +416,9 @@ impl<T: Translation> RootTable<T> {
     }
 
     // Private version of `walk_range` using a closure that returns MapError on error
-    pub(crate) fn visit_range<F>(&self, range: &MemoryRegion, f: &mut F) -> Result<(), MapError>
+    pub(crate) fn visit_range<F>(&self, range: &MemoryRegion, f: &mut F) -> Result<(), MapError<A>>
     where
-        F: FnMut(&MemoryRegion, &Descriptor, usize) -> Result<(), MapError>,
+        F: FnMut(&MemoryRegion, &Descriptor<A>, usize) -> Result<(), MapError<A>>,
     {
         self.verify_region(range)?;
         self.table.visit_range(&self.translation, range, f)
@@ -441,7 +434,7 @@ impl<T: Translation> RootTable<T> {
     }
 
     /// Checks whether the region is within range of the page table.
-    fn verify_region(&self, region: &MemoryRegion) -> Result<(), MapError> {
+    fn verify_region(&self, region: &MemoryRegion) -> Result<(), MapError<A>> {
         if region.end() < region.start() {
             return Err(MapError::RegionBackwards(region.clone()));
         }
@@ -465,7 +458,7 @@ impl<T: Translation> RootTable<T> {
     }
 }
 
-impl<T: Translation> Debug for RootTable<T> {
+impl<T: Translation<A>, A: Attributes> Debug for RootTable<T, A> {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
         writeln!(
             f,
@@ -477,7 +470,7 @@ impl<T: Translation> Debug for RootTable<T> {
     }
 }
 
-impl<T: Translation> Drop for RootTable<T> {
+impl<T: Translation<A>, A: Attributes> Drop for RootTable<T, A> {
     fn drop(&mut self) {
         // SAFETY: We created the table in `RootTable::new` by calling `PageTableWithLevel::new`
         // with `self.translation`. Subtables were similarly created by
@@ -512,71 +505,24 @@ impl Iterator for ChunkedIterator<'_> {
     }
 }
 
-bitflags! {
-    /// Attribute bits for a mapping in a page table.
-    #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-    pub struct Attributes: usize {
-        const VALID         = 1 << 0;
-        const TABLE_OR_PAGE = 1 << 1;
-
-        const ATTRIBUTE_INDEX_0 = 0 << 2;
-        const ATTRIBUTE_INDEX_1 = 1 << 2;
-        const ATTRIBUTE_INDEX_2 = 2 << 2;
-        const ATTRIBUTE_INDEX_3 = 3 << 2;
-        const ATTRIBUTE_INDEX_4 = 4 << 2;
-        const ATTRIBUTE_INDEX_5 = 5 << 2;
-        const ATTRIBUTE_INDEX_6 = 6 << 2;
-        const ATTRIBUTE_INDEX_7 = 7 << 2;
-
-        const OUTER_SHAREABLE = 2 << 8;
-        const INNER_SHAREABLE = 3 << 8;
-
-        const NS            = 1 << 5;
-        const USER          = 1 << 6;
-        const READ_ONLY     = 1 << 7;
-        const ACCESSED      = 1 << 10;
-        const NON_GLOBAL    = 1 << 11;
-        const DBM           = 1 << 51;
-        /// Privileged Execute-never, if two privilege levels are supported.
-        const PXN           = 1 << 53;
-        /// Unprivileged Execute-never, or just Execute-never if only one privilege level is
-        /// supported.
-        const UXN           = 1 << 54;
-
-        // Software flags in block and page descriptor entries.
-        const SWFLAG_0 = 1 << 55;
-        const SWFLAG_1 = 1 << 56;
-        const SWFLAG_2 = 1 << 57;
-        const SWFLAG_3 = 1 << 58;
-    }
-}
-
-impl Attributes {
-    /// Mask for the bits determining the shareability of the mapping.
-    pub const SHAREABILITY_MASK: Self = Self::INNER_SHAREABLE;
-
-    /// Mask for the bits determining the attribute index of the mapping.
-    pub const ATTRIBUTE_INDEX_MASK: Self = Self::ATTRIBUTE_INDEX_7;
-}
-
 /// Smart pointer which owns a [`PageTable`] and knows what level it is at. This allows it to
 /// implement `Debug` and `Drop`, as walking the page table hierachy requires knowing the starting
 /// level.
 #[derive(Debug)]
-struct PageTableWithLevel<T: Translation> {
-    table: NonNull<PageTable>,
+struct PageTableWithLevel<T: Translation<A>, A: Attributes> {
+    table: NonNull<PageTable<A>>,
     level: usize,
     _translation: PhantomData<T>,
 }
 
 // SAFETY: The underlying PageTable is process-wide and can be safely accessed from any thread
 // with appropriate synchronization. This type manages ownership for the raw pointer.
-unsafe impl<T: Translation + Send> Send for PageTableWithLevel<T> {}
+unsafe impl<T: Translation<A> + Send, A: Attributes + Send> Send for PageTableWithLevel<T, A> {}
 
 // SAFETY: &Self only allows reading from the page table, which is safe to do from any thread.
-unsafe impl<T: Translation + Sync> Sync for PageTableWithLevel<T> {}
+unsafe impl<T: Translation<A> + Sync, A: Attributes + Sync> Sync for PageTableWithLevel<T, A> {}
 
-impl<T: Translation> PageTableWithLevel<T> {
+impl<T: Translation<A>, A: Attributes> PageTableWithLevel<T, A> {
     /// Allocates a new, zeroed, appropriately-aligned page table with the given translation,
     /// returning both a pointer to it and its physical address.
     fn new(translation: &mut T, level: usize) -> (Self, PhysicalAddress) {
@@ -590,7 +536,7 @@ impl<T: Translation> PageTableWithLevel<T> {
         )
     }
 
-    fn from_pointer(table: NonNull<PageTable>, level: usize) -> Self {
+    fn from_pointer(table: NonNull<PageTable<A>>, level: usize) -> Self {
         Self {
             table,
             level,
@@ -599,7 +545,7 @@ impl<T: Translation> PageTableWithLevel<T> {
     }
 
     /// Returns a reference to the descriptor corresponding to a given virtual address.
-    fn get_entry(&self, va: VirtualAddress) -> &Descriptor {
+    fn get_entry(&self, va: VirtualAddress) -> &Descriptor<A> {
         let shift = PAGE_SHIFT + (LEAF_LEVEL - self.level) * BITS_PER_LEVEL;
         let index = (va.0 >> shift) % (1 << BITS_PER_LEVEL);
         // SAFETY: We know that the pointer is properly aligned, dereferenced and initialised, and
@@ -610,7 +556,7 @@ impl<T: Translation> PageTableWithLevel<T> {
     }
 
     /// Returns a mutable reference to the descriptor corresponding to a given virtual address.
-    fn get_entry_mut(&mut self, va: VirtualAddress) -> &mut Descriptor {
+    fn get_entry_mut(&mut self, va: VirtualAddress) -> &mut Descriptor<A> {
         let shift = PAGE_SHIFT + (LEAF_LEVEL - self.level) * BITS_PER_LEVEL;
         let index = (va.0 >> shift) % (1 << BITS_PER_LEVEL);
         // SAFETY: We know that the pointer is properly aligned, dereferenced and initialised, and
@@ -625,7 +571,7 @@ impl<T: Translation> PageTableWithLevel<T> {
     fn split_entry(
         translation: &mut T,
         chunk: &MemoryRegion,
-        entry: &mut Descriptor,
+        entry: &mut Descriptor<A>,
         level: usize,
     ) -> Self {
         let granularity = granularity_at_level(level);
@@ -633,7 +579,7 @@ impl<T: Translation> PageTableWithLevel<T> {
         let (mut subtable, subtable_pa) = Self::new(translation, level + 1);
         if let Some(old_flags) = old.flags() {
             let old_pa = old.output_address();
-            if !old_flags.contains(Attributes::TABLE_OR_PAGE)
+            if !old_flags.contains(CommonAttributes::TABLE_OR_PAGE.into())
                 && (!old_flags.is_empty() || old_pa.0 != 0)
             {
                 // `old` was a block entry, so we need to split it.
@@ -649,7 +595,10 @@ impl<T: Translation> PageTableWithLevel<T> {
                 );
             }
         }
-        entry.set(subtable_pa, Attributes::TABLE_OR_PAGE | Attributes::VALID);
+        entry.set(
+            subtable_pa,
+            CommonAttributes::TABLE_OR_PAGE | CommonAttributes::VALID,
+        );
         subtable
     }
 
@@ -667,7 +616,7 @@ impl<T: Translation> PageTableWithLevel<T> {
         translation: &mut T,
         range: &MemoryRegion,
         mut pa: PhysicalAddress,
-        flags: Attributes,
+        flags: A,
         constraints: Constraints,
     ) {
         let level = self.level;
@@ -678,7 +627,7 @@ impl<T: Translation> PageTableWithLevel<T> {
 
             if level == LEAF_LEVEL {
                 // Put down a page mapping.
-                entry.set(pa, flags | Attributes::TABLE_OR_PAGE);
+                entry.set(pa, flags | A::from(CommonAttributes::TABLE_OR_PAGE));
             } else if chunk.is_block(level)
                 && !entry.is_table_or_page()
                 && is_aligned(pa.0, granularity)
@@ -711,9 +660,9 @@ impl<T: Translation> PageTableWithLevel<T> {
 
         let mut i = 0;
         while i < table.entries.len() {
-            if table.entries[i].0 == 0 {
+            if table.entries[i].value == 0 {
                 let first_zero = i;
-                while i < table.entries.len() && table.entries[i].0 == 0 {
+                while i < table.entries.len() && table.entries[i].value == 0 {
                     i += 1;
                 }
                 if i - 1 == first_zero {
@@ -771,9 +720,9 @@ impl<T: Translation> PageTableWithLevel<T> {
         translation: &mut T,
         range: &MemoryRegion,
         f: &F,
-    ) -> Result<(), MapError>
+    ) -> Result<(), MapError<A>>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut Descriptor<A>, usize) -> Result<(), ()> + ?Sized,
     {
         let level = self.level;
         for chunk in range.split(level) {
@@ -799,7 +748,7 @@ impl<T: Translation> PageTableWithLevel<T> {
     /// If the function returns an error, the walk is terminated and the error value is passed on
     fn visit_range<F, E>(&self, translation: &T, range: &MemoryRegion, f: &mut F) -> Result<(), E>
     where
-        F: FnMut(&MemoryRegion, &Descriptor, usize) -> Result<(), E>,
+        F: FnMut(&MemoryRegion, &Descriptor<A>, usize) -> Result<(), E>,
     {
         let level = self.level;
         for chunk in range.split(level) {
@@ -834,12 +783,23 @@ impl<T: Translation> PageTableWithLevel<T> {
 
 /// A single level of a page table.
 #[repr(C, align(4096))]
-#[cfg_attr(feature = "zerocopy", derive(AsBytes, FromZeroes))]
-pub struct PageTable {
-    entries: [Descriptor; 1 << BITS_PER_LEVEL],
+#[cfg_attr(feature = "zerocopy", derive(FromZeroes))]
+pub struct PageTable<A: Attributes> {
+    entries: [Descriptor<A>; 1 << BITS_PER_LEVEL],
 }
 
-impl PageTable {
+#[cfg(feature = "zerocopy")]
+// SAFETY: PageTable is repr(C), has no padding, and we enforce that its field is AsBytes.
+// Unfortunately the derive macro doesn't work here because of the generic parameter, but Descriptor
+// only uses it in a PhantomData so it doesn't actually affect the representation.
+unsafe impl<A: Attributes> AsBytes for PageTable<A>
+where
+    Descriptor<A>: AsBytes,
+{
+    fn only_derive_is_allowed_to_implement_this_trait() {}
+}
+
+impl<A: Attributes> PageTable<A> {
     /// Allocates a new zeroed, appropriately-aligned pagetable on the heap using the global
     /// allocator and returns a pointer to it.
     #[cfg(feature = "alloc")]
@@ -858,57 +818,68 @@ impl PageTable {
 ///   - A pointer to a lower level pagetable, if it is not in the lowest level page table.
 #[cfg_attr(feature = "zerocopy", derive(AsBytes, FromZeroes))]
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[repr(C)]
-pub struct Descriptor(usize);
+#[repr(transparent)]
+pub struct Descriptor<A: Attributes> {
+    value: usize,
+    _attributes: PhantomData<A>,
+}
 
-impl Descriptor {
+impl<A: Attributes> Descriptor<A> {
     const PHYSICAL_ADDRESS_BITMASK: usize = !(PAGE_SIZE - 1) & !(0xffff << 48);
 
+    #[cfg(test)]
+    const fn new(value: usize) -> Self {
+        Self {
+            value,
+            _attributes: PhantomData,
+        }
+    }
+
     pub(crate) fn output_address(self) -> PhysicalAddress {
-        PhysicalAddress(self.0 & Self::PHYSICAL_ADDRESS_BITMASK)
+        PhysicalAddress(self.value & Self::PHYSICAL_ADDRESS_BITMASK)
     }
 
     /// Returns the flags of this page table entry, or `None` if its state does not
     /// contain a valid set of flags.
-    pub fn flags(self) -> Option<Attributes> {
-        Attributes::from_bits(self.0 & !Self::PHYSICAL_ADDRESS_BITMASK)
+    pub fn flags(self) -> Option<A> {
+        A::from_bits(self.value & !Self::PHYSICAL_ADDRESS_BITMASK)
     }
 
     /// Modifies the page table entry by setting or clearing its flags.
     /// Panics when attempting to convert a table descriptor into a block/page descriptor or vice
     /// versa - this is not supported via this API.
-    pub fn modify_flags(&mut self, set: Attributes, clear: Attributes) {
-        let flags = (self.0 | set.bits()) & !clear.bits();
+    pub fn modify_flags(&mut self, set: A, clear: A) {
+        let flags = (self.value | set.bits()) & !clear.bits();
 
-        if (self.0 ^ flags) & Attributes::TABLE_OR_PAGE.bits() != 0 {
+        if (self.value ^ flags) & CommonAttributes::TABLE_OR_PAGE.bits() != 0 {
             panic!("Cannot convert between table and block/page descriptors\n");
         }
-        self.0 = flags;
+        self.value = flags;
     }
 
     /// Returns `true` if [`Attributes::VALID`] is set on this entry, e.g. if the entry is mapped.
     pub fn is_valid(self) -> bool {
-        (self.0 & Attributes::VALID.bits()) != 0
+        (self.value & CommonAttributes::VALID.bits()) != 0
     }
 
     /// Returns `true` if this is a valid entry pointing to a next level translation table or a page.
     pub fn is_table_or_page(self) -> bool {
         if let Some(flags) = self.flags() {
-            flags.contains(Attributes::TABLE_OR_PAGE | Attributes::VALID)
+            flags.contains((CommonAttributes::TABLE_OR_PAGE | CommonAttributes::VALID).into())
         } else {
             false
         }
     }
 
-    pub(crate) fn set(&mut self, pa: PhysicalAddress, flags: Attributes) {
-        self.0 = (pa.0 & Self::PHYSICAL_ADDRESS_BITMASK) | flags.bits();
+    pub(crate) fn set(&mut self, pa: PhysicalAddress, flags: impl Into<A>) {
+        self.value = (pa.0 & Self::PHYSICAL_ADDRESS_BITMASK) | flags.into().bits();
     }
 
-    fn subtable<T: Translation>(
+    fn subtable<T: Translation<A>>(
         self,
         translation: &T,
         level: usize,
-    ) -> Option<PageTableWithLevel<T>> {
+    ) -> Option<PageTableWithLevel<T, A>> {
         if level < LEAF_LEVEL && self.is_table_or_page() {
             let output_address = self.output_address();
             let table = translation.physical_to_virtual(output_address);
@@ -918,9 +889,9 @@ impl Descriptor {
     }
 }
 
-impl Debug for Descriptor {
+impl<A: Attributes> Debug for Descriptor<A> {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        write!(f, "{:#016x}", self.0)?;
+        write!(f, "{:#016x}", self.value)?;
         if self.is_valid() {
             if let Some(flags) = self.flags() {
                 write!(f, " ({}, {:?})", self.output_address(), flags)?;
@@ -977,6 +948,9 @@ pub(crate) const fn is_aligned(value: usize, alignment: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::attributes::AttributesEl1;
+    #[cfg(feature = "alloc")]
+    use super::attributes::{AttributesEl2, AttributesEl3};
     use super::*;
     #[cfg(feature = "alloc")]
     use crate::idmap::IdTranslation;
@@ -1045,57 +1019,66 @@ mod tests {
 
     #[test]
     fn invalid_descriptor() {
-        let desc = Descriptor(0usize);
+        let desc = Descriptor::<AttributesEl1>::new(0usize);
         assert!(!desc.is_valid());
-        assert!(!desc.flags().unwrap().contains(Attributes::VALID));
+        assert!(!desc.flags().unwrap().contains(AttributesEl1::VALID));
     }
 
     #[test]
     fn set_descriptor() {
         const PHYSICAL_ADDRESS: usize = 0x12340000;
-        let mut desc = Descriptor(0usize);
+        let mut desc = Descriptor::<AttributesEl1>::new(0usize);
         assert!(!desc.is_valid());
         desc.set(
             PhysicalAddress(PHYSICAL_ADDRESS),
-            Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1 | Attributes::VALID,
+            AttributesEl1::TABLE_OR_PAGE
+                | AttributesEl1::USER
+                | AttributesEl1::SWFLAG_1
+                | AttributesEl1::VALID,
         );
         assert!(desc.is_valid());
         assert_eq!(
             desc.flags().unwrap(),
-            Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1 | Attributes::VALID
+            AttributesEl1::TABLE_OR_PAGE
+                | AttributesEl1::USER
+                | AttributesEl1::SWFLAG_1
+                | AttributesEl1::VALID
         );
         assert_eq!(desc.output_address(), PhysicalAddress(PHYSICAL_ADDRESS));
     }
 
     #[test]
     fn modify_descriptor_flags() {
-        let mut desc = Descriptor(0usize);
+        let mut desc = Descriptor::<AttributesEl1>::new(0usize);
         assert!(!desc.is_valid());
         desc.set(
             PhysicalAddress(0x12340000),
-            Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1,
+            AttributesEl1::TABLE_OR_PAGE | AttributesEl1::USER | AttributesEl1::SWFLAG_1,
         );
         desc.modify_flags(
-            Attributes::DBM | Attributes::SWFLAG_3,
-            Attributes::VALID | Attributes::SWFLAG_1,
+            AttributesEl1::DBM | AttributesEl1::SWFLAG_3,
+            AttributesEl1::VALID | AttributesEl1::SWFLAG_1,
         );
         assert!(!desc.is_valid());
         assert_eq!(
             desc.flags().unwrap(),
-            Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_3 | Attributes::DBM
+            AttributesEl1::TABLE_OR_PAGE
+                | AttributesEl1::USER
+                | AttributesEl1::SWFLAG_3
+                | AttributesEl1::DBM
         );
     }
 
     #[test]
     #[should_panic]
     fn modify_descriptor_table_or_page_flag() {
-        let mut desc = Descriptor(0usize);
+        let mut desc = Descriptor::<AttributesEl1>::new(0usize);
         assert!(!desc.is_valid());
         desc.set(
             PhysicalAddress(0x12340000),
-            Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1,
+            AttributesEl1::TABLE_OR_PAGE | AttributesEl1::USER | AttributesEl1::SWFLAG_1,
         );
-        desc.modify_flags(Attributes::VALID, Attributes::TABLE_OR_PAGE);
+        desc.modify_flags(AttributesEl1::VALID, AttributesEl1::TABLE_OR_PAGE);
     }
 
     #[cfg(feature = "alloc")]
@@ -1116,13 +1099,13 @@ mod tests {
     #[test]
     #[should_panic]
     fn no_el2_ttbr1() {
-        RootTable::<IdTranslation>::new(IdTranslation, 1, TranslationRegime::El2, VaRange::Upper);
+        RootTable::<IdTranslation, AttributesEl2>::new(IdTranslation, 1, VaRange::Upper);
     }
 
     #[cfg(feature = "alloc")]
     #[test]
     #[should_panic]
     fn no_el3_ttbr1() {
-        RootTable::<IdTranslation>::new(IdTranslation, 1, TranslationRegime::El3, VaRange::Upper);
+        RootTable::<IdTranslation, AttributesEl3>::new(IdTranslation, 1, VaRange::Upper);
     }
 }

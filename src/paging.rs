@@ -14,7 +14,7 @@ use core::marker::PhantomData;
 use core::ops::{Add, Range, Sub};
 use core::ptr::NonNull;
 #[cfg(feature = "zerocopy")]
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout};
 
 const PAGE_SHIFT: usize = 12;
 
@@ -64,7 +64,10 @@ impl TranslationRegime {
 }
 
 /// An aarch64 virtual address, the input type of a stage 1 page table.
-#[cfg_attr(feature = "zerocopy", derive(AsBytes, FromBytes, FromZeroes))]
+#[cfg_attr(
+    feature = "zerocopy",
+    derive(FromBytes, Immutable, IntoBytes, KnownLayout)
+)]
 #[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
 pub struct VirtualAddress(pub usize);
@@ -111,7 +114,10 @@ pub struct MemoryRegion(Range<VirtualAddress>);
 
 /// An aarch64 physical address or intermediate physical address, the output type of a stage 1 page
 /// table.
-#[cfg_attr(feature = "zerocopy", derive(AsBytes, FromBytes, FromZeroes))]
+#[cfg_attr(
+    feature = "zerocopy",
+    derive(FromBytes, Immutable, IntoBytes, KnownLayout)
+)]
 #[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
 pub struct PhysicalAddress(pub usize);
@@ -834,7 +840,10 @@ impl<T: Translation> PageTableWithLevel<T> {
 
 /// A single level of a page table.
 #[repr(C, align(4096))]
-#[cfg_attr(feature = "zerocopy", derive(AsBytes, FromZeroes))]
+#[cfg_attr(
+    feature = "zerocopy",
+    derive(FromZeros, Immutable, IntoBytes, KnownLayout)
+)]
 pub struct PageTable {
     entries: [Descriptor; 1 << BITS_PER_LEVEL],
 }
@@ -856,7 +865,10 @@ impl PageTable {
 ///   - A page mapping, if it is in the lowest level page table.
 ///   - A block mapping, if it is not in the lowest level page table.
 ///   - A pointer to a lower level pagetable, if it is not in the lowest level page table.
-#[cfg_attr(feature = "zerocopy", derive(AsBytes, FromZeroes))]
+#[cfg_attr(
+    feature = "zerocopy",
+    derive(FromZeros, Immutable, IntoBytes, KnownLayout)
+)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct Descriptor(usize);

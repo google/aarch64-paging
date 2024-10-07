@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- Updated to `zerocopy` 0.8.2.
+
 ### New features
 
 - Added `mair` module with types to build MAIR values.

@@ -10,7 +10,7 @@ use crate::paging::{deallocate, PageTable, PhysicalAddress, Translation};
 use alloc::{vec, vec::Vec};
 use core::{mem::size_of, ptr::NonNull};
 #[cfg(feature = "zerocopy")]
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 /// An implementation of `Translation` which builds a static pagetable to be built into a binary for
 /// some target device.

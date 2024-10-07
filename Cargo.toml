@@ -14,7 +14,7 @@ categories = ["embedded", "no-std", "hardware-support"]
 
 [dependencies]
 bitflags = "2.6.0"
-zerocopy = { version = "0.7.35", features = ["derive"], optional = true }
+zerocopy = { version = "0.8.2", features = ["derive"], optional = true }
 
 [features]
 default = ["alloc", "zerocopy"]

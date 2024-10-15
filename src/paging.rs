@@ -68,7 +68,7 @@ impl TranslationRegime {
     feature = "zerocopy",
     derive(FromBytes, Immutable, IntoBytes, KnownLayout)
 )]
-#[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Copy, Clone, Default, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
 pub struct VirtualAddress(pub usize);
 
@@ -118,7 +118,7 @@ pub struct MemoryRegion(Range<VirtualAddress>);
     feature = "zerocopy",
     derive(FromBytes, Immutable, IntoBytes, KnownLayout)
 )]
-#[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Copy, Clone, Default, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
 pub struct PhysicalAddress(pub usize);
 
@@ -520,7 +520,7 @@ impl Iterator for ChunkedIterator<'_> {
 
 bitflags! {
     /// Attribute bits for a mapping in a page table.
-    #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    #[derive(Copy, Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
     pub struct Attributes: usize {
         const VALID         = 1 << 0;
         const TABLE_OR_PAGE = 1 << 1;
@@ -849,12 +849,23 @@ pub struct PageTable {
 }
 
 impl PageTable {
+    /// An empty (i.e. zeroed) page table. This may be useful for initialising statics.
+    pub const EMPTY: Self = Self {
+        entries: [Descriptor::EMPTY; 1 << BITS_PER_LEVEL],
+    };
+
     /// Allocates a new zeroed, appropriately-aligned pagetable on the heap using the global
     /// allocator and returns a pointer to it.
     #[cfg(feature = "alloc")]
     pub fn new() -> NonNull<Self> {
         // SAFETY: Zeroed memory is a valid initialisation for a PageTable.
         unsafe { allocate_zeroed() }
+    }
+}
+
+impl Default for PageTable {
+    fn default() -> Self {
+        Self::EMPTY
     }
 }
 
@@ -869,11 +880,14 @@ impl PageTable {
     feature = "zerocopy",
     derive(FromZeros, Immutable, IntoBytes, KnownLayout)
 )]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct Descriptor(usize);
 
 impl Descriptor {
+    /// An empty (i.e. 0) descriptor.
+    pub const EMPTY: Self = Self(0);
+
     const PHYSICAL_ADDRESS_BITMASK: usize = !(PAGE_SIZE - 1) & !(0xffff << 48);
 
     pub(crate) fn output_address(self) -> PhysicalAddress {

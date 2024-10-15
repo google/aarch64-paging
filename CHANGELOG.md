@@ -9,6 +9,7 @@
 ### New features
 
 - Added `mair` module with types to build MAIR values.
+- Implemented `Default` for `Descriptor` and `PageTable`, and added associated `EMPTY` constant.
 
 ## 0.7.1
 

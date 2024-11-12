@@ -59,51 +59,34 @@ extern crate alloc;
 
 #[cfg(target_arch = "aarch64")]
 use core::arch::asm;
-use core::fmt::{self, Display, Formatter};
 use paging::{
     Attributes, Constraints, Descriptor, MemoryRegion, PhysicalAddress, RootTable, Translation,
     TranslationRegime, VaRange, VirtualAddress,
 };
+use thiserror::Error;
 
 /// An error attempting to map some range in the page table.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum MapError {
     /// The address requested to be mapped was out of the range supported by the page table
     /// configuration.
+    #[error("Virtual address {0} out of range")]
     AddressRange(VirtualAddress),
     /// The address requested to be mapped was not valid for the mapping in use.
+    #[error("Invalid virtual address {0} for mapping")]
     InvalidVirtualAddress(VirtualAddress),
     /// The end of the memory region is before the start.
+    #[error("End of memory region {0} is before start.")]
     RegionBackwards(MemoryRegion),
     /// There was an error while updating a page table entry.
+    #[error("Error updating page table entry {0:?}")]
     PteUpdateFault(Descriptor),
     /// The requested flags are not supported for this mapping
+    #[error("Flags {0:?} unsupported for mapping.")]
     InvalidFlags(Attributes),
     /// Updating the range violates break-before-make rules and the mapping is live
+    #[error("Cannot remap region {0} while translation is live.")]
     BreakBeforeMakeViolation(MemoryRegion),
-}
-
-impl Display for MapError {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        match self {
-            Self::AddressRange(va) => write!(f, "Virtual address {} out of range", va),
-            Self::InvalidVirtualAddress(va) => {
-                write!(f, "Invalid virtual address {} for mapping", va)
-            }
-            Self::RegionBackwards(region) => {
-                write!(f, "End of memory region {} is before start.", region)
-            }
-            Self::PteUpdateFault(desc) => {
-                write!(f, "Error updating page table entry {:?}", desc)
-            }
-            Self::InvalidFlags(flags) => {
-                write!(f, "Flags {flags:?} unsupported for mapping.")
-            }
-            Self::BreakBeforeMakeViolation(region) => {
-                write!(f, "Cannot remap region {region} while translation is live.")
-            }
-        }
-    }
 }
 
 /// Manages a level 1 page table and associated state.

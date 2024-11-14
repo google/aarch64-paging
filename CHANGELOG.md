@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### New features
+
+- `MapError` now implements `core::error::Error`.
+
 ## 0.8.0
 
 ### Breaking changes

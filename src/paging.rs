@@ -890,7 +890,7 @@ impl Descriptor {
 
     const PHYSICAL_ADDRESS_BITMASK: usize = !(PAGE_SIZE - 1) & !(0xffff << 48);
 
-    pub(crate) fn output_address(self) -> PhysicalAddress {
+    pub fn output_address(self) -> PhysicalAddress {
         PhysicalAddress(self.0 & Self::PHYSICAL_ADDRESS_BITMASK)
     }
 

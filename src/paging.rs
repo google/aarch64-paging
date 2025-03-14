@@ -890,7 +890,11 @@ impl Descriptor {
 
     const PHYSICAL_ADDRESS_BITMASK: usize = !(PAGE_SIZE - 1) & !(0xffff << 48);
 
-    pub(crate) fn output_address(self) -> PhysicalAddress {
+    /// Returns the physical address that this descriptor refers to if it is valid.
+    ///
+    /// Depending on the flags this could be the address of a subtable, a mapping, or (if it is not
+    /// a valid mapping) entirely arbitrary.
+    pub fn output_address(self) -> PhysicalAddress {
         PhysicalAddress(self.0 & Self::PHYSICAL_ADDRESS_BITMASK)
     }
 

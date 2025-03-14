@@ -5,6 +5,7 @@
 ### New features
 
 - `MapError` now implements `core::error::Error`.
+- Made `output_address` method on `Descriptor` public.
 
 ## 0.8.0
 

@@ -7,11 +7,11 @@
 //! See [`IdMap`] for details on how to use it.
 
 use crate::{
-    paging::{
-        deallocate, Attributes, Constraints, Descriptor, MemoryRegion, PageTable, PhysicalAddress,
-        Translation, TranslationRegime, VaRange, VirtualAddress,
-    },
     MapError, Mapping,
+    paging::{
+        Attributes, Constraints, Descriptor, MemoryRegion, PageTable, PhysicalAddress, Translation,
+        TranslationRegime, VaRange, VirtualAddress, deallocate,
+    },
 };
 use core::ptr::NonNull;
 
@@ -336,8 +336,8 @@ impl IdMap {
 mod tests {
     use super::*;
     use crate::{
-        paging::{Attributes, MemoryRegion, BITS_PER_LEVEL, PAGE_SIZE},
         MapError, VirtualAddress,
+        paging::{Attributes, BITS_PER_LEVEL, MemoryRegion, PAGE_SIZE},
     };
 
     const MAX_ADDRESS_FOR_ROOT_LEVEL_1: usize = 1 << 39;
@@ -634,29 +634,35 @@ mod tests {
     #[test]
     fn update_backwards_range() {
         let mut idmap = make_map();
-        assert!(idmap
-            .modify_range(
-                &MemoryRegion::new(PAGE_SIZE * 2, 1),
-                &|_range, entry, _level| {
-                    entry
-                        .modify_flags(Attributes::SWFLAG_0, Attributes::from_bits(0usize).unwrap());
-                    Ok(())
-                },
-            )
-            .is_err());
+        assert!(
+            idmap
+                .modify_range(
+                    &MemoryRegion::new(PAGE_SIZE * 2, 1),
+                    &|_range, entry, _level| {
+                        entry.modify_flags(
+                            Attributes::SWFLAG_0,
+                            Attributes::from_bits(0usize).unwrap(),
+                        );
+                        Ok(())
+                    },
+                )
+                .is_err()
+        );
     }
 
     #[test]
     fn update_range() {
         let mut idmap = make_map();
-        assert!(idmap
-            .modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|_range, entry, level| {
-                if level == 3 || !entry.is_table_or_page() {
-                    entry.modify_flags(Attributes::SWFLAG_0, Attributes::NON_GLOBAL);
-                }
-                Ok(())
-            })
-            .is_err());
+        assert!(
+            idmap
+                .modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|_range, entry, level| {
+                    if level == 3 || !entry.is_table_or_page() {
+                        entry.modify_flags(Attributes::SWFLAG_0, Attributes::NON_GLOBAL);
+                    }
+                    Ok(())
+                })
+                .is_err()
+        );
         idmap
             .modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|_range, entry, level| {
                 if level == 3 || !entry.is_table_or_page() {

@@ -6,7 +6,7 @@
 //!
 //! See [`TargetAllocator`] for details on how to use it.
 
-use crate::paging::{deallocate, PageTable, PhysicalAddress, Translation};
+use crate::paging::{PageTable, PhysicalAddress, Translation, deallocate};
 use alloc::{vec, vec::Vec};
 use core::{mem::size_of, ptr::NonNull};
 #[cfg(feature = "zerocopy")]

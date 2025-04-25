@@ -7,7 +7,7 @@
 
 use crate::MapError;
 #[cfg(feature = "alloc")]
-use alloc::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
+use alloc::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use bitflags::bitflags;
 use core::fmt::{self, Debug, Display, Formatter};
 use core::marker::PhantomData;

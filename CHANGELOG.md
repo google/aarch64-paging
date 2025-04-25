@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+
+- `Descriptor::flags` now returns `Attributes` rather than `Option<Attributes>`. If any unknown bits
+  are set they will be included.
+
+### Bug fixes
+
+- `Descriptor::is_table_or_page` will return the correct value even if unknown bits are set.
+  Previously it would return false in this case.
+
 ## 0.8.1
 
 ### New features

@@ -320,7 +320,7 @@ impl<T: Translation> Mapping<T> {
                     let (flags, oa) = {
                         let mut dd = *d;
                         updater(mr, &mut dd, level).or(Err(err.clone()))?;
-                        (dd.flags().ok_or(err.clone())?, dd.output_address())
+                        (dd.flags(), dd.output_address())
                     };
 
                     if !flags.contains(Attributes::VALID) {
@@ -333,7 +333,7 @@ impl<T: Translation> Mapping<T> {
                         return Err(err);
                     }
 
-                    let desc_flags = d.flags().unwrap();
+                    let desc_flags = d.flags();
 
                     if (desc_flags ^ flags).intersects(
                         Attributes::ATTRIBUTE_INDEX_MASK | Attributes::SHAREABILITY_MASK,

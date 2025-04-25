@@ -637,23 +637,22 @@ impl<T: Translation> PageTableWithLevel<T> {
         let granularity = granularity_at_level(level);
         let old = *entry;
         let (mut subtable, subtable_pa) = Self::new(translation, level + 1);
-        if let Some(old_flags) = old.flags() {
-            let old_pa = old.output_address();
-            if !old_flags.contains(Attributes::TABLE_OR_PAGE)
-                && (!old_flags.is_empty() || old_pa.0 != 0)
-            {
-                // `old` was a block entry, so we need to split it.
-                // Recreate the entire block in the newly added table.
-                let a = align_down(chunk.0.start.0, granularity);
-                let b = align_up(chunk.0.end.0, granularity);
-                subtable.map_range(
-                    translation,
-                    &MemoryRegion::new(a, b),
-                    old_pa,
-                    old_flags,
-                    Constraints::empty(),
-                );
-            }
+        let old_flags = old.flags();
+        let old_pa = old.output_address();
+        if !old_flags.contains(Attributes::TABLE_OR_PAGE)
+            && (!old_flags.is_empty() || old_pa.0 != 0)
+        {
+            // `old` was a block entry, so we need to split it.
+            // Recreate the entire block in the newly added table.
+            let a = align_down(chunk.0.start.0, granularity);
+            let b = align_up(chunk.0.end.0, granularity);
+            subtable.map_range(
+                translation,
+                &MemoryRegion::new(a, b),
+                old_pa,
+                old_flags,
+                Constraints::empty(),
+            );
         }
         entry.set(subtable_pa, Attributes::TABLE_OR_PAGE | Attributes::VALID);
         subtable
@@ -900,8 +899,8 @@ impl Descriptor {
 
     /// Returns the flags of this page table entry, or `None` if its state does not
     /// contain a valid set of flags.
-    pub fn flags(self) -> Option<Attributes> {
-        Attributes::from_bits(self.0 & !Self::PHYSICAL_ADDRESS_BITMASK)
+    pub fn flags(self) -> Attributes {
+        Attributes::from_bits_retain(self.0 & !Self::PHYSICAL_ADDRESS_BITMASK)
     }
 
     /// Modifies the page table entry by setting or clearing its flags.
@@ -923,11 +922,8 @@ impl Descriptor {
 
     /// Returns `true` if this is a valid entry pointing to a next level translation table or a page.
     pub fn is_table_or_page(self) -> bool {
-        if let Some(flags) = self.flags() {
-            flags.contains(Attributes::TABLE_OR_PAGE | Attributes::VALID)
-        } else {
-            false
-        }
+        self.flags()
+            .contains(Attributes::TABLE_OR_PAGE | Attributes::VALID)
     }
 
     pub(crate) fn set(&mut self, pa: PhysicalAddress, flags: Attributes) {
@@ -952,9 +948,7 @@ impl Debug for Descriptor {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
         write!(f, "{:#016x}", self.0)?;
         if self.is_valid() {
-            if let Some(flags) = self.flags() {
-                write!(f, " ({}, {:?})", self.output_address(), flags)?;
-            }
+            write!(f, " ({}, {:?})", self.output_address(), self.flags())?;
         }
         Ok(())
     }
@@ -1077,7 +1071,7 @@ mod tests {
     fn invalid_descriptor() {
         let desc = Descriptor(0usize);
         assert!(!desc.is_valid());
-        assert!(!desc.flags().unwrap().contains(Attributes::VALID));
+        assert!(!desc.flags().contains(Attributes::VALID));
     }
 
     #[test]
@@ -1091,7 +1085,7 @@ mod tests {
         );
         assert!(desc.is_valid());
         assert_eq!(
-            desc.flags().unwrap(),
+            desc.flags(),
             Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1 | Attributes::VALID
         );
         assert_eq!(desc.output_address(), PhysicalAddress(PHYSICAL_ADDRESS));
@@ -1111,7 +1105,7 @@ mod tests {
         );
         assert!(!desc.is_valid());
         assert_eq!(
-            desc.flags().unwrap(),
+            desc.flags(),
             Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_3 | Attributes::DBM
         );
     }

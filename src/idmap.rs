@@ -675,7 +675,7 @@ mod tests {
         idmap
             .modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|range, entry, level| {
                 if level == 3 || !entry.is_table_or_page() {
-                    assert!(entry.flags().unwrap().contains(Attributes::SWFLAG_0));
+                    assert!(entry.flags().contains(Attributes::SWFLAG_0));
                     assert_eq!(range.end() - range.start(), PAGE_SIZE);
                 }
                 Ok(())
@@ -712,7 +712,7 @@ mod tests {
                 &MemoryRegion::new(0, BLOCK_RANGE),
                 &|range, entry, level| {
                     if level == 3 {
-                        let has_swflag = entry.flags().unwrap().contains(Attributes::SWFLAG_0);
+                        let has_swflag = entry.flags().contains(Attributes::SWFLAG_0);
                         let is_first_page = range.start().0 == 0usize;
                         assert!(has_swflag != is_first_page);
                     }
@@ -738,7 +738,7 @@ mod tests {
                 &MemoryRegion::new(PAGE_SIZE, PAGE_SIZE * 20),
                 &mut |_, descriptor, _| {
                     assert!(!descriptor.is_valid());
-                    assert_eq!(descriptor.flags(), Some(Attributes::empty()));
+                    assert_eq!(descriptor.flags(), Attributes::empty());
                     assert_eq!(descriptor.output_address(), PhysicalAddress(0));
                     Ok(())
                 },

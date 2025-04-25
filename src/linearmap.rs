@@ -7,11 +7,11 @@
 //! See [`LinearMap`] for details on how to use it.
 
 use crate::{
-    paging::{
-        deallocate, is_aligned, Attributes, Constraints, Descriptor, MemoryRegion, PageTable,
-        PhysicalAddress, Translation, TranslationRegime, VaRange, VirtualAddress, PAGE_SIZE,
-    },
     MapError, Mapping,
+    paging::{
+        Attributes, Constraints, Descriptor, MemoryRegion, PAGE_SIZE, PageTable, PhysicalAddress,
+        Translation, TranslationRegime, VaRange, VirtualAddress, deallocate, is_aligned,
+    },
 };
 use core::ptr::NonNull;
 
@@ -351,8 +351,8 @@ impl LinearMap {
 mod tests {
     use super::*;
     use crate::{
-        paging::{Attributes, MemoryRegion, BITS_PER_LEVEL, PAGE_SIZE},
         MapError,
+        paging::{Attributes, BITS_PER_LEVEL, MemoryRegion, PAGE_SIZE},
     };
 
     const MAX_ADDRESS_FOR_ROOT_LEVEL_1: usize = 1 << 39;
@@ -658,8 +658,8 @@ mod tests {
     #[test]
     fn update_backwards_range() {
         let mut lmap = make_map();
-        assert!(lmap
-            .modify_range(
+        assert!(
+            lmap.modify_range(
                 &MemoryRegion::new(PAGE_SIZE * 2, 1),
                 &|_range, entry, _level| {
                     entry
@@ -667,7 +667,8 @@ mod tests {
                     Ok(())
                 },
             )
-            .is_err());
+            .is_err()
+        );
     }
 
     #[test]

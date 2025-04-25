@@ -1155,4 +1155,33 @@ mod tests {
     fn no_el3_ttbr1() {
         RootTable::<IdTranslation>::new(IdTranslation, 1, TranslationRegime::El3, VaRange::Upper);
     }
+
+    #[test]
+    fn table_or_page() {
+        // Invalid.
+        assert!(!Descriptor(0b00).is_table_or_page());
+        assert!(!Descriptor(0b10).is_table_or_page());
+
+        // Block mapping.
+        assert!(!Descriptor(0b01).is_table_or_page());
+
+        // Table or page.
+        assert!(Descriptor(0b11).is_table_or_page());
+    }
+
+    #[test]
+    fn table_or_page_unknown_bits() {
+        // Some RES0 and IGNORED bits that we set for the sake of the test.
+        const UNKNOWN: usize = 1 << 50 | 1 << 52;
+
+        // Invalid.
+        assert!(!Descriptor(UNKNOWN | 0b00).is_table_or_page());
+        assert!(!Descriptor(UNKNOWN | 0b10).is_table_or_page());
+
+        // Block mapping.
+        assert!(!Descriptor(UNKNOWN | 0b01).is_table_or_page());
+
+        // Table or page.
+        assert!(Descriptor(UNKNOWN | 0b11).is_table_or_page());
+    }
 }

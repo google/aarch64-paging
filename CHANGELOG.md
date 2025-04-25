@@ -12,6 +12,11 @@
 - `Descriptor::is_table_or_page` will return the correct value even if unknown bits are set.
   Previously it would return false in this case.
 
+### New features
+
+- Added `PXN_TABLE`, `XN_TABLE`, `AP_TABLE_NO_EL0`, `AP_TABLE_NO_WRITE` and `NS_TABLE` bits to
+  `Attributes`.
+
 ## 0.8.1
 
 ### New features

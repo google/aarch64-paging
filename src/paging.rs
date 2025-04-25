@@ -554,6 +554,12 @@ bitflags! {
         const SWFLAG_1 = 1 << 56;
         const SWFLAG_2 = 1 << 57;
         const SWFLAG_3 = 1 << 58;
+
+        const PXN_TABLE = 1 << 59;
+        const XN_TABLE = 1 << 60;
+        const AP_TABLE_NO_EL0 = 1 << 61;
+        const AP_TABLE_NO_WRITE = 1 << 62;
+        const NS_TABLE = 1 << 63;
     }
 }
 

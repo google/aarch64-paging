@@ -554,6 +554,12 @@ bitflags! {
         const SWFLAG_1 = 1 << 56;
         const SWFLAG_2 = 1 << 57;
         const SWFLAG_3 = 1 << 58;
+
+        const PXN_TABLE = 1 << 59;
+        const XN_TABLE = 1 << 60;
+        const AP_TABLE_NO_EL0 = 1 << 61;
+        const AP_TABLE_NO_WRITE = 1 << 62;
+        const NS_TABLE = 1 << 63;
     }
 }
 
@@ -637,23 +643,22 @@ impl<T: Translation> PageTableWithLevel<T> {
         let granularity = granularity_at_level(level);
         let old = *entry;
         let (mut subtable, subtable_pa) = Self::new(translation, level + 1);
-        if let Some(old_flags) = old.flags() {
-            let old_pa = old.output_address();
-            if !old_flags.contains(Attributes::TABLE_OR_PAGE)
-                && (!old_flags.is_empty() || old_pa.0 != 0)
-            {
-                // `old` was a block entry, so we need to split it.
-                // Recreate the entire block in the newly added table.
-                let a = align_down(chunk.0.start.0, granularity);
-                let b = align_up(chunk.0.end.0, granularity);
-                subtable.map_range(
-                    translation,
-                    &MemoryRegion::new(a, b),
-                    old_pa,
-                    old_flags,
-                    Constraints::empty(),
-                );
-            }
+        let old_flags = old.flags();
+        let old_pa = old.output_address();
+        if !old_flags.contains(Attributes::TABLE_OR_PAGE)
+            && (!old_flags.is_empty() || old_pa.0 != 0)
+        {
+            // `old` was a block entry, so we need to split it.
+            // Recreate the entire block in the newly added table.
+            let a = align_down(chunk.0.start.0, granularity);
+            let b = align_up(chunk.0.end.0, granularity);
+            subtable.map_range(
+                translation,
+                &MemoryRegion::new(a, b),
+                old_pa,
+                old_flags,
+                Constraints::empty(),
+            );
         }
         entry.set(subtable_pa, Attributes::TABLE_OR_PAGE | Attributes::VALID);
         subtable
@@ -900,8 +905,8 @@ impl Descriptor {
 
     /// Returns the flags of this page table entry, or `None` if its state does not
     /// contain a valid set of flags.
-    pub fn flags(self) -> Option<Attributes> {
-        Attributes::from_bits(self.0 & !Self::PHYSICAL_ADDRESS_BITMASK)
+    pub fn flags(self) -> Attributes {
+        Attributes::from_bits_retain(self.0 & !Self::PHYSICAL_ADDRESS_BITMASK)
     }
 
     /// Modifies the page table entry by setting or clearing its flags.
@@ -923,11 +928,8 @@ impl Descriptor {
 
     /// Returns `true` if this is a valid entry pointing to a next level translation table or a page.
     pub fn is_table_or_page(self) -> bool {
-        if let Some(flags) = self.flags() {
-            flags.contains(Attributes::TABLE_OR_PAGE | Attributes::VALID)
-        } else {
-            false
-        }
+        self.flags()
+            .contains(Attributes::TABLE_OR_PAGE | Attributes::VALID)
     }
 
     pub(crate) fn set(&mut self, pa: PhysicalAddress, flags: Attributes) {
@@ -952,9 +954,7 @@ impl Debug for Descriptor {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
         write!(f, "{:#016x}", self.0)?;
         if self.is_valid() {
-            if let Some(flags) = self.flags() {
-                write!(f, " ({}, {:?})", self.output_address(), flags)?;
-            }
+            write!(f, " ({}, {:?})", self.output_address(), self.flags())?;
         }
         Ok(())
     }
@@ -1077,7 +1077,7 @@ mod tests {
     fn invalid_descriptor() {
         let desc = Descriptor(0usize);
         assert!(!desc.is_valid());
-        assert!(!desc.flags().unwrap().contains(Attributes::VALID));
+        assert!(!desc.flags().contains(Attributes::VALID));
     }
 
     #[test]
@@ -1091,7 +1091,7 @@ mod tests {
         );
         assert!(desc.is_valid());
         assert_eq!(
-            desc.flags().unwrap(),
+            desc.flags(),
             Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1 | Attributes::VALID
         );
         assert_eq!(desc.output_address(), PhysicalAddress(PHYSICAL_ADDRESS));
@@ -1111,7 +1111,7 @@ mod tests {
         );
         assert!(!desc.is_valid());
         assert_eq!(
-            desc.flags().unwrap(),
+            desc.flags(),
             Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_3 | Attributes::DBM
         );
     }
@@ -1154,5 +1154,34 @@ mod tests {
     #[should_panic]
     fn no_el3_ttbr1() {
         RootTable::<IdTranslation>::new(IdTranslation, 1, TranslationRegime::El3, VaRange::Upper);
+    }
+
+    #[test]
+    fn table_or_page() {
+        // Invalid.
+        assert!(!Descriptor(0b00).is_table_or_page());
+        assert!(!Descriptor(0b10).is_table_or_page());
+
+        // Block mapping.
+        assert!(!Descriptor(0b01).is_table_or_page());
+
+        // Table or page.
+        assert!(Descriptor(0b11).is_table_or_page());
+    }
+
+    #[test]
+    fn table_or_page_unknown_bits() {
+        // Some RES0 and IGNORED bits that we set for the sake of the test.
+        const UNKNOWN: usize = 1 << 50 | 1 << 52;
+
+        // Invalid.
+        assert!(!Descriptor(UNKNOWN | 0b00).is_table_or_page());
+        assert!(!Descriptor(UNKNOWN | 0b10).is_table_or_page());
+
+        // Block mapping.
+        assert!(!Descriptor(UNKNOWN | 0b01).is_table_or_page());
+
+        // Table or page.
+        assert!(Descriptor(UNKNOWN | 0b11).is_table_or_page());
     }
 }

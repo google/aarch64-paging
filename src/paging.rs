@@ -898,6 +898,11 @@ impl Descriptor {
         PhysicalAddress(self.0 & Self::PHYSICAL_ADDRESS_BITMASK)
     }
 
+    /// Returns the raw value of this descriptor.
+    pub fn raw(self) -> usize {
+        self.0
+    }
+
     /// Returns the flags of this page table entry, or `None` if its state does not
     /// contain a valid set of flags.
     pub fn flags(self) -> Option<Attributes> {

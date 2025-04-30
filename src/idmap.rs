@@ -745,4 +745,12 @@ mod tests {
             )
             .unwrap();
     }
+
+    #[test]
+    fn table_sizes() {
+        assert_eq!(IdMap::new(1, 0, TranslationRegime::El1And0).size(), 1 << 48);
+        assert_eq!(IdMap::new(1, 1, TranslationRegime::El1And0).size(), 1 << 39);
+        assert_eq!(IdMap::new(1, 2, TranslationRegime::El1And0).size(), 1 << 30);
+        assert_eq!(IdMap::new(1, 3, TranslationRegime::El1And0).size(), 1 << 21);
+    }
 }

@@ -137,13 +137,11 @@ impl LinearMap {
         self.mapping.size()
     }
 
-    /// Activates the page table by setting `TTBRn_EL1` to point to it, and saves the previous value
-    /// of `TTBRn_EL1` so that it may later be restored by [`deactivate`](Self::deactivate).
+    /// Activates the page table by programming the physical address of the root page table into
+    /// `TTBRn_ELx`, along with the provided ASID. The previous value of `TTBRn_ELx` is returned so
+    /// that it may later be restored by passing it to [`deactivate`](Self::deactivate).
     ///
-    /// Panics if a previous value of `TTBRn_EL1` is already saved and not yet used by a call to
-    /// `deactivate`.
-    ///
-    /// In test builds or builds that do not target aarch64, the `TTBRn_EL1` access is omitted.
+    /// In test builds or builds that do not target aarch64, the `TTBR0_EL1` access is omitted.
     ///
     /// # Safety
     ///
@@ -151,30 +149,25 @@ impl LinearMap {
     /// using, or introduce aliases which break Rust's aliasing rules. The page table must not be
     /// dropped as long as its mappings are required, as it will automatically be deactivated when
     /// it is dropped.
-    pub unsafe fn activate(&mut self) {
+    pub unsafe fn activate(&mut self) -> usize {
         // SAFETY: We delegate the safety requirements to our caller.
-        unsafe {
-            self.mapping.activate();
-        }
+        unsafe { self.mapping.activate() }
     }
 
-    /// Deactivates the page table, by setting `TTBRn_EL1` back to the value it had before
-    /// [`activate`](Self::activate) was called, and invalidating the TLB for this page table's
-    /// configured ASID.
+    /// Deactivates the page table, by setting `TTBRn_ELx` to the provided value, and invalidating
+    /// the TLB for this page table's configured ASID. The provided TTBR value should be the value
+    /// returned by the preceding [`activate`](Self::activate) call.
     ///
-    /// Panics if there is no saved `TTBRn_EL1` value because `activate` has not previously been
-    /// called.
-    ///
-    /// In test builds or builds that do not target aarch64, the `TTBRn_EL1` access is omitted.
+    /// In test builds or builds that do not target aarch64, the `TTBR0_EL1` access is omitted.
     ///
     /// # Safety
     ///
     /// The caller must ensure that the previous page table which this is switching back to doesn't
     /// unmap any memory which the program is using.
-    pub unsafe fn deactivate(&mut self) {
+    pub unsafe fn deactivate(&mut self, previous_ttbr: usize) {
         // SAFETY: We delegate the safety requirements to our caller.
         unsafe {
-            self.mapping.deactivate();
+            self.mapping.deactivate(previous_ttbr);
         }
     }
 
@@ -332,8 +325,8 @@ impl LinearMap {
     /// checks to avoid violating break-before-make requirements.
     ///
     /// It is called automatically by [`activate`](Self::activate).
-    pub fn mark_active(&mut self, previous_ttbr: usize) {
-        self.mapping.mark_active(previous_ttbr);
+    pub fn mark_active(&mut self) {
+        self.mapping.mark_active();
     }
 
     /// Marks the page table as inactive.

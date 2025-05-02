@@ -5,6 +5,7 @@
 ### New features
 
 - Added `Mapping::activate_raw` to support multicore usage and other scenarios.
+- Added `Mapping::asid` to get ASID.
 
 ## 0.9.0
 

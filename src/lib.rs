@@ -99,7 +99,6 @@ pub enum MapError {
 #[derive(Debug)]
 pub struct Mapping<T: Translation> {
     root: RootTable<T>,
-    #[allow(unused)]
     asid: usize,
     #[allow(unused)]
     previous_ttbr: Option<usize>,
@@ -486,6 +485,11 @@ impl<T: Translation> Mapping<T> {
     /// [`mark_active`](Self::mark_active) after doing so.
     pub fn root_address(&self) -> PhysicalAddress {
         self.root.to_physical()
+    }
+
+    /// Returns the ASID of the page table.
+    pub fn asid(&self) -> usize {
+        self.asid
     }
 
     /// Marks the page table as active.

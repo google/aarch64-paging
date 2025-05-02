@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### New features
+
+- Added `Mapping::activate_raw` to support multicore usage and other scenarios.
+
 ## 0.9.0
 
 ### Breaking changes

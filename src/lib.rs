@@ -59,6 +59,7 @@ extern crate alloc;
 
 #[cfg(target_arch = "aarch64")]
 use core::arch::asm;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use paging::{
     Attributes, Constraints, Descriptor, MemoryRegion, PhysicalAddress, RootTable, Translation,
     TranslationRegime, VaRange, VirtualAddress,
@@ -100,8 +101,7 @@ pub enum MapError {
 pub struct Mapping<T: Translation> {
     root: RootTable<T>,
     asid: usize,
-    #[allow(unused)]
-    previous_ttbr: Option<usize>,
+    active_count: AtomicUsize,
 }
 
 impl<T: Translation> Mapping<T> {
@@ -119,7 +119,7 @@ impl<T: Translation> Mapping<T> {
         Self {
             root: RootTable::new(translation, rootlevel, translation_regime, va_range),
             asid,
-            previous_ttbr: None,
+            active_count: AtomicUsize::new(0),
         }
     }
 
@@ -130,7 +130,7 @@ impl<T: Translation> Mapping<T> {
 
     /// Returns whether this mapping is currently active.
     pub fn active(&self) -> bool {
-        self.previous_ttbr.is_some()
+        self.active_count.load(Ordering::Acquire) != 0
     }
 
     /// Returns the size in bytes of the virtual address space which can be mapped in this page
@@ -141,11 +141,9 @@ impl<T: Translation> Mapping<T> {
         self.root.size()
     }
 
-    /// Activates the page table by setting `TTBRn_ELx` to point to it, and saves the previous value
-    /// of `TTBRn_ELx` so that it may later be restored by [`deactivate`](Self::deactivate).
-    ///
-    /// Panics if a previous value of `TTBRn_ELx` is already saved and not yet used by a call to
-    /// `deactivate`.
+    /// Activates the page table by programming the physical address of the root page table into
+    /// `TTBRn_ELx`, along with the provided ASID. The previous value of `TTBRn_ELx` is returned so
+    /// that it may later be restored by passing it to [`deactivate`](Self::deactivate).
     ///
     /// In test builds or builds that do not target aarch64, the `TTBRn_ELx` access is omitted.
     ///
@@ -155,10 +153,8 @@ impl<T: Translation> Mapping<T> {
     /// using, or introduce aliases which break Rust's aliasing rules. The page table must not be
     /// dropped as long as its mappings are required, as it will automatically be deactivated when
     /// it is dropped.
-    pub unsafe fn activate(&mut self) {
-        assert!(!self.active());
-
-        #[allow(unused)]
+    pub unsafe fn activate(&self) -> usize {
+        #[allow(unused_mut)]
         let mut previous_ttbr = usize::MAX;
 
         #[cfg(all(not(test), target_arch = "aarch64"))]
@@ -219,15 +215,13 @@ impl<T: Translation> Mapping<T> {
                 }
             }
         }
-        self.mark_active(previous_ttbr);
+        self.mark_active();
+        previous_ttbr
     }
 
-    /// Deactivates the page table, by setting `TTBRn_ELx` back to the value it had before
-    /// [`activate`](Self::activate) was called, and invalidating the TLB for this page table's
-    /// configured ASID.
-    ///
-    /// Panics if there is no saved `TTBRn_ELx` value because `activate` has not previously been
-    /// called.
+    /// Deactivates the page table, by setting `TTBRn_ELx` to the provided value, and invalidating
+    /// the TLB for this page table's configured ASID. The provided TTBR value should be the value
+    /// returned by the preceding [`activate`](Self::activate) call.
     ///
     /// In test builds or builds that do not target aarch64, the `TTBRn_ELx` access is omitted.
     ///
@@ -235,7 +229,7 @@ impl<T: Translation> Mapping<T> {
     ///
     /// The caller must ensure that the previous page table which this is switching back to doesn't
     /// unmap any memory which the program is using.
-    pub unsafe fn deactivate(&mut self) {
+    pub unsafe fn deactivate(&self, #[allow(unused)] previous_ttbr: usize) {
         assert!(self.active());
 
         #[cfg(all(not(test), target_arch = "aarch64"))]
@@ -250,7 +244,7 @@ impl<T: Translation> Mapping<T> {
                     "dsb   nsh",
                     "isb",
                     asid = in(reg) self.asid << 48,
-                    ttbrval = in(reg) self.previous_ttbr.unwrap(),
+                    ttbrval = in(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
                 (TranslationRegime::El1And0, VaRange::Upper) => asm!(
@@ -260,7 +254,7 @@ impl<T: Translation> Mapping<T> {
                     "dsb   nsh",
                     "isb",
                     asid = in(reg) self.asid << 48,
-                    ttbrval = in(reg) self.previous_ttbr.unwrap(),
+                    ttbrval = in(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
                 (TranslationRegime::El2And0, VaRange::Lower) => asm!(
@@ -270,7 +264,7 @@ impl<T: Translation> Mapping<T> {
                     "dsb   nsh",
                     "isb",
                     asid = in(reg) self.asid << 48,
-                    ttbrval = in(reg) self.previous_ttbr.unwrap(),
+                    ttbrval = in(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
                 (TranslationRegime::El2And0, VaRange::Upper) => asm!(
@@ -280,7 +274,7 @@ impl<T: Translation> Mapping<T> {
                     "dsb   nsh",
                     "isb",
                     asid = in(reg) self.asid << 48,
-                    ttbrval = in(reg) self.previous_ttbr.unwrap(),
+                    ttbrval = in(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
                 (TranslationRegime::El2, VaRange::Lower) => {
@@ -477,8 +471,8 @@ impl<T: Translation> Mapping<T> {
     /// checks to avoid violating break-before-make requirements.
     ///
     /// It is called automatically by [`activate`](Self::activate).
-    pub fn mark_active(&mut self, previous_ttbr: usize) {
-        self.previous_ttbr = Some(previous_ttbr);
+    pub fn mark_active(&self) {
+        self.active_count.fetch_add(1, Ordering::Release);
     }
 
     /// Marks the page table as inactive.
@@ -487,20 +481,19 @@ impl<T: Translation> Mapping<T> {
     /// the relevant TTBR to a different address.
     ///
     /// It is called automatically by [`deactivate`](Self::deactivate).
-    pub fn mark_inactive(&mut self) {
-        self.previous_ttbr = None;
+    pub fn mark_inactive(&self) {
+        let l = self.active_count.fetch_sub(1, Ordering::Release);
+        if l == 0 {
+            // If the old value was 0, the new value underflowed
+            panic!("Underflow in active count.");
+        }
     }
 }
 
 impl<T: Translation> Drop for Mapping<T> {
     fn drop(&mut self) {
-        if self.previous_ttbr.is_some() {
-            #[cfg(target_arch = "aarch64")]
-            // SAFETY: When activate was called the caller promised that they wouldn't drop the page
-            // table until its mappings were no longer needed.
-            unsafe {
-                self.deactivate();
-            }
+        if self.active() {
+            panic!("Dropping active page table mapping!");
         }
     }
 }

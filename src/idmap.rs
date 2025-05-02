@@ -80,10 +80,10 @@ impl Translation for IdTranslation {
 ///     NORMAL_CACHEABLE | Attributes::NON_GLOBAL | Attributes::VALID | Attributes::ACCESSED,
 /// ).unwrap();
 /// // SAFETY: Everything the program uses is within the 2 MiB region mapped above.
-/// unsafe {
+/// let ttbr = unsafe {
 ///     // Set `TTBR0_EL1` to activate the page table.
-///     idmap.activate();
-/// }
+///     idmap.activate()
+/// };
 ///
 /// // Write something to the memory...
 ///
@@ -91,7 +91,7 @@ impl Translation for IdTranslation {
 /// // reactivated below.
 /// unsafe {
 ///     // Restore `TTBR0_EL1` to its earlier value while we modify the page table.
-///     idmap.deactivate();
+///     idmap.deactivate(ttbr);
 /// }
 /// // Now change the mapping to read-only and executable.
 /// idmap.map_range(
@@ -131,11 +131,9 @@ impl IdMap {
         self.mapping.size()
     }
 
-    /// Activates the page table by setting `TTBR0_EL1` to point to it, and saves the previous value
-    /// of `TTBR0_EL1` so that it may later be restored by [`deactivate`](Self::deactivate).
-    ///
-    /// Panics if a previous value of `TTBR0_EL1` is already saved and not yet used by a call to
-    /// `deactivate`.
+    /// Activates the page table by programming the physical address of the root page table into
+    /// `TTBRn_ELx`, along with the provided ASID. The previous value of `TTBRn_ELx` is returned so
+    /// that it may later be restored by passing it to [`deactivate`](Self::deactivate).
     ///
     /// In test builds or builds that do not target aarch64, the `TTBR0_EL1` access is omitted.
     ///
@@ -145,19 +143,14 @@ impl IdMap {
     /// using, or introduce aliases which break Rust's aliasing rules. The page table must not be
     /// dropped as long as its mappings are required, as it will automatically be deactivated when
     /// it is dropped.
-    pub unsafe fn activate(&mut self) {
+    pub unsafe fn activate(&mut self) -> usize {
         // SAFETY: We delegate the safety requirements to our caller.
-        unsafe {
-            self.mapping.activate();
-        }
+        unsafe { self.mapping.activate() }
     }
 
-    /// Deactivates the page table, by setting `TTBR0_EL1` back to the value it had before
-    /// [`activate`](Self::activate) was called, and invalidating the TLB for this page table's
-    /// configured ASID.
-    ///
-    /// Panics if there is no saved `TTBR0_EL1` value because `activate` has not previously been
-    /// called.
+    /// Deactivates the page table, by setting `TTBRn_ELx` to the provided value, and invalidating
+    /// the TLB for this page table's configured ASID. The provided TTBR value should be the value
+    /// returned by the preceding [`activate`](Self::activate) call.
     ///
     /// In test builds or builds that do not target aarch64, the `TTBR0_EL1` access is omitted.
     ///
@@ -165,10 +158,10 @@ impl IdMap {
     ///
     /// The caller must ensure that the previous page table which this is switching back to doesn't
     /// unmap any memory which the program is using.
-    pub unsafe fn deactivate(&mut self) {
+    pub unsafe fn deactivate(&mut self, previous_ttbr: usize) {
         // SAFETY: We delegate the safety requirements to our caller.
         unsafe {
-            self.mapping.deactivate();
+            self.mapping.deactivate(previous_ttbr);
         }
     }
 
@@ -317,8 +310,8 @@ impl IdMap {
     /// checks to avoid violating break-before-make requirements.
     ///
     /// It is called automatically by [`activate`](Self::activate).
-    pub fn mark_active(&mut self, previous_ttbr: usize) {
-        self.mapping.mark_active(previous_ttbr);
+    pub fn mark_active(&mut self) {
+        self.mapping.mark_active();
     }
 
     /// Marks the page table as inactive.
@@ -351,9 +344,7 @@ mod tests {
         let mut idmap = IdMap::new(1, 1, TranslationRegime::El1And0);
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
-        unsafe {
-            idmap.activate();
-        }
+        let ttbr = unsafe { idmap.activate() };
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(0, 1),
@@ -362,13 +353,15 @@ mod tests {
             Ok(())
         );
 
+        unsafe {
+            idmap.deactivate(ttbr);
+        }
+
         // Two pages at the start of the address space.
         let mut idmap = IdMap::new(1, 1, TranslationRegime::El1And0);
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
-        unsafe {
-            idmap.activate();
-        }
+        let ttbr = unsafe { idmap.activate() };
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(0, PAGE_SIZE * 2),
@@ -377,13 +370,15 @@ mod tests {
             Ok(())
         );
 
+        unsafe {
+            idmap.deactivate(ttbr);
+        }
+
         // A single byte at the end of the address space.
         let mut idmap = IdMap::new(1, 1, TranslationRegime::El1And0);
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
-        unsafe {
-            idmap.activate();
-        }
+        let ttbr = unsafe { idmap.activate() };
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(
@@ -395,13 +390,15 @@ mod tests {
             Ok(())
         );
 
+        unsafe {
+            idmap.deactivate(ttbr);
+        }
+
         // Two pages, on the boundary between two subtables.
         let mut idmap = IdMap::new(1, 1, TranslationRegime::El1And0);
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
-        unsafe {
-            idmap.activate();
-        }
+        let ttbr = unsafe { idmap.activate() };
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(PAGE_SIZE * 1023, PAGE_SIZE * 1025),
@@ -410,13 +407,15 @@ mod tests {
             Ok(())
         );
 
+        unsafe {
+            idmap.deactivate(ttbr);
+        }
+
         // The entire valid address space.
         let mut idmap = IdMap::new(1, 1, TranslationRegime::El1And0);
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
-        unsafe {
-            idmap.activate();
-        }
+        let ttbr = unsafe { idmap.activate() };
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
@@ -424,6 +423,10 @@ mod tests {
             ),
             Ok(())
         );
+
+        unsafe {
+            idmap.deactivate(ttbr);
+        }
     }
 
     #[test]
@@ -439,9 +442,7 @@ mod tests {
             .unwrap();
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
-        unsafe {
-            idmap.activate();
-        }
+        let ttbr = unsafe { idmap.activate() };
 
         // Splitting a range is permitted if it was mapped down to pages
         assert_eq!(
@@ -451,6 +452,9 @@ mod tests {
             ),
             Ok(())
         );
+        unsafe {
+            idmap.deactivate(ttbr);
+        }
 
         let mut idmap = IdMap::new(1, 1, TranslationRegime::El1And0);
         idmap
@@ -461,9 +465,7 @@ mod tests {
             .ok();
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
-        unsafe {
-            idmap.activate();
-        }
+        let ttbr = unsafe { idmap.activate() };
 
         // Extending a range is fine even if there are block mappings
         // in the middle
@@ -569,7 +571,7 @@ mod tests {
         // SAFETY: This doesn't actually deactivate the page table in tests, it just treats it as
         // inactive for the sake of BBM rules.
         unsafe {
-            idmap.deactivate();
+            idmap.deactivate(ttbr);
         }
         // Removing the non-global attribute from an inactive mapping is permitted
         assert_eq!(
@@ -611,7 +613,7 @@ mod tests {
         );
     }
 
-    fn make_map() -> IdMap {
+    fn make_map() -> (IdMap, usize) {
         let mut idmap = IdMap::new(1, 1, TranslationRegime::El1And0);
         idmap
             .map_range(
@@ -625,15 +627,13 @@ mod tests {
             .unwrap();
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
-        unsafe {
-            idmap.activate();
-        }
-        idmap
+        let ttbr = unsafe { idmap.activate() };
+        (idmap, ttbr)
     }
 
     #[test]
     fn update_backwards_range() {
-        let mut idmap = make_map();
+        let (mut idmap, ttbr) = make_map();
         assert!(
             idmap
                 .modify_range(
@@ -648,11 +648,15 @@ mod tests {
                 )
                 .is_err()
         );
+
+        unsafe {
+            idmap.deactivate(ttbr);
+        }
     }
 
     #[test]
     fn update_range() {
-        let mut idmap = make_map();
+        let (mut idmap, ttbr) = make_map();
         assert!(
             idmap
                 .modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|_range, entry, level| {
@@ -681,6 +685,9 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+        unsafe {
+            idmap.deactivate(ttbr);
+        }
     }
 
     #[test]
@@ -689,9 +696,7 @@ mod tests {
         let mut idmap = IdMap::new(1, 1, TranslationRegime::El1And0);
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
-        unsafe {
-            idmap.activate();
-        }
+        let ttbr = unsafe { idmap.activate() };
         idmap
             .map_range(
                 &MemoryRegion::new(0, BLOCK_RANGE),
@@ -720,6 +725,10 @@ mod tests {
                 },
             )
             .unwrap();
+
+        unsafe {
+            idmap.deactivate(ttbr);
+        }
     }
 
     /// When an unmapped entry is split into a table, all entries should be zero.

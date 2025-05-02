@@ -142,11 +142,8 @@ impl<T: Translation> Mapping<T> {
         self.root.size()
     }
 
-    /// Activates the page table by setting `TTBRn_ELx` to point to it, and saves the previous value
-    /// of `TTBRn_ELx` so that it may later be restored by [`deactivate`](Self::deactivate).
-    ///
-    /// Panics if a previous value of `TTBRn_ELx` is already saved and not yet used by a call to
-    /// `deactivate`.
+    /// Activates the page table by setting the appropriate `TTBRn_ELx` to point to it, and returns
+    /// the previous value of `TTBRn_ELx`.
     ///
     /// In test builds or builds that do not target aarch64, the `TTBRn_ELx` access is omitted.
     ///
@@ -156,10 +153,11 @@ impl<T: Translation> Mapping<T> {
     /// using, or introduce aliases which break Rust's aliasing rules. The page table must not be
     /// dropped as long as its mappings are required, as it will automatically be deactivated when
     /// it is dropped.
-    pub unsafe fn activate(&mut self) {
-        assert!(!self.active());
-
-        #[allow(unused)]
+    ///
+    /// The caller must call `mark_active` to mark the pagetable as active to prevent mappings being
+    /// changed in violation of break-before-make rules which the pagetable is active.
+    pub unsafe fn activate_raw(&self) -> usize {
+        #[allow(unused_mut)]
         let mut previous_ttbr = usize::MAX;
 
         #[cfg(all(not(test), target_arch = "aarch64"))]
@@ -220,6 +218,31 @@ impl<T: Translation> Mapping<T> {
                 }
             }
         }
+
+        previous_ttbr
+    }
+
+    /// Activates the page table by setting the appropriate `TTBRn_ELx` to point to it, and saves
+    /// the previous value of `TTBRn_ELx` so that it may later be restored by
+    /// [`deactivate`](Self::deactivate).
+    ///
+    /// Panics if a previous value of `TTBRn_ELx` is already saved and not yet used by a call to
+    /// `deactivate`.
+    ///
+    /// In test builds or builds that do not target aarch64, the `TTBRn_ELx` access is omitted.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the page table doesn't unmap any memory which the program is
+    /// using, or introduce aliases which break Rust's aliasing rules. The page table must not be
+    /// dropped as long as its mappings are required, as it will automatically be deactivated when
+    /// it is dropped.
+    pub unsafe fn activate(&mut self) {
+        assert!(!self.active());
+
+        // SAFETY: Our caller promises they have everything necessary mapped appropriately, and we
+        // call `mark_active` immediately after this.
+        let previous_ttbr = unsafe { self.activate_raw() };
         self.mark_active(previous_ttbr);
     }
 

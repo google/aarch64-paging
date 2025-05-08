@@ -9,8 +9,6 @@
 use crate::paging::{PageTable, PhysicalAddress, Translation, deallocate};
 use alloc::{vec, vec::Vec};
 use core::{mem::size_of, ptr::NonNull};
-#[cfg(feature = "zerocopy")]
-use zerocopy::IntoBytes;
 
 /// An implementation of `Translation` which builds a static pagetable to be built into a binary for
 /// some target device.
@@ -88,7 +86,6 @@ impl TargetAllocator {
     /// Returns the full page table as bytes to be loaded into the target device's memory.
     ///
     /// This could be embedded in a binary image for the target.
-    #[cfg(feature = "zerocopy")]
     pub fn as_bytes(&self) -> Vec<u8> {
         let mut bytes = vec![0; self.allocations.len() * size_of::<PageTable>()];
         for (chunk, allocation) in bytes

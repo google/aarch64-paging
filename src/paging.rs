@@ -13,6 +13,7 @@ use core::fmt::{self, Debug, Display, Formatter};
 use core::marker::PhantomData;
 use core::ops::{Add, Range, Sub};
 use core::ptr::NonNull;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 const PAGE_SHIFT: usize = 12;
 
@@ -414,7 +415,7 @@ impl<T: Translation> RootTable<T> {
         F: FnMut(&MemoryRegion, &Descriptor, usize) -> Result<(), ()>,
     {
         self.visit_range(range, &mut |mr, desc, level| {
-            f(mr, desc, level).map_err(|_| MapError::PteUpdateFault(*desc))
+            f(mr, desc, level).map_err(|_| MapError::PteUpdateFault(desc.bits()))
         })
     }
 
@@ -631,10 +632,9 @@ impl<T: Translation> PageTableWithLevel<T> {
         level: usize,
     ) -> Self {
         let granularity = granularity_at_level(level);
-        let old = *entry;
         let (mut subtable, subtable_pa) = Self::new(translation, level + 1);
-        let old_flags = old.flags();
-        let old_pa = old.output_address();
+        let old_flags = entry.flags();
+        let old_pa = entry.output_address();
         if !old_flags.contains(Attributes::TABLE_OR_PAGE)
             && (!old_flags.is_empty() || old_pa.0 != 0)
         {
@@ -650,6 +650,9 @@ impl<T: Translation> PageTableWithLevel<T> {
                 Constraints::empty(),
             );
         }
+        // If `old` was not a block entry, a newly zeroed page will be added to the hierarchy,
+        // which might be live in this case. We rely on the release semantics of the set() below to
+        // ensure that all observers that see the new entry will also see the zeroed contents.
         entry.set(subtable_pa, Attributes::TABLE_OR_PAGE | Attributes::VALID);
         subtable
     }
@@ -712,9 +715,9 @@ impl<T: Translation> PageTableWithLevel<T> {
 
         let mut i = 0;
         while i < table.entries.len() {
-            if table.entries[i].0 == 0 {
+            if table.entries[i].bits() == 0 {
                 let first_zero = i;
-                while i < table.entries.len() && table.entries[i].0 == 0 {
+                while i < table.entries.len() && table.entries[i].bits() == 0 {
                     i += 1;
                 }
                 if i - 1 == first_zero {
@@ -748,7 +751,7 @@ impl<T: Translation> PageTableWithLevel<T> {
         // SAFETY: We know that the pointer is aligned, initialised and dereferencable, and the
         // PageTable won't be mutated while we are freeing it.
         let table = unsafe { self.table.as_ref() };
-        for entry in table.entries {
+        for entry in &table.entries {
             if let Some(mut subtable) = entry.subtable(translation, self.level) {
                 // SAFETY: Our caller promised that all our subtables were created by
                 // `PageTableWithLevel::new` with the same `translation`.
@@ -790,7 +793,7 @@ impl<T: Translation> PageTableWithLevel<T> {
             }) {
                 subtable.modify_range(translation, &chunk, f)?;
             } else {
-                f(&chunk, entry, level).map_err(|_| MapError::PteUpdateFault(*entry))?;
+                f(&chunk, entry, level).map_err(|_| MapError::PteUpdateFault(entry.bits()))?;
             }
         }
         Ok(())
@@ -865,7 +868,7 @@ impl PageTable {
             .chunks_exact_mut(size_of::<Descriptor>())
             .zip(self.entries.iter())
         {
-            chunk.copy_from_slice(&desc.0.to_le_bytes());
+            chunk.copy_from_slice(&desc.bits().to_le_bytes());
         }
         Ok(())
     }
@@ -877,6 +880,8 @@ impl Default for PageTable {
     }
 }
 
+pub(crate) type DescriptorBits = usize;
+
 /// An entry in a page table.
 ///
 /// A descriptor may be:
@@ -884,59 +889,69 @@ impl Default for PageTable {
 ///   - A page mapping, if it is in the lowest level page table.
 ///   - A block mapping, if it is not in the lowest level page table.
 ///   - A pointer to a lower level pagetable, if it is not in the lowest level page table.
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
 #[repr(C)]
-pub struct Descriptor(usize);
+pub struct Descriptor(AtomicUsize);
 
 impl Descriptor {
     /// An empty (i.e. 0) descriptor.
-    pub const EMPTY: Self = Self(0);
+    pub const EMPTY: Self = Self(AtomicUsize::new(0));
 
     const PHYSICAL_ADDRESS_BITMASK: usize = !(PAGE_SIZE - 1) & !(0xffff << 48);
+
+    /// Returns the contents of a descriptor which may be potentially live
+    /// Use acquire semantics so that the load is not reordered with subsequent loads
+    pub(crate) fn bits(&self) -> DescriptorBits {
+        self.0.load(Ordering::Acquire)
+    }
 
     /// Returns the physical address that this descriptor refers to if it is valid.
     ///
     /// Depending on the flags this could be the address of a subtable, a mapping, or (if it is not
     /// a valid mapping) entirely arbitrary.
-    pub fn output_address(self) -> PhysicalAddress {
-        PhysicalAddress(self.0 & Self::PHYSICAL_ADDRESS_BITMASK)
+    pub fn output_address(&self) -> PhysicalAddress {
+        PhysicalAddress(self.bits() & Self::PHYSICAL_ADDRESS_BITMASK)
     }
 
     /// Returns the flags of this page table entry, or `None` if its state does not
     /// contain a valid set of flags.
-    pub fn flags(self) -> Attributes {
-        Attributes::from_bits_retain(self.0 & !Self::PHYSICAL_ADDRESS_BITMASK)
+    pub fn flags(&self) -> Attributes {
+        Attributes::from_bits_retain(self.bits() & !Self::PHYSICAL_ADDRESS_BITMASK)
     }
 
     /// Modifies the page table entry by setting or clearing its flags.
     /// Panics when attempting to convert a table descriptor into a block/page descriptor or vice
     /// versa - this is not supported via this API.
     pub fn modify_flags(&mut self, set: Attributes, clear: Attributes) {
-        let flags = (self.0 | set.bits()) & !clear.bits();
+        let oldval = self.bits();
+        let flags = (oldval | set.bits()) & !clear.bits();
 
-        if (self.0 ^ flags) & Attributes::TABLE_OR_PAGE.bits() != 0 {
+        if (oldval ^ flags) & Attributes::TABLE_OR_PAGE.bits() != 0 {
             panic!("Cannot convert between table and block/page descriptors\n");
         }
-        self.0 = flags;
+
+        self.0.store(flags, Ordering::Release);
     }
 
     /// Returns `true` if [`Attributes::VALID`] is set on this entry, e.g. if the entry is mapped.
-    pub fn is_valid(self) -> bool {
-        (self.0 & Attributes::VALID.bits()) != 0
+    pub fn is_valid(&self) -> bool {
+        (self.bits() & Attributes::VALID.bits()) != 0
     }
 
     /// Returns `true` if this is a valid entry pointing to a next level translation table or a page.
-    pub fn is_table_or_page(self) -> bool {
+    pub fn is_table_or_page(&self) -> bool {
         self.flags()
             .contains(Attributes::TABLE_OR_PAGE | Attributes::VALID)
     }
 
     pub(crate) fn set(&mut self, pa: PhysicalAddress, flags: Attributes) {
-        self.0 = (pa.0 & Self::PHYSICAL_ADDRESS_BITMASK) | flags.bits();
+        self.0.store(
+            (pa.0 & Self::PHYSICAL_ADDRESS_BITMASK) | flags.bits(),
+            Ordering::Release,
+        );
     }
 
     fn subtable<T: Translation>(
-        self,
+        &self,
         translation: &T,
         level: usize,
     ) -> Option<PageTableWithLevel<T>> {
@@ -947,11 +962,15 @@ impl Descriptor {
         }
         None
     }
+
+    pub(crate) fn clone(&self) -> Self {
+        Descriptor(AtomicUsize::new(self.bits()))
+    }
 }
 
 impl Debug for Descriptor {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        write!(f, "{:#016x}", self.0)?;
+        write!(f, "{:#016x}", self.bits())?;
         if self.is_valid() {
             write!(f, " ({}, {:?})", self.output_address(), self.flags())?;
         }
@@ -1074,7 +1093,7 @@ mod tests {
 
     #[test]
     fn invalid_descriptor() {
-        let desc = Descriptor(0usize);
+        let desc = Descriptor(AtomicUsize::new(0usize));
         assert!(!desc.is_valid());
         assert!(!desc.flags().contains(Attributes::VALID));
     }
@@ -1082,7 +1101,7 @@ mod tests {
     #[test]
     fn set_descriptor() {
         const PHYSICAL_ADDRESS: usize = 0x12340000;
-        let mut desc = Descriptor(0usize);
+        let mut desc = Descriptor(AtomicUsize::new(0usize));
         assert!(!desc.is_valid());
         desc.set(
             PhysicalAddress(PHYSICAL_ADDRESS),
@@ -1098,7 +1117,7 @@ mod tests {
 
     #[test]
     fn modify_descriptor_flags() {
-        let mut desc = Descriptor(0usize);
+        let mut desc = Descriptor(AtomicUsize::new(0usize));
         assert!(!desc.is_valid());
         desc.set(
             PhysicalAddress(0x12340000),
@@ -1118,7 +1137,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn modify_descriptor_table_or_page_flag() {
-        let mut desc = Descriptor(0usize);
+        let mut desc = Descriptor(AtomicUsize::new(0usize));
         assert!(!desc.is_valid());
         desc.set(
             PhysicalAddress(0x12340000),
@@ -1158,14 +1177,14 @@ mod tests {
     #[test]
     fn table_or_page() {
         // Invalid.
-        assert!(!Descriptor(0b00).is_table_or_page());
-        assert!(!Descriptor(0b10).is_table_or_page());
+        assert!(!Descriptor(AtomicUsize::new(0b00)).is_table_or_page());
+        assert!(!Descriptor(AtomicUsize::new(0b10)).is_table_or_page());
 
         // Block mapping.
-        assert!(!Descriptor(0b01).is_table_or_page());
+        assert!(!Descriptor(AtomicUsize::new(0b01)).is_table_or_page());
 
         // Table or page.
-        assert!(Descriptor(0b11).is_table_or_page());
+        assert!(Descriptor(AtomicUsize::new(0b11)).is_table_or_page());
     }
 
     #[test]
@@ -1174,13 +1193,13 @@ mod tests {
         const UNKNOWN: usize = 1 << 50 | 1 << 52;
 
         // Invalid.
-        assert!(!Descriptor(UNKNOWN | 0b00).is_table_or_page());
-        assert!(!Descriptor(UNKNOWN | 0b10).is_table_or_page());
+        assert!(!Descriptor(AtomicUsize::new(UNKNOWN | 0b00)).is_table_or_page());
+        assert!(!Descriptor(AtomicUsize::new(UNKNOWN | 0b10)).is_table_or_page());
 
         // Block mapping.
-        assert!(!Descriptor(UNKNOWN | 0b01).is_table_or_page());
+        assert!(!Descriptor(AtomicUsize::new(UNKNOWN | 0b01)).is_table_or_page());
 
         // Table or page.
-        assert!(Descriptor(UNKNOWN | 0b11).is_table_or_page());
+        assert!(Descriptor(AtomicUsize::new(UNKNOWN | 0b11)).is_table_or_page());
     }
 }

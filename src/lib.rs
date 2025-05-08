@@ -61,8 +61,8 @@ extern crate alloc;
 use core::arch::asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use paging::{
-    Attributes, Constraints, Descriptor, MemoryRegion, PhysicalAddress, RootTable, Translation,
-    TranslationRegime, VaRange, VirtualAddress,
+    Attributes, Constraints, Descriptor, DescriptorBits, MemoryRegion, PhysicalAddress, RootTable,
+    Translation, TranslationRegime, VaRange, VirtualAddress,
 };
 use thiserror::Error;
 
@@ -81,7 +81,7 @@ pub enum MapError {
     RegionBackwards(MemoryRegion),
     /// There was an error while updating a page table entry.
     #[error("Error updating page table entry {0:?}")]
-    PteUpdateFault(Descriptor),
+    PteUpdateFault(DescriptorBits),
     /// The requested flags are not supported for this mapping
     #[error("Flags {0:?} unsupported for mapping.")]
     InvalidFlags(Attributes),
@@ -317,7 +317,7 @@ impl<T: Translation> Mapping<T> {
                     // Get the new flags and output address for this descriptor by applying
                     // the updater function to a copy
                     let (flags, oa) = {
-                        let mut dd = *d;
+                        let mut dd = d.clone();
                         updater(mr, &mut dd, level).or(Err(err.clone()))?;
                         (dd.flags(), dd.output_address())
                     };
@@ -388,11 +388,6 @@ impl<T: Translation> Mapping<T> {
             self.check_range_bbm(range, &c)?;
         }
         self.root.map_range(range, pa, flags, constraints)?;
-        #[cfg(target_arch = "aarch64")]
-        // SAFETY: This is just a memory barrier.
-        unsafe {
-            asm!("dsb ishst");
-        }
         Ok(())
     }
 
@@ -427,11 +422,6 @@ impl<T: Translation> Mapping<T> {
             self.check_range_bbm(range, f)?;
         }
         self.root.modify_range(range, f)?;
-        #[cfg(target_arch = "aarch64")]
-        // SAFETY: This is just a memory barrier.
-        unsafe {
-            asm!("dsb ishst");
-        }
         Ok(())
     }
 

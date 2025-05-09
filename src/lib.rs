@@ -151,16 +151,23 @@ impl<T: Translation> Mapping<T> {
     ///
     /// The caller must ensure that the page table doesn't unmap any memory which the program is
     /// using, or introduce aliases which break Rust's aliasing rules. The page table must not be
-    /// dropped as long as its mappings are required, as it will automatically be deactivated when
-    /// it is dropped.
+    /// dropped while it is still active on any CPU.
     pub unsafe fn activate(&self) -> usize {
         #[allow(unused_mut)]
         let mut previous_ttbr = usize::MAX;
+
+        // Mark the page tables as active before actually activating them, to avoid a race
+        // condition where a CPU observing the counter at zero might assume that the page tables
+        // are not active yet, while they have already been loaded into the TTBR of another CPU.
+        self.mark_active();
 
         #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: We trust that self.root_address() returns a valid physical address of a page
         // table, and the `Drop` implementation will reset `TTBRn_ELx` before it becomes invalid.
         unsafe {
+            // Ensure that all page table updates, as well as the increment of the active counter,
+            // are visible to all observers before proceeding
+            asm!("dsb ishst", "isb", options(preserves_flags),);
             match (self.root.translation_regime(), self.root.va_range()) {
                 (TranslationRegime::El1And0, VaRange::Lower) => asm!(
                     "mrs   {previous_ttbr}, ttbr0_el1",
@@ -215,7 +222,6 @@ impl<T: Translation> Mapping<T> {
                 }
             }
         }
-        self.mark_active();
         previous_ttbr
     }
 

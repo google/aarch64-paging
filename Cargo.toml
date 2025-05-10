@@ -15,12 +15,10 @@ categories = ["embedded", "no-std", "hardware-support"]
 [dependencies]
 bitflags = "2.9.0"
 thiserror = { version = "2.0.3", default-features = false }
-zerocopy = { version = "0.8.25", features = ["derive"], optional = true }
 
 [features]
-default = ["alloc", "zerocopy"]
+default = ["alloc"]
 alloc = []
-zerocopy = ["dep:zerocopy"]
 
 [package.metadata.docs.rs]
 all-features = true

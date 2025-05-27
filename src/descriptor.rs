@@ -259,6 +259,7 @@ enum DescriptorEnum<'a> {
 pub struct UpdatableDescriptor<'a> {
     descriptor: DescriptorEnum<'a>,
     level: usize,
+    updated: bool,
 }
 
 impl<'a> UpdatableDescriptor<'a> {
@@ -271,6 +272,7 @@ impl<'a> UpdatableDescriptor<'a> {
                 DescriptorEnum::Inactive(desc)
             },
             level: level,
+            updated: false,
         }
     }
 
@@ -280,12 +282,18 @@ impl<'a> UpdatableDescriptor<'a> {
         Self {
             descriptor: DescriptorEnum::ActiveClone(d.bits()),
             level: level,
+            updated: false,
         }
     }
 
     /// Returns the level in the page table hierarchy at which this descriptor appears
     pub fn level(&self) -> usize {
         self.level
+    }
+
+    /// Whether the descriptor was updated as a result of a call to set() or modify_flags()
+    pub fn updated(&self) -> bool {
+        self.updated
     }
 
     /// Returns whether this descriptor represents a table mapping. In this case, the output address
@@ -308,11 +316,14 @@ impl<'a> UpdatableDescriptor<'a> {
         if !self.bbm_permits_update(pa, flags) {
             return Err(());
         }
-
+        let val = (pa.0 & Descriptor::PHYSICAL_ADDRESS_BITMASK) | flags.bits();
         match &mut self.descriptor {
-            DescriptorEnum::Active(d) | DescriptorEnum::Inactive(d) => d.set(pa, flags),
+            DescriptorEnum::Active(d) | DescriptorEnum::Inactive(d) => {
+                self.updated |= val != d.0.swap(val, Ordering::Release)
+            }
             DescriptorEnum::ActiveClone(d) => {
-                *d = (pa.0 & Descriptor::PHYSICAL_ADDRESS_BITMASK) | flags.bits()
+                self.updated |= *d != val;
+                *d = val
             }
         };
         Ok(())

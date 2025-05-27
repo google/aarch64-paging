@@ -106,6 +106,18 @@ pub struct Mapping<T: Translation> {
     active_count: AtomicUsize,
 }
 
+/// Issues an inner-shareable data synchronization barrier (DSB) followed by an instruction
+/// synchronization barrier (ISB) so that execution does not proceed until all TLB maintenance is
+/// completed. 'ish' is strictly stronger than 'ishst', making this function suitable to wait on
+/// the completion of stores to memory as well.
+fn dsb() {
+    // SAFETY: Barriers have no side effects that are observeable by the program
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        asm!("dsb ish", "isb", options(preserves_flags, nostack));
+    }
+}
+
 impl<T: Translation> Mapping<T> {
     /// Creates a new page table with the given ASID, root level and translation mapping.
     pub fn new(
@@ -169,7 +181,7 @@ impl<T: Translation> Mapping<T> {
         unsafe {
             // Ensure that all page table updates, as well as the increment of the active counter,
             // are visible to all observers before proceeding
-            asm!("dsb ishst", "isb", options(preserves_flags),);
+            dsb();
             match (self.root.translation_regime(), self.root.va_range()) {
                 (TranslationRegime::El1And0, VaRange::Lower) => asm!(
                     "mrs   {previous_ttbr}, ttbr0_el1",
@@ -325,6 +337,27 @@ impl<T: Translation> Mapping<T> {
         )
     }
 
+    /// Invalidates `range` in the TLBs, so that permission changes are guaranteed to have taken
+    /// effect by the time the function returns
+    fn invalidate_range(&self, range: &MemoryRegion) {
+        if self.active() {
+            // If the mapping is active, no modifications are permitted that add or remove paging
+            // levels. This means it is not necessary to iterate over the entire range at page
+            // granularity, as invalidating a 2MiB block mapping or larger only requires a single
+            // TLBI call.
+            // If the mapping is not active, it was either never activated, or has previously been
+            // deactivated, at which point TLB invalidation would have occurred, and so no TLB
+            // maintenance is needed.
+            self.root
+                .visit_range(range, &mut |mr: &MemoryRegion, _: &Descriptor, _: usize| {
+                    Ok(self.root.translation_regime().invalidate_va(mr.start()))
+                })
+                .unwrap();
+
+            dsb(); // wait for the TLBI to complete
+        }
+    }
+
     /// Maps the given range of virtual addresses to the corresponding range of physical addresses
     /// starting at `pa`, with the given flags, taking the given constraints into account.
     ///
@@ -366,6 +399,7 @@ impl<T: Translation> Mapping<T> {
             self.check_range_bbm(range, &c)?;
         }
         self.root.map_range(range, pa, flags, constraints)?;
+        self.invalidate_range(range);
         Ok(())
     }
 
@@ -399,7 +433,15 @@ impl<T: Translation> Mapping<T> {
         if self.active() {
             self.check_range_bbm(range, f)?;
         }
-        self.root.modify_range(range, f)?;
+
+        // modify_range() might fail halfway, in which case its Err() result will be returned
+        // directly, and no barrier will be issued. The purpose of the barrier is to ensure that
+        // the new state is visible to all observers before proceeding, but in case of a failure,
+        // what that new state entails is uncertain anyway, and so there is no point in
+        // synchronizing it.
+        if self.root.modify_range(range, f, self.active())? && self.active() {
+            dsb(); // wait for the TLBI to complete
+        }
         Ok(())
     }
 

@@ -663,7 +663,7 @@ mod tests {
                 &MemoryRegion::new(PAGE_SIZE * 2, 1),
                 &|_range, entry, _level| {
                     entry
-                        .modify_flags(Attributes::SWFLAG_0, Attributes::from_bits(0usize).unwrap());
+                        .modify_flags(Attributes::SWFLAG_0, Attributes::from_bits(0usize).unwrap())?;
                     Ok(())
                 },
             )
@@ -676,7 +676,7 @@ mod tests {
         let mut lmap = make_map();
         lmap.modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|_range, entry, level| {
             if level == 3 || !entry.is_table_or_page() {
-                entry.modify_flags(Attributes::SWFLAG_0, Attributes::from_bits(0usize).unwrap());
+                entry.modify_flags(Attributes::SWFLAG_0, Attributes::from_bits(0usize).unwrap())?;
             }
             Ok(())
         })

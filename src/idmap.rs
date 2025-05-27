@@ -652,7 +652,7 @@ mod tests {
                         entry.modify_flags(
                             Attributes::SWFLAG_0,
                             Attributes::from_bits(0usize).unwrap(),
-                        );
+                        )?;
                         Ok(())
                     },
                 )
@@ -671,7 +671,7 @@ mod tests {
             idmap
                 .modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|_range, entry, level| {
                     if level == 3 || !entry.is_table_or_page() {
-                        entry.modify_flags(Attributes::SWFLAG_0, Attributes::NON_GLOBAL);
+                        entry.modify_flags(Attributes::SWFLAG_0, Attributes::NON_GLOBAL)?;
                     }
                     Ok(())
                 })
@@ -681,7 +681,7 @@ mod tests {
             .modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|_range, entry, level| {
                 if level == 3 || !entry.is_table_or_page() {
                     entry
-                        .modify_flags(Attributes::SWFLAG_0, Attributes::from_bits(0usize).unwrap());
+                        .modify_flags(Attributes::SWFLAG_0, Attributes::from_bits(0usize).unwrap())?;
                 }
                 Ok(())
             })

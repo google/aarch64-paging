@@ -915,17 +915,35 @@ impl Descriptor {
     }
 
     /// Modifies the page table entry by setting or clearing its flags.
-    /// Panics when attempting to convert a table descriptor into a block/page descriptor or vice
-    /// versa - this is not supported via this API.
-    pub fn modify_flags(&mut self, set: Attributes, clear: Attributes) {
+    ///
+    /// On success, returns a boolean value that indicates whether or not the descriptor was
+    /// modified as a result of applying the set and clear masks.
+    ///
+    /// Returns [`Err(())'] when attempting to convert a descriptor in a manner that violates the
+    /// break-before-make (BBM) rules of the architecture, regardless of whether or not the
+    /// descriptor is live (which cannot be determined at this level)
+    pub fn modify_flags(&mut self, set: Attributes, clear: Attributes) -> Result<bool, ()> {
+        // Masks of bits that may be set resp. cleared on a live mapping without BBM
+        let clear_mask = Attributes::VALID
+            | Attributes::READ_ONLY
+            | Attributes::ACCESSED
+            | Attributes::DBM
+            | Attributes::PXN
+            | Attributes::UXN
+            | Attributes::SWFLAG_0
+            | Attributes::SWFLAG_1
+            | Attributes::SWFLAG_2
+            | Attributes::SWFLAG_3;
+        let set_mask = clear_mask | Attributes::NON_GLOBAL;
+
+        if !set.difference(set_mask).is_empty() || !clear.difference(clear_mask).is_empty() {
+            return Err(());
+        }
         let oldval = self.bits();
         let flags = (oldval | set.bits()) & !clear.bits();
 
-        if (oldval ^ flags) & Attributes::TABLE_OR_PAGE.bits() != 0 {
-            panic!("Cannot convert between table and block/page descriptors\n");
-        }
-
-        self.0.store(flags, Ordering::Release);
+        // Swap and compare to see whether any flags were updated
+        Ok(flags != self.0.swap(flags, Ordering::Release))
     }
 
     /// Returns `true` if [`Attributes::VALID`] is set on this entry, e.g. if the entry is mapped.
@@ -1119,11 +1137,19 @@ mod tests {
             PhysicalAddress(0x12340000),
             Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1,
         );
-        desc.modify_flags(
-            Attributes::DBM | Attributes::SWFLAG_3,
-            Attributes::VALID | Attributes::SWFLAG_1,
+        assert!(
+            desc.modify_flags(
+                Attributes::DBM | Attributes::SWFLAG_3,
+                Attributes::VALID | Attributes::SWFLAG_1,
+            )
+            .unwrap()
         );
         assert!(!desc.is_valid());
+        assert!(
+            !desc
+                .modify_flags(Attributes::DBM, Attributes::VALID)
+                .unwrap()
+        );
         assert_eq!(
             desc.flags(),
             Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_3 | Attributes::DBM
@@ -1139,7 +1165,8 @@ mod tests {
             PhysicalAddress(0x12340000),
             Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1,
         );
-        desc.modify_flags(Attributes::VALID, Attributes::TABLE_OR_PAGE);
+        desc.modify_flags(Attributes::VALID, Attributes::TABLE_OR_PAGE)
+            .unwrap();
     }
 
     #[cfg(feature = "alloc")]

@@ -9,6 +9,8 @@ use crate::MapError;
 #[cfg(feature = "alloc")]
 use alloc::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use bitflags::bitflags;
+#[cfg(all(not(test), target_arch = "aarch64"))]
+use core::arch::asm;
 use core::fmt::{self, Debug, Display, Formatter};
 use core::marker::PhantomData;
 use core::ops::{Add, Range, Sub};
@@ -59,6 +61,36 @@ impl TranslationRegime {
     /// This also implies that it supports two VA ranges.
     pub(crate) fn supports_asid(self) -> bool {
         matches!(self, Self::El2And0 | Self::El1And0)
+    }
+
+    /// Invalidate the memory range starting at `va`. The size of the range is unspecified, it is
+    /// up to the caller to apply this function as needed to invalidate a range of memory
+    pub(crate) fn invalidate_va(self, va: VirtualAddress) {
+        #[allow(unused)]
+        let va = va.0 >> 12;
+
+        // SAFETY: TLBI maintenance has no side effects that are observeable by the
+        // program
+        #[cfg(all(not(test), target_arch = "aarch64"))]
+        unsafe {
+            match self {
+                TranslationRegime::El1And0 => asm!(
+                    "tlbi vaae1is, {va}",
+                    va = in(reg) va,
+                    options(preserves_flags),
+                ),
+                TranslationRegime::El3 => asm!(
+                    "tlbi vae3is, {va}",
+                    va = in(reg) va,
+                    options(preserves_flags),
+                ),
+                _ => asm!(
+                    "tlbi vae2is, {va}",
+                    va = in(reg) va,
+                    options(preserves_flags),
+                ),
+            };
+        };
     }
 }
 
@@ -368,20 +400,18 @@ impl<T: Translation> RootTable<T> {
     /// # Errors
     ///
     /// Returns [`MapError::PteUpdateFault`] if the updater function returns an error.
-    ///
-    /// Returns [`MapError::RegionBackwards`] if the range is backwards.
-    ///
-    /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
-    /// largest virtual address covered by the page table given its root level.
-    ///
-    /// Returns [`MapError::BreakBeforeMakeViolation'] if the range intersects with live mappings,
-    /// and modifying those would violate architectural break-before-make (BBM) requirements.
-    pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
+    pub(crate) fn modify_range<F>(
+        &mut self,
+        range: &MemoryRegion,
+        f: &F,
+        live: bool,
+    ) -> Result<bool, MapError>
     where
         F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<bool, ()> + ?Sized,
     {
         self.verify_region(range)?;
-        self.table.modify_range(&mut self.translation, range, f)
+        self.table
+            .modify_range(&mut self.translation, range, f, live)
     }
 
     /// Applies the provided callback function to the page table descriptors covering a given
@@ -772,10 +802,12 @@ impl<T: Translation> PageTableWithLevel<T> {
         translation: &mut T,
         range: &MemoryRegion,
         f: &F,
-    ) -> Result<(), MapError>
+        live: bool,
+    ) -> Result<bool, MapError>
     where
         F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<bool, ()> + ?Sized,
     {
+        let mut modified = false;
         let level = self.level;
         for chunk in range.split(level) {
             let entry = self.get_entry_mut(chunk.0.start);
@@ -788,12 +820,16 @@ impl<T: Translation> PageTableWithLevel<T> {
                     None
                 }
             }) {
-                subtable.modify_range(translation, &chunk, f)?;
-            } else {
-                f(&chunk, entry, level).map_err(|_| MapError::PteUpdateFault(entry.bits()))?;
+                modified |= subtable.modify_range(translation, &chunk, f, live)?;
+            } else if f(&chunk, entry, level).map_err(|_| MapError::PteUpdateFault(entry.bits()))?
+                && live
+            {
+                // Live descriptor was updated so TLB maintenance is needed
+                translation.regime().invalidate_va(chunk.start());
+                modified = true;
             }
         }
-        Ok(())
+        Ok(modified)
     }
 
     /// Walks a range of page table entries and passes each one to a caller provided function.

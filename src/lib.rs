@@ -350,6 +350,32 @@ impl<T: Translation> Mapping<T> {
         )
     }
 
+    /// Invalidate `range` in the TLBs, so that permission changes are guaranteed to have taken
+    /// effect by the time the function returns
+    fn invalidate_range(&self, range: &MemoryRegion) {
+        if self.active() {
+            // If the mapping is active, no modifications are permitted that add or remove paging
+            // levels. This means it is not necessary to iterate over the entire range at page
+            // granularity, as invalidating a 2MiB block mapping or larger only requires a single
+            // TLBI call.
+            // If the mapping is not active, it was either never activated, or has previously been
+            // deactivated, at which point TLB invalidation would have occurred, and so no TLB
+            // maintenance is needed.
+            self.root
+                .visit_range(range, &mut |mr: &MemoryRegion, _: &Descriptor, _: usize| {
+                    Ok(self.root.translation_regime().invalidate_va(mr.start()))
+                })
+                .unwrap();
+
+            // SAFETY: Barriers have no side effects that are observeable by the program
+            #[cfg(target_arch = "aarch64")]
+            unsafe {
+                // Wait for the TLBI to complete
+                asm!("dsb ish", "isb", options(preserves_flags));
+            }
+        }
+    }
+
     /// Maps the given range of virtual addresses to the corresponding range of physical addresses
     /// starting at `pa`, with the given flags, taking the given constraints into account.
     ///
@@ -387,6 +413,7 @@ impl<T: Translation> Mapping<T> {
             self.check_range_bbm(range, &c)?;
         }
         self.root.map_range(range, pa, flags, constraints)?;
+        self.invalidate_range(range);
         Ok(())
     }
 
@@ -420,7 +447,14 @@ impl<T: Translation> Mapping<T> {
         if self.active() {
             self.check_range_bbm(range, f)?;
         }
-        self.root.modify_range(range, f)?;
+        if self.root.modify_range(range, f, self.active())? && self.active() {
+            // SAFETY: Barriers have no side effects that are observeable by the program
+            #[cfg(target_arch = "aarch64")]
+            unsafe {
+                // Wait for the TLBI to complete
+                asm!("dsb ish", "isb", options(preserves_flags));
+            }
+        }
         Ok(())
     }
 

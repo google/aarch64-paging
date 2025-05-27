@@ -153,7 +153,7 @@ impl<T: Translation> Mapping<T> {
     /// using, or introduce aliases which break Rust's aliasing rules. The page table must not be
     /// dropped while it is still active on any CPU.
     pub unsafe fn activate(&self) -> usize {
-        #[allow(unused_mut)]
+        #[allow(unused_mut, unused_assignments)]
         let mut previous_ttbr = usize::MAX;
 
         // Mark the page tables as active before actually activating them, to avoid a race

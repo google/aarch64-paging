@@ -17,9 +17,16 @@ use core::ptr::NonNull;
 
 /// Identity mapping, where every virtual address is either unmapped or mapped to the identical IPA.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct IdTranslation;
+pub struct IdTranslation {
+    translation_regime: TranslationRegime,
+}
 
 impl IdTranslation {
+    /// Construct a new identity translation
+    pub fn new(translation_regime: TranslationRegime) -> IdTranslation {
+        IdTranslation { translation_regime }
+    }
+
     fn virtual_to_physical(va: VirtualAddress) -> PhysicalAddress {
         PhysicalAddress(va.0)
     }
@@ -45,6 +52,10 @@ impl Translation for IdTranslation {
 
     fn physical_to_virtual(&self, pa: PhysicalAddress) -> NonNull<PageTable> {
         NonNull::new(pa.0 as *mut PageTable).expect("Got physical address 0 for pagetable")
+    }
+
+    fn regime(&self) -> TranslationRegime {
+        self.translation_regime
     }
 }
 
@@ -114,10 +125,9 @@ impl IdMap {
     pub fn new(asid: usize, rootlevel: usize, translation_regime: TranslationRegime) -> Self {
         Self {
             mapping: Mapping::new(
-                IdTranslation,
+                IdTranslation::new(translation_regime),
                 asid,
                 rootlevel,
-                translation_regime,
                 VaRange::Lower,
             ),
         }

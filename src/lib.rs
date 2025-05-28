@@ -60,9 +60,11 @@ extern crate alloc;
 #[cfg(target_arch = "aarch64")]
 use core::arch::asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(all(not(test), target_arch = "aarch64"))]
+use paging::TranslationRegime;
 use paging::{
     Attributes, Constraints, Descriptor, DescriptorBits, MemoryRegion, PhysicalAddress, RootTable,
-    Translation, TranslationRegime, VaRange, VirtualAddress,
+    Translation, VaRange, VirtualAddress,
 };
 use thiserror::Error;
 
@@ -106,18 +108,15 @@ pub struct Mapping<T: Translation> {
 
 impl<T: Translation> Mapping<T> {
     /// Creates a new page table with the given ASID, root level and translation mapping.
-    pub fn new(
-        translation: T,
-        asid: usize,
-        rootlevel: usize,
-        translation_regime: TranslationRegime,
-        va_range: VaRange,
-    ) -> Self {
-        if !translation_regime.supports_asid() && asid != 0 {
-            panic!("{:?} doesn't support ASID, must be 0.", translation_regime);
+    pub fn new(translation: T, asid: usize, rootlevel: usize, va_range: VaRange) -> Self {
+        if !translation.regime().supports_asid() && asid != 0 {
+            panic!(
+                "{:?} doesn't support ASID, must be 0.",
+                translation.regime()
+            );
         }
         Self {
-            root: RootTable::new(translation, rootlevel, translation_regime, va_range),
+            root: RootTable::new(translation, rootlevel, va_range),
             asid,
             active_count: AtomicUsize::new(0),
         }
@@ -499,19 +498,31 @@ mod tests {
     #[cfg(feature = "alloc")]
     use self::idmap::IdTranslation;
     #[cfg(feature = "alloc")]
+    use self::paging::TranslationRegime;
+    #[cfg(feature = "alloc")]
     use super::*;
 
     #[cfg(feature = "alloc")]
     #[test]
     #[should_panic]
     fn no_el2_asid() {
-        Mapping::new(IdTranslation, 1, 1, TranslationRegime::El2, VaRange::Lower);
+        Mapping::new(
+            IdTranslation::new(TranslationRegime::El2),
+            1,
+            1,
+            VaRange::Lower,
+        );
     }
 
     #[cfg(feature = "alloc")]
     #[test]
     #[should_panic]
     fn no_el3_asid() {
-        Mapping::new(IdTranslation, 1, 1, TranslationRegime::El3, VaRange::Lower);
+        Mapping::new(
+            IdTranslation::new(TranslationRegime::El3),
+            1,
+            1,
+            VaRange::Lower,
+        );
     }
 }

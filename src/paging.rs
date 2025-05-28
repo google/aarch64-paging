@@ -173,6 +173,9 @@ pub trait Translation {
 
     /// Given the physical address of a subtable, returns the virtual address at which it is mapped.
     fn physical_to_virtual(&self, pa: PhysicalAddress) -> NonNull<PageTable>;
+
+    /// Return the translation regime used by this translation
+    fn regime(&self) -> TranslationRegime;
 }
 
 impl MemoryRegion {
@@ -255,7 +258,6 @@ pub struct RootTable<T: Translation> {
     table: PageTableWithLevel<T>,
     translation: T,
     pa: PhysicalAddress,
-    translation_regime: TranslationRegime,
     va_range: VaRange,
 }
 
@@ -265,19 +267,14 @@ impl<T: Translation> RootTable<T> {
     /// The level must be between 0 and 3; level -1 (for 52-bit addresses with LPA2) is not
     /// currently supported by this library. The value of `TCR_EL1.T0SZ` must be set appropriately
     /// to match.
-    pub fn new(
-        mut translation: T,
-        level: usize,
-        translation_regime: TranslationRegime,
-        va_range: VaRange,
-    ) -> Self {
+    pub fn new(mut translation: T, level: usize, va_range: VaRange) -> Self {
         if level > LEAF_LEVEL {
             panic!("Invalid root table level {}.", level);
         }
-        if !translation_regime.supports_asid() && va_range != VaRange::Lower {
+        if !translation.regime().supports_asid() && va_range != VaRange::Lower {
             panic!(
                 "{:?} doesn't have an upper virtual address range.",
-                translation_regime
+                translation.regime()
             );
         }
         let (table, pa) = PageTableWithLevel::new(&mut translation, level);
@@ -285,7 +282,6 @@ impl<T: Translation> RootTable<T> {
             table,
             translation,
             pa,
-            translation_regime,
             va_range,
         }
     }
@@ -334,7 +330,7 @@ impl<T: Translation> RootTable<T> {
 
     /// Returns the translation regime for which this table is intended.
     pub fn translation_regime(&self) -> TranslationRegime {
-        self.translation_regime
+        self.translation.regime()
     }
 
     /// Returns a reference to the translation used for this page table.
@@ -1164,14 +1160,22 @@ mod tests {
     #[test]
     #[should_panic]
     fn no_el2_ttbr1() {
-        RootTable::<IdTranslation>::new(IdTranslation, 1, TranslationRegime::El2, VaRange::Upper);
+        RootTable::<IdTranslation>::new(
+            IdTranslation::new(TranslationRegime::El2),
+            1,
+            VaRange::Upper,
+        );
     }
 
     #[cfg(feature = "alloc")]
     #[test]
     #[should_panic]
     fn no_el3_ttbr1() {
-        RootTable::<IdTranslation>::new(IdTranslation, 1, TranslationRegime::El3, VaRange::Upper);
+        RootTable::<IdTranslation>::new(
+            IdTranslation::new(TranslationRegime::El3),
+            1,
+            VaRange::Upper,
+        );
     }
 
     #[test]

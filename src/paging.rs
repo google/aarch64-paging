@@ -432,7 +432,7 @@ impl<T: Translation> RootTable<T> {
     /// - `None` if it is unmapped
     /// - `Some(LEAF_LEVEL)` if it is mapped as a single page
     /// - `Some(level)` if it is mapped as a block at `level`
-    #[cfg(test)]
+    #[cfg(all(test, feature = "alloc"))]
     pub(crate) fn mapping_level(&self, va: VirtualAddress) -> Option<usize> {
         self.table.mapping_level(&self.translation, va)
     }
@@ -845,7 +845,7 @@ impl<T: Translation> PageTableWithLevel<T> {
     /// - `None` if it is unmapped
     /// - `Some(LEAF_LEVEL)` if it is mapped as a single page
     /// - `Some(level)` if it is mapped as a block at `level`
-    #[cfg(test)]
+    #[cfg(all(test, feature = "alloc"))]
     fn mapping_level(&self, translation: &T, va: VirtualAddress) -> Option<usize> {
         let entry = self.get_entry(va);
         if let Some(subtable) = entry.subtable(translation, self.level) {

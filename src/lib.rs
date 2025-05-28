@@ -60,9 +60,11 @@ extern crate alloc;
 #[cfg(target_arch = "aarch64")]
 use core::arch::asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(all(not(test), target_arch = "aarch64"))]
+use paging::TranslationRegime;
 use paging::{
     Attributes, Constraints, Descriptor, DescriptorBits, MemoryRegion, PhysicalAddress, RootTable,
-    Translation, TranslationRegime, VaRange, VirtualAddress,
+    Translation, VaRange, VirtualAddress,
 };
 use thiserror::Error;
 
@@ -106,18 +108,15 @@ pub struct Mapping<T: Translation> {
 
 impl<T: Translation> Mapping<T> {
     /// Creates a new page table with the given ASID, root level and translation mapping.
-    pub fn new(
-        translation: T,
-        asid: usize,
-        rootlevel: usize,
-        translation_regime: TranslationRegime,
-        va_range: VaRange,
-    ) -> Self {
-        if !translation_regime.supports_asid() && asid != 0 {
-            panic!("{:?} doesn't support ASID, must be 0.", translation_regime);
+    pub fn new(translation: T, asid: usize, rootlevel: usize, va_range: VaRange) -> Self {
+        if !translation.regime().supports_asid() && asid != 0 {
+            panic!(
+                "{:?} doesn't support ASID, must be 0.",
+                translation.regime()
+            );
         }
         Self {
-            root: RootTable::new(translation, rootlevel, translation_regime, va_range),
+            root: RootTable::new(translation, rootlevel, va_range),
             asid,
             active_count: AtomicUsize::new(0),
         }
@@ -153,7 +152,7 @@ impl<T: Translation> Mapping<T> {
     /// using, or introduce aliases which break Rust's aliasing rules. The page table must not be
     /// dropped while it is still active on any CPU.
     pub unsafe fn activate(&self) -> usize {
-        #[allow(unused_mut)]
+        #[allow(unused_mut, unused_assignments)]
         let mut previous_ttbr = usize::MAX;
 
         // Mark the page tables as active before actually activating them, to avoid a race
@@ -301,7 +300,7 @@ impl<T: Translation> Mapping<T> {
     /// without violating architectural break-before-make (BBM) requirements.
     fn check_range_bbm<F>(&self, range: &MemoryRegion, updater: &F) -> Result<(), MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<bool, ()> + ?Sized,
     {
         self.root.visit_range(
             range,
@@ -351,6 +350,32 @@ impl<T: Translation> Mapping<T> {
         )
     }
 
+    /// Invalidate `range` in the TLBs, so that permission changes are guaranteed to have taken
+    /// effect by the time the function returns
+    fn invalidate_range(&self, range: &MemoryRegion) {
+        if self.active() {
+            // If the mapping is active, no modifications are permitted that add or remove paging
+            // levels. This means it is not necessary to iterate over the entire range at page
+            // granularity, as invalidating a 2MiB block mapping or larger only requires a single
+            // TLBI call.
+            // If the mapping is not active, it was either never activated, or has previously been
+            // deactivated, at which point TLB invalidation would have occurred, and so no TLB
+            // maintenance is needed.
+            self.root
+                .visit_range(range, &mut |mr: &MemoryRegion, _: &Descriptor, _: usize| {
+                    Ok(self.root.translation_regime().invalidate_va(mr.start()))
+                })
+                .unwrap();
+
+            // SAFETY: Barriers have no side effects that are observeable by the program
+            #[cfg(target_arch = "aarch64")]
+            unsafe {
+                // Wait for the TLBI to complete
+                asm!("dsb ish", "isb", options(preserves_flags));
+            }
+        }
+    }
+
     /// Maps the given range of virtual addresses to the corresponding range of physical addresses
     /// starting at `pa`, with the given flags, taking the given constraints into account.
     ///
@@ -383,11 +408,12 @@ impl<T: Translation> Mapping<T> {
                 let mask = !(paging::granularity_at_level(lvl) - 1);
                 let pa = (mr.start() - range.start() + pa.0) & mask;
                 d.set(PhysicalAddress(pa), flags);
-                Ok(())
+                Ok(false)
             };
             self.check_range_bbm(range, &c)?;
         }
         self.root.map_range(range, pa, flags, constraints)?;
+        self.invalidate_range(range);
         Ok(())
     }
 
@@ -416,12 +442,19 @@ impl<T: Translation> Mapping<T> {
     /// and modifying those would violate architectural break-before-make (BBM) requirements.
     pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<bool, ()> + ?Sized,
     {
         if self.active() {
             self.check_range_bbm(range, f)?;
         }
-        self.root.modify_range(range, f)?;
+        if self.root.modify_range(range, f, self.active())? && self.active() {
+            // SAFETY: Barriers have no side effects that are observeable by the program
+            #[cfg(target_arch = "aarch64")]
+            unsafe {
+                // Wait for the TLBI to complete
+                asm!("dsb ish", "isb", options(preserves_flags));
+            }
+        }
         Ok(())
     }
 
@@ -499,19 +532,31 @@ mod tests {
     #[cfg(feature = "alloc")]
     use self::idmap::IdTranslation;
     #[cfg(feature = "alloc")]
+    use self::paging::TranslationRegime;
+    #[cfg(feature = "alloc")]
     use super::*;
 
     #[cfg(feature = "alloc")]
     #[test]
     #[should_panic]
     fn no_el2_asid() {
-        Mapping::new(IdTranslation, 1, 1, TranslationRegime::El2, VaRange::Lower);
+        Mapping::new(
+            IdTranslation::new(TranslationRegime::El2),
+            1,
+            1,
+            VaRange::Lower,
+        );
     }
 
     #[cfg(feature = "alloc")]
     #[test]
     #[should_panic]
     fn no_el3_asid() {
-        Mapping::new(IdTranslation, 1, 1, TranslationRegime::El3, VaRange::Lower);
+        Mapping::new(
+            IdTranslation::new(TranslationRegime::El3),
+            1,
+            1,
+            VaRange::Lower,
+        );
     }
 }

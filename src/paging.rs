@@ -9,6 +9,8 @@ use crate::MapError;
 #[cfg(feature = "alloc")]
 use alloc::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use bitflags::bitflags;
+#[cfg(all(not(test), target_arch = "aarch64"))]
+use core::arch::asm;
 use core::fmt::{self, Debug, Display, Formatter};
 use core::marker::PhantomData;
 use core::ops::{Add, Range, Sub};
@@ -59,6 +61,36 @@ impl TranslationRegime {
     /// This also implies that it supports two VA ranges.
     pub(crate) fn supports_asid(self) -> bool {
         matches!(self, Self::El2And0 | Self::El1And0)
+    }
+
+    /// Invalidate the memory range starting at `va`. The size of the range is unspecified, it is
+    /// up to the caller to apply this function as needed to invalidate a range of memory
+    pub(crate) fn invalidate_va(self, va: VirtualAddress) {
+        #[allow(unused)]
+        let va = va.0 >> 12;
+
+        // SAFETY: TLBI maintenance has no side effects that are observeable by the
+        // program
+        #[cfg(all(not(test), target_arch = "aarch64"))]
+        unsafe {
+            match self {
+                TranslationRegime::El1And0 => asm!(
+                    "tlbi vaae1is, {va}",
+                    va = in(reg) va,
+                    options(preserves_flags),
+                ),
+                TranslationRegime::El3 => asm!(
+                    "tlbi vae3is, {va}",
+                    va = in(reg) va,
+                    options(preserves_flags),
+                ),
+                _ => asm!(
+                    "tlbi vae2is, {va}",
+                    va = in(reg) va,
+                    options(preserves_flags),
+                ),
+            };
+        };
     }
 }
 
@@ -173,6 +205,9 @@ pub trait Translation {
 
     /// Given the physical address of a subtable, returns the virtual address at which it is mapped.
     fn physical_to_virtual(&self, pa: PhysicalAddress) -> NonNull<PageTable>;
+
+    /// Return the translation regime used by this translation
+    fn regime(&self) -> TranslationRegime;
 }
 
 impl MemoryRegion {
@@ -255,7 +290,6 @@ pub struct RootTable<T: Translation> {
     table: PageTableWithLevel<T>,
     translation: T,
     pa: PhysicalAddress,
-    translation_regime: TranslationRegime,
     va_range: VaRange,
 }
 
@@ -265,19 +299,14 @@ impl<T: Translation> RootTable<T> {
     /// The level must be between 0 and 3; level -1 (for 52-bit addresses with LPA2) is not
     /// currently supported by this library. The value of `TCR_EL1.T0SZ` must be set appropriately
     /// to match.
-    pub fn new(
-        mut translation: T,
-        level: usize,
-        translation_regime: TranslationRegime,
-        va_range: VaRange,
-    ) -> Self {
+    pub fn new(mut translation: T, level: usize, va_range: VaRange) -> Self {
         if level > LEAF_LEVEL {
             panic!("Invalid root table level {}.", level);
         }
-        if !translation_regime.supports_asid() && va_range != VaRange::Lower {
+        if !translation.regime().supports_asid() && va_range != VaRange::Lower {
             panic!(
                 "{:?} doesn't have an upper virtual address range.",
-                translation_regime
+                translation.regime()
             );
         }
         let (table, pa) = PageTableWithLevel::new(&mut translation, level);
@@ -285,7 +314,6 @@ impl<T: Translation> RootTable<T> {
             table,
             translation,
             pa,
-            translation_regime,
             va_range,
         }
     }
@@ -334,7 +362,7 @@ impl<T: Translation> RootTable<T> {
 
     /// Returns the translation regime for which this table is intended.
     pub fn translation_regime(&self) -> TranslationRegime {
-        self.translation_regime
+        self.translation.regime()
     }
 
     /// Returns a reference to the translation used for this page table.
@@ -360,7 +388,8 @@ impl<T: Translation> RootTable<T> {
     ///
     /// The updater function should return:
     ///
-    /// - `Ok` to continue updating the remaining entries.
+    /// - `Ok(bool)` to continue updating the remaining entries, where the boolean indicates
+    ///   whether the descriptor was modified
     /// - `Err` to signal an error and stop updating the remaining entries.
     ///
     /// This should generally only be called while the page table is not active. In particular, any
@@ -371,20 +400,18 @@ impl<T: Translation> RootTable<T> {
     /// # Errors
     ///
     /// Returns [`MapError::PteUpdateFault`] if the updater function returns an error.
-    ///
-    /// Returns [`MapError::RegionBackwards`] if the range is backwards.
-    ///
-    /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
-    /// largest virtual address covered by the page table given its root level.
-    ///
-    /// Returns [`MapError::BreakBeforeMakeViolation'] if the range intersects with live mappings,
-    /// and modifying those would violate architectural break-before-make (BBM) requirements.
-    pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
+    pub(crate) fn modify_range<F>(
+        &mut self,
+        range: &MemoryRegion,
+        f: &F,
+        live: bool,
+    ) -> Result<bool, MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<bool, ()> + ?Sized,
     {
         self.verify_region(range)?;
-        self.table.modify_range(&mut self.translation, range, f)
+        self.table
+            .modify_range(&mut self.translation, range, f, live)
     }
 
     /// Applies the provided callback function to the page table descriptors covering a given
@@ -432,7 +459,7 @@ impl<T: Translation> RootTable<T> {
     /// - `None` if it is unmapped
     /// - `Some(LEAF_LEVEL)` if it is mapped as a single page
     /// - `Some(level)` if it is mapped as a block at `level`
-    #[cfg(test)]
+    #[cfg(all(test, feature = "alloc"))]
     pub(crate) fn mapping_level(&self, va: VirtualAddress) -> Option<usize> {
         self.table.mapping_level(&self.translation, va)
     }
@@ -775,10 +802,12 @@ impl<T: Translation> PageTableWithLevel<T> {
         translation: &mut T,
         range: &MemoryRegion,
         f: &F,
-    ) -> Result<(), MapError>
+        live: bool,
+    ) -> Result<bool, MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<bool, ()> + ?Sized,
     {
+        let mut modified = false;
         let level = self.level;
         for chunk in range.split(level) {
             let entry = self.get_entry_mut(chunk.0.start);
@@ -791,12 +820,16 @@ impl<T: Translation> PageTableWithLevel<T> {
                     None
                 }
             }) {
-                subtable.modify_range(translation, &chunk, f)?;
-            } else {
-                f(&chunk, entry, level).map_err(|_| MapError::PteUpdateFault(entry.bits()))?;
+                modified |= subtable.modify_range(translation, &chunk, f, live)?;
+            } else if f(&chunk, entry, level).map_err(|_| MapError::PteUpdateFault(entry.bits()))?
+                && live
+            {
+                // Live descriptor was updated so TLB maintenance is needed
+                translation.regime().invalidate_va(chunk.start());
+                modified = true;
             }
         }
-        Ok(())
+        Ok(modified)
     }
 
     /// Walks a range of page table entries and passes each one to a caller provided function.
@@ -821,7 +854,7 @@ impl<T: Translation> PageTableWithLevel<T> {
     /// - `None` if it is unmapped
     /// - `Some(LEAF_LEVEL)` if it is mapped as a single page
     /// - `Some(level)` if it is mapped as a block at `level`
-    #[cfg(test)]
+    #[cfg(all(test, feature = "alloc"))]
     fn mapping_level(&self, translation: &T, va: VirtualAddress) -> Option<usize> {
         let entry = self.get_entry(va);
         if let Some(subtable) = entry.subtable(translation, self.level) {
@@ -919,17 +952,35 @@ impl Descriptor {
     }
 
     /// Modifies the page table entry by setting or clearing its flags.
-    /// Panics when attempting to convert a table descriptor into a block/page descriptor or vice
-    /// versa - this is not supported via this API.
-    pub fn modify_flags(&mut self, set: Attributes, clear: Attributes) {
+    ///
+    /// On success, returns a boolean value that indicates whether or not the descriptor was
+    /// modified as a result of applying the set and clear masks.
+    ///
+    /// Returns [`Err(())'] when attempting to convert a descriptor in a manner that violates the
+    /// break-before-make (BBM) rules of the architecture, regardless of whether or not the
+    /// descriptor is live (which cannot be determined at this level)
+    pub fn modify_flags(&mut self, set: Attributes, clear: Attributes) -> Result<bool, ()> {
+        // Masks of bits that may be set resp. cleared on a live mapping without BBM
+        let clear_mask = Attributes::VALID
+            | Attributes::READ_ONLY
+            | Attributes::ACCESSED
+            | Attributes::DBM
+            | Attributes::PXN
+            | Attributes::UXN
+            | Attributes::SWFLAG_0
+            | Attributes::SWFLAG_1
+            | Attributes::SWFLAG_2
+            | Attributes::SWFLAG_3;
+        let set_mask = clear_mask | Attributes::NON_GLOBAL;
+
+        if !set.difference(set_mask).is_empty() || !clear.difference(clear_mask).is_empty() {
+            return Err(());
+        }
         let oldval = self.bits();
         let flags = (oldval | set.bits()) & !clear.bits();
 
-        if (oldval ^ flags) & Attributes::TABLE_OR_PAGE.bits() != 0 {
-            panic!("Cannot convert between table and block/page descriptors\n");
-        }
-
-        self.0.store(flags, Ordering::Release);
+        // Swap and compare to see whether any flags were updated
+        Ok(flags != self.0.swap(flags, Ordering::Release))
     }
 
     /// Returns `true` if [`Attributes::VALID`] is set on this entry, e.g. if the entry is mapped.
@@ -1123,11 +1174,19 @@ mod tests {
             PhysicalAddress(0x12340000),
             Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1,
         );
-        desc.modify_flags(
-            Attributes::DBM | Attributes::SWFLAG_3,
-            Attributes::VALID | Attributes::SWFLAG_1,
+        assert!(
+            desc.modify_flags(
+                Attributes::DBM | Attributes::SWFLAG_3,
+                Attributes::VALID | Attributes::SWFLAG_1,
+            )
+            .unwrap()
         );
         assert!(!desc.is_valid());
+        assert!(
+            !desc
+                .modify_flags(Attributes::DBM, Attributes::VALID)
+                .unwrap()
+        );
         assert_eq!(
             desc.flags(),
             Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_3 | Attributes::DBM
@@ -1143,7 +1202,8 @@ mod tests {
             PhysicalAddress(0x12340000),
             Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1,
         );
-        desc.modify_flags(Attributes::VALID, Attributes::TABLE_OR_PAGE);
+        desc.modify_flags(Attributes::VALID, Attributes::TABLE_OR_PAGE)
+            .unwrap();
     }
 
     #[cfg(feature = "alloc")]
@@ -1164,14 +1224,22 @@ mod tests {
     #[test]
     #[should_panic]
     fn no_el2_ttbr1() {
-        RootTable::<IdTranslation>::new(IdTranslation, 1, TranslationRegime::El2, VaRange::Upper);
+        RootTable::<IdTranslation>::new(
+            IdTranslation::new(TranslationRegime::El2),
+            1,
+            VaRange::Upper,
+        );
     }
 
     #[cfg(feature = "alloc")]
     #[test]
     #[should_panic]
     fn no_el3_ttbr1() {
-        RootTable::<IdTranslation>::new(IdTranslation, 1, TranslationRegime::El3, VaRange::Upper);
+        RootTable::<IdTranslation>::new(
+            IdTranslation::new(TranslationRegime::El3),
+            1,
+            VaRange::Upper,
+        );
     }
 
     #[test]

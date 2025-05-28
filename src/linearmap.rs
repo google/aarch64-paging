@@ -21,6 +21,7 @@ use core::ptr::NonNull;
 pub struct LinearTranslation {
     /// The offset from a virtual address to the corresponding (intermediate) physical address.
     offset: isize,
+    translation_regime: TranslationRegime,
 }
 
 impl LinearTranslation {
@@ -28,14 +29,17 @@ impl LinearTranslation {
     /// (intermediate) physical address `va + offset`.
     ///
     /// The `offset` must be a multiple of [`PAGE_SIZE`]; if not this will panic.
-    pub fn new(offset: isize) -> Self {
+    pub fn new(offset: isize, translation_regime: TranslationRegime) -> Self {
         if !is_aligned(offset.unsigned_abs(), PAGE_SIZE) {
             panic!(
                 "Invalid offset {}, must be a multiple of page size {}.",
                 offset, PAGE_SIZE,
             );
         }
-        Self { offset }
+        Self {
+            offset,
+            translation_regime,
+        }
     }
 
     fn virtual_to_physical(&self, va: VirtualAddress) -> Result<PhysicalAddress, MapError> {
@@ -86,6 +90,10 @@ impl Translation for LinearTranslation {
             panic!("Invalid physical address {} for pagetable", pa);
         }
     }
+
+    fn regime(&self) -> TranslationRegime {
+        self.translation_regime
+    }
 }
 
 /// Adds two signed values, returning an unsigned value or `None` if it would overflow.
@@ -120,10 +128,9 @@ impl LinearMap {
     ) -> Self {
         Self {
             mapping: Mapping::new(
-                LinearTranslation::new(offset),
+                LinearTranslation::new(offset, translation_regime),
                 asid,
                 rootlevel,
-                translation_regime,
                 va_range,
             ),
         }
@@ -273,7 +280,7 @@ impl LinearMap {
     /// and modifying those would violate architectural break-before-make (BBM) requirements.
     pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<bool, ()> + ?Sized,
     {
         self.mapping.modify_range(range, f)
     }
@@ -523,7 +530,7 @@ mod tests {
 
     #[test]
     fn physical_address_in_range_ttbr0() {
-        let translation = LinearTranslation::new(4096);
+        let translation = LinearTranslation::new(4096, TranslationRegime::El1And0);
         assert_eq!(
             translation.physical_to_virtual(PhysicalAddress(8192)),
             NonNull::new(4096 as *mut PageTable).unwrap(),
@@ -537,14 +544,14 @@ mod tests {
     #[test]
     #[should_panic]
     fn physical_address_to_zero_ttbr0() {
-        let translation = LinearTranslation::new(4096);
+        let translation = LinearTranslation::new(4096, TranslationRegime::El1And0);
         translation.physical_to_virtual(PhysicalAddress(4096));
     }
 
     #[test]
     #[should_panic]
     fn physical_address_out_of_range_ttbr0() {
-        let translation = LinearTranslation::new(4096);
+        let translation = LinearTranslation::new(4096, TranslationRegime::El1And0);
         translation.physical_to_virtual(PhysicalAddress(-4096_isize as usize));
     }
 
@@ -552,7 +559,7 @@ mod tests {
     fn physical_address_in_range_ttbr1() {
         // Map the 512 GiB region at the top of virtual address space to one page above the bottom
         // of physical address space.
-        let translation = LinearTranslation::new(GIB_512_S + 4096);
+        let translation = LinearTranslation::new(GIB_512_S + 4096, TranslationRegime::El1And0);
         assert_eq!(
             translation.physical_to_virtual(PhysicalAddress(8192)),
             NonNull::new((4096 - GIB_512_S) as *mut PageTable).unwrap(),
@@ -568,7 +575,7 @@ mod tests {
     fn physical_address_to_zero_ttbr1() {
         // Map the 512 GiB region at the top of virtual address space to the bottom of physical
         // address space.
-        let translation = LinearTranslation::new(GIB_512_S);
+        let translation = LinearTranslation::new(GIB_512_S, TranslationRegime::El1And0);
         translation.physical_to_virtual(PhysicalAddress(GIB_512));
     }
 
@@ -577,13 +584,13 @@ mod tests {
     fn physical_address_out_of_range_ttbr1() {
         // Map the 512 GiB region at the top of virtual address space to the bottom of physical
         // address space.
-        let translation = LinearTranslation::new(GIB_512_S);
+        let translation = LinearTranslation::new(GIB_512_S, TranslationRegime::El1And0);
         translation.physical_to_virtual(PhysicalAddress(-4096_isize as usize));
     }
 
     #[test]
     fn virtual_address_out_of_range() {
-        let translation = LinearTranslation::new(-4096);
+        let translation = LinearTranslation::new(-4096, TranslationRegime::El1And0);
         let va = VirtualAddress(1024);
         assert_eq!(
             translation.virtual_to_physical(va),
@@ -595,7 +602,7 @@ mod tests {
     fn virtual_address_range_ttbr1() {
         // Map the 512 GiB region at the top of virtual address space to the bottom of physical
         // address space.
-        let translation = LinearTranslation::new(GIB_512_S);
+        let translation = LinearTranslation::new(GIB_512_S, TranslationRegime::El1And0);
 
         // The first page in the region covered by TTBR1.
         assert_eq!(
@@ -655,9 +662,7 @@ mod tests {
             lmap.modify_range(
                 &MemoryRegion::new(PAGE_SIZE * 2, 1),
                 &|_range, entry, _level| {
-                    entry
-                        .modify_flags(Attributes::SWFLAG_0, Attributes::from_bits(0usize).unwrap());
-                    Ok(())
+                    entry.modify_flags(Attributes::SWFLAG_0, Attributes::from_bits(0usize).unwrap())
                 },
             )
             .is_err()
@@ -669,9 +674,10 @@ mod tests {
         let mut lmap = make_map();
         lmap.modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|_range, entry, level| {
             if level == 3 || !entry.is_table_or_page() {
-                entry.modify_flags(Attributes::SWFLAG_0, Attributes::from_bits(0usize).unwrap());
+                entry.modify_flags(Attributes::SWFLAG_0, Attributes::from_bits(0usize).unwrap())
+            } else {
+                Ok(false)
             }
-            Ok(())
         })
         .unwrap();
         lmap.modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|range, entry, level| {
@@ -679,7 +685,7 @@ mod tests {
                 assert!(entry.flags().contains(Attributes::SWFLAG_0));
                 assert_eq!(range.end() - range.start(), PAGE_SIZE);
             }
-            Ok(())
+            Ok(false)
         })
         .unwrap();
     }
@@ -707,7 +713,7 @@ mod tests {
                     let is_first_page = range.start().0 == 0usize;
                     assert!(has_swflag != is_first_page);
                 }
-                Ok(())
+                Ok(false)
             },
         )
         .unwrap();

@@ -6,7 +6,7 @@
 //!
 //! See [`TargetAllocator`] for details on how to use it.
 
-use crate::paging::{PageTable, PhysicalAddress, Translation, deallocate};
+use crate::paging::{PageTable, PhysicalAddress, Translation, TranslationRegime, deallocate};
 use alloc::{vec, vec::Vec};
 use core::{mem::size_of, ptr::NonNull};
 
@@ -29,7 +29,6 @@ use core::{mem::size_of, ptr::NonNull};
 /// let mut map = RootTable::new(
 ///     TargetAllocator::new(0x1_0000),
 ///     ROOT_LEVEL,
-///     TranslationRegime::El1And0,
 ///     VaRange::Lower,
 /// );
 /// map.map_range(
@@ -133,25 +132,22 @@ impl Translation for TargetAllocator {
             [(pa.0 - usize::try_from(self.base_address).unwrap()) / size_of::<PageTable>()]
         .unwrap()
     }
+
+    fn regime(&self) -> TranslationRegime {
+        TranslationRegime::El1And0 // dont-care
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::paging::{
-        Attributes, Constraints, MemoryRegion, RootTable, TranslationRegime, VaRange,
-    };
+    use crate::paging::{Attributes, Constraints, MemoryRegion, RootTable, VaRange};
 
     const ROOT_LEVEL: usize = 1;
 
     #[test]
     fn map_one_page() {
-        let mut map = RootTable::new(
-            TargetAllocator::new(0x1_0000),
-            ROOT_LEVEL,
-            TranslationRegime::El1And0,
-            VaRange::Lower,
-        );
+        let mut map = RootTable::new(TargetAllocator::new(0x1_0000), ROOT_LEVEL, VaRange::Lower);
         map.map_range(
             &MemoryRegion::new(0x0, 0x1000),
             PhysicalAddress(0x4_2000),

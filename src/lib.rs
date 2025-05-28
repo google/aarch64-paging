@@ -300,7 +300,7 @@ impl<T: Translation> Mapping<T> {
     /// without violating architectural break-before-make (BBM) requirements.
     fn check_range_bbm<F>(&self, range: &MemoryRegion, updater: &F) -> Result<(), MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<bool, ()> + ?Sized,
     {
         self.root.visit_range(
             range,
@@ -382,7 +382,7 @@ impl<T: Translation> Mapping<T> {
                 let mask = !(paging::granularity_at_level(lvl) - 1);
                 let pa = (mr.start() - range.start() + pa.0) & mask;
                 d.set(PhysicalAddress(pa), flags);
-                Ok(())
+                Ok(false)
             };
             self.check_range_bbm(range, &c)?;
         }
@@ -415,7 +415,7 @@ impl<T: Translation> Mapping<T> {
     /// and modifying those would violate architectural break-before-make (BBM) requirements.
     pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<bool, ()> + ?Sized,
     {
         if self.active() {
             self.check_range_bbm(range, f)?;

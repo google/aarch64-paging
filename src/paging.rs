@@ -356,7 +356,8 @@ impl<T: Translation> RootTable<T> {
     ///
     /// The updater function should return:
     ///
-    /// - `Ok` to continue updating the remaining entries.
+    /// - `Ok(bool)` to continue updating the remaining entries, where the boolean indicates
+    ///   whether the descriptor was modified
     /// - `Err` to signal an error and stop updating the remaining entries.
     ///
     /// This should generally only be called while the page table is not active. In particular, any
@@ -377,7 +378,7 @@ impl<T: Translation> RootTable<T> {
     /// and modifying those would violate architectural break-before-make (BBM) requirements.
     pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<bool, ()> + ?Sized,
     {
         self.verify_region(range)?;
         self.table.modify_range(&mut self.translation, range, f)
@@ -773,7 +774,7 @@ impl<T: Translation> PageTableWithLevel<T> {
         f: &F,
     ) -> Result<(), MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<bool, ()> + ?Sized,
     {
         let level = self.level;
         for chunk in range.split(level) {

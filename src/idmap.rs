@@ -634,20 +634,18 @@ mod tests {
     #[test]
     fn update_backwards_range() {
         let (mut idmap, ttbr) = make_map();
-        assert!(
-            idmap
-                .modify_range(
-                    &MemoryRegion::new(PAGE_SIZE * 2, 1),
-                    &|_range, entry, _level| {
-                        entry.modify_flags(
-                            Attributes::SWFLAG_0,
-                            Attributes::from_bits(0usize).unwrap(),
-                        );
-                        Ok(())
-                    },
-                )
-                .is_err()
-        );
+        assert!(idmap
+            .modify_range(
+                &MemoryRegion::new(PAGE_SIZE * 2, 1),
+                &|_range, entry, _level| {
+                    entry.modify_flags(
+                        Attributes::SWFLAG_0,
+                        Attributes::from_bits(0usize).unwrap(),
+                    )?;
+                    Ok(())
+                },
+            )
+            .is_err());
 
         unsafe {
             idmap.deactivate(ttbr);
@@ -657,21 +655,21 @@ mod tests {
     #[test]
     fn update_range() {
         let (mut idmap, ttbr) = make_map();
-        assert!(
-            idmap
-                .modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|_range, entry, level| {
-                    if level == 3 || !entry.is_table_or_page() {
-                        entry.modify_flags(Attributes::SWFLAG_0, Attributes::NON_GLOBAL);
-                    }
-                    Ok(())
-                })
-                .is_err()
-        );
+        assert!(idmap
+            .modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|_range, entry, level| {
+                if level == 3 || !entry.is_table_or_page() {
+                    entry.modify_flags(Attributes::SWFLAG_0, Attributes::NON_GLOBAL)?;
+                }
+                Ok(())
+            })
+            .is_err());
         idmap
             .modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|_range, entry, level| {
                 if level == 3 || !entry.is_table_or_page() {
-                    entry
-                        .modify_flags(Attributes::SWFLAG_0, Attributes::from_bits(0usize).unwrap());
+                    entry.modify_flags(
+                        Attributes::SWFLAG_0,
+                        Attributes::from_bits(0usize).unwrap(),
+                    )?;
                 }
                 Ok(())
             })

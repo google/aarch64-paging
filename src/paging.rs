@@ -360,7 +360,8 @@ impl<T: Translation> RootTable<T> {
     ///
     /// The updater function should return:
     ///
-    /// - `Ok` to continue updating the remaining entries.
+    /// - `Ok(DescriptorBits)` to continue visiting the remaining entries. The descriptor will be
+    ///    set to the returned value.
     /// - `Err` to signal an error and stop updating the remaining entries.
     ///
     /// This should generally only be called while the page table is not active. In particular, any
@@ -381,7 +382,7 @@ impl<T: Translation> RootTable<T> {
     /// and modifying those would violate architectural break-before-make (BBM) requirements.
     pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &Descriptor, usize) -> Result<DescriptorBits, ()> + ?Sized,
     {
         self.verify_region(range)?;
         self.table.modify_range(&mut self.translation, range, f)
@@ -777,7 +778,7 @@ impl<T: Translation> PageTableWithLevel<T> {
         f: &F,
     ) -> Result<(), MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &Descriptor, usize) -> Result<DescriptorBits, ()> + ?Sized,
     {
         let level = self.level;
         for chunk in range.split(level) {
@@ -793,7 +794,9 @@ impl<T: Translation> PageTableWithLevel<T> {
             }) {
                 subtable.modify_range(translation, &chunk, f)?;
             } else {
-                f(&chunk, entry, level).map_err(|_| MapError::PteUpdateFault(entry.bits()))?;
+                entry.assign(
+                    f(&chunk, entry, level).map_err(|_| MapError::PteUpdateFault(entry.bits()))?,
+                );
             }
         }
         Ok(())
@@ -918,11 +921,6 @@ impl Descriptor {
         Attributes::from_bits_retain(self.bits() & !Self::PHYSICAL_ADDRESS_BITMASK)
     }
 
-    /// Modifies the page table entry by setting or clearing its flags.
-    pub fn modify_flags(&mut self, set: Attributes, clear: Attributes) -> Result<(), ()> {
-        Ok(self.0.store(self.apply_masks(set, clear)?, Ordering::Release))
-    }
-
     /// Takes the underlying value of the descriptor `self` and returns it after applying the `set`
     /// and `clear` masks, provided that this transformation is permitted on a live descriptor
     pub fn apply_masks(&self, set: Attributes, clear: Attributes) -> Result<DescriptorBits, ()> {
@@ -967,6 +965,11 @@ impl Descriptor {
         );
     }
 
+    // Assign the value of `d` to `self`, and return whether `self` was modified as a result
+    pub(crate) fn assign(&mut self, d: DescriptorBits) -> bool {
+        d != self.0.swap(d, Ordering::Release)
+    }
+
     fn subtable<T: Translation>(
         &self,
         translation: &T,
@@ -978,10 +981,6 @@ impl Descriptor {
             return Some(PageTableWithLevel::from_pointer(table, level + 1));
         }
         None
-    }
-
-    pub(crate) fn clone(&self) -> Self {
-        Descriptor(AtomicUsize::new(self.bits()))
     }
 }
 
@@ -1130,26 +1129,6 @@ mod tests {
             Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1 | Attributes::VALID
         );
         assert_eq!(desc.output_address(), PhysicalAddress(PHYSICAL_ADDRESS));
-    }
-
-    #[test]
-    fn modify_descriptor_flags() {
-        let mut desc = Descriptor(AtomicUsize::new(0usize));
-        assert!(!desc.is_valid());
-        desc.set(
-            PhysicalAddress(0x12340000),
-            Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1,
-        );
-        desc.modify_flags(
-            Attributes::DBM | Attributes::SWFLAG_3,
-            Attributes::VALID | Attributes::SWFLAG_1,
-        )
-        .unwrap();
-        assert!(!desc.is_valid());
-        assert_eq!(
-            desc.flags(),
-            Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_3 | Attributes::DBM
-        );
     }
 
     #[test]

@@ -7,7 +7,7 @@
 //! See [`IdMap`] for details on how to use it.
 
 use crate::{
-    MapError, Mapping,
+    DescriptorBits, MapError, Mapping,
     paging::{
         Attributes, Constraints, Descriptor, MemoryRegion, PageTable, PhysicalAddress, Translation,
         TranslationRegime, VaRange, VirtualAddress, deallocate,
@@ -232,12 +232,13 @@ impl IdMap {
     /// - The virtual address range mapped by each page table descriptor. A new descriptor will
     ///   have been allocated before the invocation of the updater function if a page table split
     ///   was needed.
-    /// - A mutable reference to the page table descriptor that permits modifications.
+    /// - A reference to the page table descriptor.
     /// - The level of a translation table the descriptor belongs to.
     ///
     /// The updater function should return:
     ///
-    /// - `Ok` to continue updating the remaining entries.
+    /// - `Ok(DescriptorBits)` to continue visiting the remaining entries. The descriptor will be
+    ///    set to the returned value.
     /// - `Err` to signal an error and stop updating the remaining entries.
     ///
     /// This should generally only be called while the page table is not active. In particular, any
@@ -258,7 +259,7 @@ impl IdMap {
     /// and modifying those would violate architectural break-before-make (BBM) requirements.
     pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &Descriptor, usize) -> Result<DescriptorBits, ()> + ?Sized,
     {
         self.mapping.modify_range(range, f)
     }
@@ -639,11 +640,10 @@ mod tests {
                 .modify_range(
                     &MemoryRegion::new(PAGE_SIZE * 2, 1),
                     &|_range, entry, _level| {
-                        entry.modify_flags(
+                        Ok(entry.apply_masks(
                             Attributes::SWFLAG_0,
                             Attributes::from_bits(0usize).unwrap(),
-                        );
-                        Ok(())
+                        )?)
                     },
                 )
                 .is_err()
@@ -660,30 +660,37 @@ mod tests {
         assert!(
             idmap
                 .modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|_range, entry, level| {
+                    let mut e = entry.bits();
                     if level == 3 || !entry.is_table_or_page() {
-                        entry.modify_flags(Attributes::SWFLAG_0, Attributes::NON_GLOBAL);
+                        e = entry.apply_masks(Attributes::SWFLAG_0, Attributes::NON_GLOBAL)?;
                     }
-                    Ok(())
+                    Ok(e)
                 })
                 .is_err()
         );
         idmap
             .modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|_range, entry, level| {
+                let mut e = entry.bits();
                 if level == 3 || !entry.is_table_or_page() {
-                    entry
-                        .modify_flags(Attributes::SWFLAG_0, Attributes::from_bits(0usize).unwrap());
+                    e = entry.apply_masks(
+                        Attributes::SWFLAG_0,
+                        Attributes::from_bits(0usize).unwrap(),
+                    )?;
                 }
-                Ok(())
+                Ok(e)
             })
             .unwrap();
         idmap
-            .modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|range, entry, level| {
-                if level == 3 || !entry.is_table_or_page() {
-                    assert!(entry.flags().contains(Attributes::SWFLAG_0));
-                    assert_eq!(range.end() - range.start(), PAGE_SIZE);
-                }
-                Ok(())
-            })
+            .walk_range(
+                &MemoryRegion::new(1, PAGE_SIZE),
+                &mut |range, entry, level| {
+                    if level == 3 || !entry.is_table_or_page() {
+                        assert!(entry.flags().contains(Attributes::SWFLAG_0));
+                        assert_eq!(range.end() - range.start(), PAGE_SIZE);
+                    }
+                    Ok(())
+                },
+            )
             .unwrap();
         unsafe {
             idmap.deactivate(ttbr);
@@ -713,9 +720,9 @@ mod tests {
             )
             .unwrap();
         idmap
-            .modify_range(
+            .walk_range(
                 &MemoryRegion::new(0, BLOCK_RANGE),
-                &|range, entry, level| {
+                &mut |range, entry, level| {
                     if level == 3 {
                         let has_swflag = entry.flags().contains(Attributes::SWFLAG_0);
                         let is_first_page = range.start().0 == 0usize;

@@ -9,6 +9,8 @@ use crate::MapError;
 #[cfg(feature = "alloc")]
 use alloc::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use bitflags::bitflags;
+#[cfg(all(not(test), target_arch = "aarch64"))]
+use core::arch::asm;
 use core::fmt::{self, Debug, Display, Formatter};
 use core::marker::PhantomData;
 use core::ops::{Add, Range, Sub};
@@ -59,6 +61,36 @@ impl TranslationRegime {
     /// This also implies that it supports two VA ranges.
     pub(crate) fn supports_asid(self) -> bool {
         matches!(self, Self::El2And0 | Self::El1And0)
+    }
+
+    /// Invalidates the memory range starting at `va`. The size of the range is unspecified, it is
+    /// up to the caller to apply this function as needed to invalidate a range of memory
+    pub(crate) fn invalidate_va(self, va: VirtualAddress) {
+        #[allow(unused)]
+        let va = va.0 >> 12;
+
+        // SAFETY: TLBI maintenance has no side effects that are observeable by the
+        // program
+        #[cfg(all(not(test), target_arch = "aarch64"))]
+        unsafe {
+            match self {
+                TranslationRegime::El3 => asm!(
+                    "tlbi vae3is, {va}",
+                    va = in(reg) va,
+                    options(preserves_flags, nostack),
+                ),
+                TranslationRegime::El2 | TranslationRegime::El2And0 => asm!(
+                    "tlbi vae2is, {va}",
+                    va = in(reg) va,
+                    options(preserves_flags, nostack),
+                ),
+                TranslationRegime::El1And0 => asm!(
+                    "tlbi vaae1is, {va}",
+                    va = in(reg) va,
+                    options(preserves_flags, nostack),
+                ),
+            };
+        };
     }
 }
 
@@ -360,7 +392,8 @@ impl<T: Translation> RootTable<T> {
     ///
     /// The updater function should return:
     ///
-    /// - `Ok` to continue updating the remaining entries.
+    /// - `Ok(DescriptorBits)` to continue visiting the remaining entries. The descriptor will be
+    ///    set to the returned value.
     /// - `Err` to signal an error and stop updating the remaining entries.
     ///
     /// This should generally only be called while the page table is not active. In particular, any
@@ -376,15 +409,23 @@ impl<T: Translation> RootTable<T> {
     ///
     /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
     /// largest virtual address covered by the page table given its root level.
-    ///
-    /// Returns [`MapError::BreakBeforeMakeViolation'] if the range intersects with live mappings,
-    /// and modifying those would violate architectural break-before-make (BBM) requirements.
-    pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
+    pub(crate) fn modify_range<F>(
+        &mut self,
+        range: &MemoryRegion,
+        f: &F,
+        live: bool,
+    ) -> Result<bool, MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &Descriptor, usize) -> Result<DescriptorBits, ()> + ?Sized,
     {
         self.verify_region(range)?;
-        self.table.modify_range(&mut self.translation, range, f)
+        self.table.modify_range(
+            &mut self.translation,
+            self.translation_regime,
+            range,
+            f,
+            live,
+        )
     }
 
     /// Applies the provided callback function to the page table descriptors covering a given
@@ -432,7 +473,7 @@ impl<T: Translation> RootTable<T> {
     /// - `None` if it is unmapped
     /// - `Some(LEAF_LEVEL)` if it is mapped as a single page
     /// - `Some(level)` if it is mapped as a block at `level`
-    #[cfg(test)]
+    #[cfg(all(test, feature = "alloc"))]
     pub(crate) fn mapping_level(&self, va: VirtualAddress) -> Option<usize> {
         self.table.mapping_level(&self.translation, va)
     }
@@ -773,12 +814,15 @@ impl<T: Translation> PageTableWithLevel<T> {
     fn modify_range<F>(
         &mut self,
         translation: &mut T,
+        translation_regime: TranslationRegime,
         range: &MemoryRegion,
         f: &F,
-    ) -> Result<(), MapError>
+        live: bool,
+    ) -> Result<bool, MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &Descriptor, usize) -> Result<DescriptorBits, ()> + ?Sized,
     {
+        let mut modified = false;
         let level = self.level;
         for chunk in range.split(level) {
             let entry = self.get_entry_mut(chunk.0.start);
@@ -791,12 +835,20 @@ impl<T: Translation> PageTableWithLevel<T> {
                     None
                 }
             }) {
-                subtable.modify_range(translation, &chunk, f)?;
-            } else {
-                f(&chunk, entry, level).map_err(|_| MapError::PteUpdateFault(entry.bits()))?;
+                modified |=
+                    subtable.modify_range(translation, translation_regime, &chunk, f, live)?;
+            } else if entry.assign(
+                // The descriptor will not be modified if f() returns an error, so no TLB
+                // maintenance is needed in that case.
+                f(&chunk, entry, level).map_err(|_| MapError::PteUpdateFault(entry.bits()))?,
+            ) && live
+            {
+                // Live descriptor was updated so TLB maintenance is needed
+                translation_regime.invalidate_va(chunk.start());
+                modified = true;
             }
         }
-        Ok(())
+        Ok(modified)
     }
 
     /// Walks a range of page table entries and passes each one to a caller provided function.
@@ -821,7 +873,7 @@ impl<T: Translation> PageTableWithLevel<T> {
     /// - `None` if it is unmapped
     /// - `Some(LEAF_LEVEL)` if it is mapped as a single page
     /// - `Some(level)` if it is mapped as a block at `level`
-    #[cfg(test)]
+    #[cfg(all(test, feature = "alloc"))]
     fn mapping_level(&self, translation: &T, va: VirtualAddress) -> Option<usize> {
         let entry = self.get_entry(va);
         if let Some(subtable) = entry.subtable(translation, self.level) {
@@ -918,18 +970,30 @@ impl Descriptor {
         Attributes::from_bits_retain(self.bits() & !Self::PHYSICAL_ADDRESS_BITMASK)
     }
 
-    /// Modifies the page table entry by setting or clearing its flags.
-    /// Panics when attempting to convert a table descriptor into a block/page descriptor or vice
-    /// versa - this is not supported via this API.
-    pub fn modify_flags(&mut self, set: Attributes, clear: Attributes) {
-        let oldval = self.bits();
-        let flags = (oldval | set.bits()) & !clear.bits();
+    /// Takes the underlying value of the descriptor `self` and returns it after applying the `set`
+    /// and `clear` masks, provided that this transformation is permitted on a live descriptor
+    pub fn apply_masks(&self, set: Attributes, clear: Attributes) -> Result<DescriptorBits, ()> {
+        // Masks of bits that may be set resp. cleared on a live, valid mapping without BBM
+        let clear_allowed_mask = Attributes::VALID
+            | Attributes::READ_ONLY
+            | Attributes::ACCESSED
+            | Attributes::DBM
+            | Attributes::PXN
+            | Attributes::UXN
+            | Attributes::SWFLAG_0
+            | Attributes::SWFLAG_1
+            | Attributes::SWFLAG_2
+            | Attributes::SWFLAG_3;
+        let set_allowed_mask = clear_allowed_mask | Attributes::NON_GLOBAL;
 
-        if (oldval ^ flags) & Attributes::TABLE_OR_PAGE.bits() != 0 {
-            panic!("Cannot convert between table and block/page descriptors\n");
+        // If the descriptor is valid, the permitted changes are limited by BBM rules
+        if self.is_valid()
+            && (!set.difference(set_allowed_mask).is_empty()
+                || !clear.difference(clear_allowed_mask).is_empty())
+        {
+            return Err(());
         }
-
-        self.0.store(flags, Ordering::Release);
+        Ok((self.bits() | set.bits()) & !clear.bits())
     }
 
     /// Returns `true` if [`Attributes::VALID`] is set on this entry, e.g. if the entry is mapped.
@@ -943,11 +1007,18 @@ impl Descriptor {
             .contains(Attributes::TABLE_OR_PAGE | Attributes::VALID)
     }
 
+    // Construct a DescriptorBits from a physical address and a set of attribute flags
+    pub(crate) fn compose(pa: PhysicalAddress, flags: Attributes) -> DescriptorBits {
+        (pa.0 & Self::PHYSICAL_ADDRESS_BITMASK) | flags.bits()
+    }
+
     pub(crate) fn set(&mut self, pa: PhysicalAddress, flags: Attributes) {
-        self.0.store(
-            (pa.0 & Self::PHYSICAL_ADDRESS_BITMASK) | flags.bits(),
-            Ordering::Release,
-        );
+        self.0.store(Self::compose(pa, flags), Ordering::Release);
+    }
+
+    // Assign the value of `d` to `self`, and return whether `self` was modified as a result
+    pub(crate) fn assign(&mut self, d: DescriptorBits) -> bool {
+        d != self.0.swap(d, Ordering::Release)
     }
 
     fn subtable<T: Translation>(
@@ -961,10 +1032,6 @@ impl Descriptor {
             return Some(PageTableWithLevel::from_pointer(table, level + 1));
         }
         None
-    }
-
-    pub(crate) fn clone(&self) -> Self {
-        Descriptor(AtomicUsize::new(self.bits()))
     }
 }
 
@@ -1116,34 +1183,17 @@ mod tests {
     }
 
     #[test]
-    fn modify_descriptor_flags() {
-        let mut desc = Descriptor(AtomicUsize::new(0usize));
-        assert!(!desc.is_valid());
-        desc.set(
-            PhysicalAddress(0x12340000),
-            Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1,
-        );
-        desc.modify_flags(
-            Attributes::DBM | Attributes::SWFLAG_3,
-            Attributes::VALID | Attributes::SWFLAG_1,
-        );
-        assert!(!desc.is_valid());
-        assert_eq!(
-            desc.flags(),
-            Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_3 | Attributes::DBM
-        );
-    }
-
-    #[test]
     #[should_panic]
     fn modify_descriptor_table_or_page_flag() {
         let mut desc = Descriptor(AtomicUsize::new(0usize));
         assert!(!desc.is_valid());
         desc.set(
             PhysicalAddress(0x12340000),
-            Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1,
+            Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1 | Attributes::VALID,
         );
-        desc.modify_flags(Attributes::VALID, Attributes::TABLE_OR_PAGE);
+
+        desc.apply_masks(Attributes::VALID, Attributes::TABLE_OR_PAGE)
+            .unwrap();
     }
 
     #[cfg(feature = "alloc")]

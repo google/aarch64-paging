@@ -1007,11 +1007,13 @@ impl Descriptor {
             .contains(Attributes::TABLE_OR_PAGE | Attributes::VALID)
     }
 
+    // Construct a DescriptorBits from a physical address and a set of attribute flags
+    pub(crate) fn compose(pa: PhysicalAddress, flags: Attributes) -> DescriptorBits {
+        (pa.0 & Self::PHYSICAL_ADDRESS_BITMASK) | flags.bits()
+    }
+
     pub(crate) fn set(&mut self, pa: PhysicalAddress, flags: Attributes) {
-        self.0.store(
-            (pa.0 & Self::PHYSICAL_ADDRESS_BITMASK) | flags.bits(),
-            Ordering::Release,
-        );
+        self.0.store(Self::compose(pa, flags), Ordering::Release);
     }
 
     // Assign the value of `d` to `self`, and return whether `self` was modified as a result

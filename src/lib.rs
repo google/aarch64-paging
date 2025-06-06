@@ -326,37 +326,12 @@ impl<T: Translation> Mapping<T> {
                         return Err(err);
                     }
 
-                    // Get the new flags and output address for this descriptor by applying
-                    // the updater function to a copy
-                    let (flags, oa) = {
-                        let mut dd = Descriptor::EMPTY;
-                        dd.assign(updater(mr, d, level).or(Err(err.clone()))?);
-                        (dd.flags(), dd.output_address())
-                    };
-
-                    if !flags.contains(Attributes::VALID) {
-                        // Removing the valid bit is always ok
-                        return Ok(());
-                    }
-
-                    if oa != d.output_address() {
-                        // Cannot change output address on a live mapping
-                        return Err(err);
-                    }
-
-                    let desc_flags = d.flags();
-
-                    if (desc_flags ^ flags).intersects(
-                        Attributes::ATTRIBUTE_INDEX_MASK | Attributes::SHAREABILITY_MASK,
-                    ) {
-                        // Cannot change memory type
-                        return Err(err);
-                    }
-
-                    if (desc_flags - flags).contains(Attributes::NON_GLOBAL) {
-                        // Cannot convert from non-global to global
-                        return Err(err);
-                    }
+                    let bits = updater(mr, d, level).or(Err(err.clone()))?;
+                    d.apply_masks(
+                        Attributes::from_bits_retain(bits & !d.bits()),
+                        Attributes::from_bits_retain(d.bits() & !bits),
+                    )
+                    .or(Err(err))?;
                 }
                 Ok(())
             },
@@ -415,9 +390,12 @@ impl<T: Translation> Mapping<T> {
             let c = |mr: &MemoryRegion, _: &Descriptor, lvl: usize| {
                 let mask = !(paging::granularity_at_level(lvl) - 1);
                 let pa = (mr.start() - range.start() + pa.0) & mask;
-                let mut d = Descriptor::EMPTY;
-                d.set(PhysicalAddress(pa), flags);
-                Ok(d.bits())
+                let flags = if lvl == 3 {
+                    flags | Attributes::TABLE_OR_PAGE
+                } else {
+                    flags
+                };
+                Ok(Descriptor::compose(PhysicalAddress(pa), flags))
             };
             self.check_range_bbm(range, &c)?;
         }

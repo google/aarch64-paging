@@ -62,7 +62,9 @@ extern crate alloc;
 #[cfg(target_arch = "aarch64")]
 use core::arch::asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use descriptor::{Attributes, Descriptor, DescriptorBits, PhysicalAddress, VirtualAddress};
+use descriptor::{
+    Attributes, Descriptor, DescriptorBits, PhysicalAddress, UpdatableDescriptor, VirtualAddress,
+};
 use paging::{Constraints, MemoryRegion, RootTable, Translation, TranslationRegime, VaRange};
 use thiserror::Error;
 
@@ -301,7 +303,7 @@ impl<T: Translation> Mapping<T> {
     /// without violating architectural break-before-make (BBM) requirements.
     fn check_range_bbm<F>(&self, range: &MemoryRegion, updater: &F) -> Result<(), MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut UpdatableDescriptor) -> Result<(), ()> + ?Sized,
     {
         self.root.visit_range(
             range,
@@ -312,8 +314,8 @@ impl<T: Translation> Mapping<T> {
                     // Get the new flags and output address for this descriptor by applying
                     // the updater function to a copy
                     let (flags, oa) = {
-                        let mut dd = d.clone();
-                        updater(mr, &mut dd, level).or(Err(err.clone()))?;
+                        let mut dd = UpdatableDescriptor::clone_from(d, level);
+                        updater(mr, &mut dd).or(Err(err.clone()))?;
                         (dd.flags(), dd.output_address())
                     };
 
@@ -383,8 +385,8 @@ impl<T: Translation> Mapping<T> {
         constraints: Constraints,
     ) -> Result<(), MapError> {
         if self.active() {
-            let c = |mr: &MemoryRegion, d: &mut Descriptor, lvl: usize| {
-                let mask = !(paging::granularity_at_level(lvl) - 1);
+            let c = |mr: &MemoryRegion, d: &mut UpdatableDescriptor| {
+                let mask = !(paging::granularity_at_level(d.level()) - 1);
                 let pa = (mr.start() - range.start() + pa.0) & mask;
                 d.set(PhysicalAddress(pa), flags);
                 Ok(())
@@ -420,7 +422,7 @@ impl<T: Translation> Mapping<T> {
     /// and modifying those would violate architectural break-before-make (BBM) requirements.
     pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut UpdatableDescriptor) -> Result<(), ()> + ?Sized,
     {
         if self.active() {
             self.check_range_bbm(range, f)?;

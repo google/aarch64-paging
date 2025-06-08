@@ -8,7 +8,7 @@
 
 use crate::{
     MapError, Mapping,
-    descriptor::{Attributes, Descriptor, PhysicalAddress, VirtualAddress},
+    descriptor::{Attributes, Descriptor, PhysicalAddress, UpdatableDescriptor, VirtualAddress},
     paging::{
         Constraints, MemoryRegion, PAGE_SIZE, PageTable, Translation, TranslationRegime, VaRange,
         deallocate, is_aligned,
@@ -274,7 +274,7 @@ impl LinearMap {
     /// and modifying those would violate architectural break-before-make (BBM) requirements.
     pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut UpdatableDescriptor) -> Result<(), ()> + ?Sized,
     {
         self.mapping.modify_range(range, f)
     }
@@ -654,30 +654,26 @@ mod tests {
     fn update_backwards_range() {
         let mut lmap = make_map();
         assert!(
-            lmap.modify_range(
-                &MemoryRegion::new(PAGE_SIZE * 2, 1),
-                &|_range, entry, _level| {
-                    entry
-                        .modify_flags(Attributes::SWFLAG_0, Attributes::from_bits(0usize).unwrap());
-                    Ok(())
-                },
-            )
-            .is_err()
+            lmap.modify_range(&MemoryRegion::new(PAGE_SIZE * 2, 1), &|_range, entry| {
+                entry.modify_flags(Attributes::SWFLAG_0, Attributes::from_bits(0usize).unwrap());
+                Ok(())
+            },)
+                .is_err()
         );
     }
 
     #[test]
     fn update_range() {
         let mut lmap = make_map();
-        lmap.modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|_range, entry, level| {
-            if level == 3 || !entry.is_table_or_page() {
+        lmap.modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|_range, entry| {
+            if !entry.is_table() {
                 entry.modify_flags(Attributes::SWFLAG_0, Attributes::from_bits(0usize).unwrap());
             }
             Ok(())
         })
         .unwrap();
-        lmap.modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|range, entry, level| {
-            if level == 3 || !entry.is_table_or_page() {
+        lmap.modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|range, entry| {
+            if !entry.is_table() {
                 assert!(entry.flags().contains(Attributes::SWFLAG_0));
                 assert_eq!(range.end() - range.start(), PAGE_SIZE);
             }
@@ -701,17 +697,14 @@ mod tests {
             NORMAL_CACHEABLE | Attributes::NON_GLOBAL | Attributes::VALID | Attributes::ACCESSED,
         )
         .unwrap();
-        lmap.modify_range(
-            &MemoryRegion::new(0, BLOCK_RANGE),
-            &|range, entry, level| {
-                if level == 3 {
-                    let has_swflag = entry.flags().contains(Attributes::SWFLAG_0);
-                    let is_first_page = range.start().0 == 0usize;
-                    assert!(has_swflag != is_first_page);
-                }
-                Ok(())
-            },
-        )
+        lmap.modify_range(&MemoryRegion::new(0, BLOCK_RANGE), &|range, entry| {
+            if entry.level() == 3 {
+                let has_swflag = entry.flags().contains(Attributes::SWFLAG_0);
+                let is_first_page = range.start().0 == 0usize;
+                assert!(has_swflag != is_first_page);
+            }
+            Ok(())
+        })
         .unwrap();
     }
 

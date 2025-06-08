@@ -6,7 +6,9 @@
 //! addresses are mapped.
 
 use crate::MapError;
-use crate::descriptor::{Attributes, Descriptor, PhysicalAddress, VirtualAddress};
+use crate::descriptor::{
+    Attributes, Descriptor, PhysicalAddress, UpdatableDescriptor, VirtualAddress,
+};
 
 #[cfg(feature = "alloc")]
 use alloc::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
@@ -300,7 +302,7 @@ impl<T: Translation> RootTable<T> {
     /// and modifying those would violate architectural break-before-make (BBM) requirements.
     pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut UpdatableDescriptor) -> Result<(), ()> + ?Sized,
     {
         self.verify_region(range)?;
         self.table.modify_range(&mut self.translation, range, f)
@@ -665,7 +667,7 @@ impl<T: Translation> PageTableWithLevel<T> {
         f: &F,
     ) -> Result<(), MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut UpdatableDescriptor) -> Result<(), ()> + ?Sized,
     {
         let level = self.level;
         for chunk in range.split(level) {
@@ -681,7 +683,8 @@ impl<T: Translation> PageTableWithLevel<T> {
             }) {
                 subtable.modify_range(translation, &chunk, f)?;
             } else {
-                f(&chunk, entry, level).map_err(|_| MapError::PteUpdateFault(entry.bits()))?;
+                f(&chunk, &mut UpdatableDescriptor::new(entry, level, true))
+                    .map_err(|_| MapError::PteUpdateFault(entry.bits()))?;
             }
         }
         Ok(())
@@ -916,7 +919,7 @@ mod tests {
             PhysicalAddress(0x12340000),
             Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1,
         );
-        desc.modify_flags(
+        UpdatableDescriptor::new(&mut desc, 3, true).modify_flags(
             Attributes::DBM | Attributes::SWFLAG_3,
             Attributes::VALID | Attributes::SWFLAG_1,
         );
@@ -936,7 +939,8 @@ mod tests {
             PhysicalAddress(0x12340000),
             Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1,
         );
-        desc.modify_flags(Attributes::VALID, Attributes::TABLE_OR_PAGE);
+        UpdatableDescriptor::new(&mut desc, 3, false)
+            .modify_flags(Attributes::VALID, Attributes::TABLE_OR_PAGE);
     }
 
     #[cfg(feature = "alloc")]

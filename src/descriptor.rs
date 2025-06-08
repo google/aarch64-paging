@@ -182,27 +182,21 @@ impl Descriptor {
     /// Depending on the flags this could be the address of a subtable, a mapping, or (if it is not
     /// a valid mapping) entirely arbitrary.
     pub fn output_address(&self) -> PhysicalAddress {
-        PhysicalAddress(self.bits() & Self::PHYSICAL_ADDRESS_BITMASK)
+        Self::output_address_from_bits(self.bits())
+    }
+
+    fn output_address_from_bits(bits: DescriptorBits) -> PhysicalAddress {
+        PhysicalAddress(bits & Self::PHYSICAL_ADDRESS_BITMASK)
+    }
+
+    fn flags_from_bits(bits: DescriptorBits) -> Attributes {
+        Attributes::from_bits_retain(bits & !Self::PHYSICAL_ADDRESS_BITMASK)
     }
 
     /// Returns the flags of this page table entry, or `None` if its state does not
     /// contain a valid set of flags.
     pub fn flags(&self) -> Attributes {
-        Attributes::from_bits_retain(self.bits() & !Self::PHYSICAL_ADDRESS_BITMASK)
-    }
-
-    /// Modifies the page table entry by setting or clearing its flags.
-    /// Panics when attempting to convert a table descriptor into a block/page descriptor or vice
-    /// versa - this is not supported via this API.
-    pub fn modify_flags(&mut self, set: Attributes, clear: Attributes) {
-        let oldval = self.bits();
-        let flags = (oldval | set.bits()) & !clear.bits();
-
-        if (oldval ^ flags) & Attributes::TABLE_OR_PAGE.bits() != 0 {
-            panic!("Cannot convert between table and block/page descriptors\n");
-        }
-
-        self.0.store(flags, Ordering::Release);
+        Self::flags_from_bits(self.bits())
     }
 
     /// Returns `true` if [`Attributes::VALID`] is set on this entry, e.g. if the entry is mapped.
@@ -235,10 +229,6 @@ impl Descriptor {
         }
         None
     }
-
-    pub(crate) fn clone(&self) -> Self {
-        Descriptor(AtomicUsize::new(self.bits()))
-    }
 }
 
 impl Debug for Descriptor {
@@ -248,5 +238,109 @@ impl Debug for Descriptor {
             write!(f, " ({}, {:?})", self.output_address(), self.flags())?;
         }
         Ok(())
+    }
+}
+
+enum DescriptorEnum<'a> {
+    /// A descriptor that is part of a set of page tables that are currently in use by one of the
+    /// CPUs
+    Active(&'a mut Descriptor),
+
+    /// A descriptor that is part of a set of page tables that are currently inactive. This means
+    /// TLB maintenance may be elided until the next time the page tables are made active.
+    Inactive(&'a mut Descriptor),
+
+    /// A descriptor that does not actually represent an entry in a page table. It permits updaters
+    /// taking an UpdatableDescriptor to be called for a dry run to observe their effect without
+    /// the need to pass an actual descriptor.
+    ActiveClone(DescriptorBits),
+}
+
+pub struct UpdatableDescriptor<'a> {
+    descriptor: DescriptorEnum<'a>,
+    level: usize,
+}
+
+impl<'a> UpdatableDescriptor<'a> {
+    /// Creates a new wrapper around a real descriptor that may or may not be live
+    pub(crate) fn new(desc: &'a mut Descriptor, level: usize, live: bool) -> Self {
+        Self {
+            descriptor: if live {
+                DescriptorEnum::Active(desc)
+            } else {
+                DescriptorEnum::Inactive(desc)
+            },
+            level: level,
+        }
+    }
+
+    /// Creates a new wrapper around an ActiveClone descriptor, which is used to observe the
+    /// effect of user provided updater functions without applying them to actual descriptors
+    pub(crate) fn clone_from(d: &Descriptor, level: usize) -> Self {
+        Self {
+            descriptor: DescriptorEnum::ActiveClone(d.bits()),
+            level: level,
+        }
+    }
+
+    /// Returns the level in the page table hierarchy at which this descriptor appears
+    pub fn level(&self) -> usize {
+        self.level
+    }
+
+    /// Returns whether this descriptor represents a table mapping. In this case, the output address
+    /// refers to a next level table.
+    pub fn is_table(&self) -> bool {
+        self.level < 3 && self.flags().contains(Attributes::TABLE_OR_PAGE)
+    }
+
+    /// Returns the bit representation of the underlying descriptor
+    pub fn bits(&self) -> DescriptorBits {
+        match &self.descriptor {
+            DescriptorEnum::Active(d) | DescriptorEnum::Inactive(d) => d.bits(),
+            DescriptorEnum::ActiveClone(d) => *d,
+        }
+    }
+
+    /// Assigns the underlying descriptor according to `pa` and `flags.
+    pub fn set(&mut self, pa: PhysicalAddress, flags: Attributes) {
+        match &mut self.descriptor {
+            DescriptorEnum::Active(d) | DescriptorEnum::Inactive(d) => d.set(pa, flags),
+            DescriptorEnum::ActiveClone(d) => {
+                *d = (pa.0 & Descriptor::PHYSICAL_ADDRESS_BITMASK) | flags.bits()
+            }
+        };
+    }
+
+    /// Returns the physical address to which this descriptor refers
+    ///
+    /// Depending on the flags this could be the address of a subtable, a mapping, or (if it is not
+    /// a valid mapping) entirely arbitrary.
+    pub fn output_address(&self) -> PhysicalAddress {
+        Descriptor::output_address_from_bits(self.bits())
+    }
+
+    /// Returns the flags of this descriptor
+    pub fn flags(&self) -> Attributes {
+        Descriptor::flags_from_bits(self.bits())
+    }
+
+    /// Modifies the page table entry by setting or clearing its flags.
+    /// Panics when attempting to convert a table descriptor into a block/page descriptor or vice
+    /// versa - this is not supported via this API.
+    pub fn modify_flags(&mut self, set: Attributes, clear: Attributes) {
+        let oldval = self.bits();
+        let flags = (oldval | set.bits()) & !clear.bits();
+
+        if (oldval ^ flags) & Attributes::TABLE_OR_PAGE.bits() != 0 {
+            panic!("Cannot convert between table and block/page descriptors\n");
+        }
+
+        match &mut self.descriptor {
+            DescriptorEnum::Active(d) | DescriptorEnum::Inactive(d) => {
+                d.0.store(flags, Ordering::Release)
+            }
+            DescriptorEnum::ActiveClone(d) => *d = flags,
+        }
     }
 }

@@ -6,7 +6,8 @@
 //!
 //! See [`TargetAllocator`] for details on how to use it.
 
-use crate::paging::{PageTable, PhysicalAddress, Translation, deallocate};
+use crate::descriptor::PhysicalAddress;
+use crate::paging::{PageTable, Translation, deallocate};
 use alloc::{vec, vec::Vec};
 use core::{mem::size_of, ptr::NonNull};
 
@@ -17,10 +18,8 @@ use core::{mem::size_of, ptr::NonNull};
 ///
 /// ```
 /// use aarch64_paging::{
-///     paging::{
-///         Attributes, Constraints, MemoryRegion, PhysicalAddress, RootTable, TranslationRegime,
-///         VaRange,
-///     },
+///     descriptor::{Attributes, PhysicalAddress},
+///     paging::{Constraints, MemoryRegion, RootTable, TranslationRegime, VaRange},
 ///     target::TargetAllocator,
 /// };
 ///
@@ -138,9 +137,8 @@ impl Translation for TargetAllocator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::paging::{
-        Attributes, Constraints, MemoryRegion, RootTable, TranslationRegime, VaRange,
-    };
+    use crate::descriptor::Attributes;
+    use crate::paging::{Constraints, MemoryRegion, RootTable, TranslationRegime, VaRange};
 
     const ROOT_LEVEL: usize = 1;
 

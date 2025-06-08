@@ -19,7 +19,8 @@
 //! # #[cfg(feature = "alloc")] {
 //! use aarch64_paging::{
 //!     idmap::IdMap,
-//!     paging::{Attributes, MemoryRegion, TranslationRegime},
+//!     descriptor::Attributes,
+//!     paging::{MemoryRegion, TranslationRegime},
 //! };
 //!
 //! const ASID: usize = 1;
@@ -45,6 +46,7 @@
 #![deny(clippy::undocumented_unsafe_blocks)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+pub mod descriptor;
 #[cfg(feature = "alloc")]
 pub mod idmap;
 #[cfg(feature = "alloc")]
@@ -60,10 +62,8 @@ extern crate alloc;
 #[cfg(target_arch = "aarch64")]
 use core::arch::asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use paging::{
-    Attributes, Constraints, Descriptor, DescriptorBits, MemoryRegion, PhysicalAddress, RootTable,
-    Translation, TranslationRegime, VaRange, VirtualAddress,
-};
+use descriptor::{Attributes, Descriptor, DescriptorBits, PhysicalAddress, VirtualAddress};
+use paging::{Constraints, MemoryRegion, RootTable, Translation, TranslationRegime, VaRange};
 use thiserror::Error;
 
 /// An error attempting to map some range in the page table.

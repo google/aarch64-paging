@@ -8,9 +8,10 @@
 
 use crate::{
     MapError, Mapping,
+    descriptor::{Attributes, Descriptor, PhysicalAddress, VirtualAddress},
     paging::{
-        Attributes, Constraints, Descriptor, MemoryRegion, PAGE_SIZE, PageTable, PhysicalAddress,
-        Translation, TranslationRegime, VaRange, VirtualAddress, deallocate, is_aligned,
+        Constraints, MemoryRegion, PAGE_SIZE, PageTable, Translation, TranslationRegime, VaRange,
+        deallocate, is_aligned,
     },
 };
 use core::ptr::NonNull;
@@ -345,7 +346,8 @@ mod tests {
     use super::*;
     use crate::{
         MapError,
-        paging::{Attributes, BITS_PER_LEVEL, MemoryRegion, PAGE_SIZE},
+        descriptor::Attributes,
+        paging::{BITS_PER_LEVEL, MemoryRegion, PAGE_SIZE},
     };
 
     const MAX_ADDRESS_FOR_ROOT_LEVEL_1: usize = 1 << 39;

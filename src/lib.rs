@@ -308,47 +308,13 @@ impl<T: Translation> Mapping<T> {
         self.root.visit_range(
             range,
             &mut |mr: &MemoryRegion, d: &Descriptor, level: usize| {
-                if d.is_valid() {
-                    let err = MapError::BreakBeforeMakeViolation(mr.clone());
+                let err = MapError::BreakBeforeMakeViolation(mr.clone());
 
-                    if !mr.is_block(level) {
-                        // Cannot split a live block mapping
-                        return Err(err);
-                    }
-
-                    // Get the new flags and output address for this descriptor by applying
-                    // the updater function to a copy
-                    let (flags, oa) = {
-                        let mut dd = UpdatableDescriptor::clone_from(d, level);
-                        updater(mr, &mut dd).or(Err(err.clone()))?;
-                        (dd.flags(), dd.output_address())
-                    };
-
-                    if !flags.contains(Attributes::VALID) {
-                        // Removing the valid bit is always ok
-                        return Ok(());
-                    }
-
-                    if oa != d.output_address() {
-                        // Cannot change output address on a live mapping
-                        return Err(err);
-                    }
-
-                    let desc_flags = d.flags();
-
-                    if (desc_flags ^ flags).intersects(
-                        Attributes::ATTRIBUTE_INDEX_MASK | Attributes::SHAREABILITY_MASK,
-                    ) {
-                        // Cannot change memory type
-                        return Err(err);
-                    }
-
-                    if (desc_flags - flags).contains(Attributes::NON_GLOBAL) {
-                        // Cannot convert from non-global to global
-                        return Err(err);
-                    }
+                if d.is_valid() && !mr.is_block(level) {
+                    // Cannot split a live block mapping
+                    return Err(err);
                 }
-                Ok(())
+                updater(mr, &mut UpdatableDescriptor::clone_from(d, level)).or(Err(err))
             },
         )
     }
@@ -384,8 +350,12 @@ impl<T: Translation> Mapping<T> {
             let c = |mr: &MemoryRegion, d: &mut UpdatableDescriptor| {
                 let mask = !(paging::granularity_at_level(d.level()) - 1);
                 let pa = (mr.start() - range.start() + pa.0) & mask;
-                d.set(PhysicalAddress(pa), flags);
-                Ok(())
+                let flags = if d.level() == 3 {
+                    flags | Attributes::TABLE_OR_PAGE
+                } else {
+                    flags
+                };
+                d.set(PhysicalAddress(pa), flags)
             };
             self.check_range_bbm(range, &c)?;
         }

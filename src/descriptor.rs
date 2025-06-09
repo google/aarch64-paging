@@ -302,14 +302,20 @@ impl<'a> UpdatableDescriptor<'a> {
         }
     }
 
-    /// Assigns the underlying descriptor according to `pa` and `flags.
-    pub fn set(&mut self, pa: PhysicalAddress, flags: Attributes) {
+    /// Assigns the underlying descriptor according to `pa` and `flags, provided that doing so is
+    /// permitted under BBM rules
+    pub fn set(&mut self, pa: PhysicalAddress, flags: Attributes) -> Result<(), ()> {
+        if !self.bbm_permits_update(pa, flags) {
+            return Err(());
+        }
+
         match &mut self.descriptor {
             DescriptorEnum::Active(d) | DescriptorEnum::Inactive(d) => d.set(pa, flags),
             DescriptorEnum::ActiveClone(d) => {
                 *d = (pa.0 & Descriptor::PHYSICAL_ADDRESS_BITMASK) | flags.bits()
             }
         };
+        Ok(())
     }
 
     /// Returns the physical address to which this descriptor refers
@@ -325,22 +331,56 @@ impl<'a> UpdatableDescriptor<'a> {
         Descriptor::flags_from_bits(self.bits())
     }
 
-    /// Modifies the page table entry by setting or clearing its flags.
-    /// Panics when attempting to convert a table descriptor into a block/page descriptor or vice
-    /// versa - this is not supported via this API.
-    pub fn modify_flags(&mut self, set: Attributes, clear: Attributes) {
-        let oldval = self.bits();
-        let flags = (oldval | set.bits()) & !clear.bits();
+    /// Returns whether this descriptor should be considered live and valid, in which case BBM
+    /// rules need to be checked. ActiveClone() variants are explicitly intended for checking BBM
+    /// rules, so they are considered live by this API
+    fn is_live_and_valid(&self) -> bool {
+        match &self.descriptor {
+            DescriptorEnum::Inactive(_) => false,
+            _ => self.flags().contains(Attributes::VALID),
+        }
+    }
 
-        if (oldval ^ flags) & Attributes::TABLE_OR_PAGE.bits() != 0 {
-            panic!("Cannot convert between table and block/page descriptors\n");
+    /// Returns whether BBM permits setting the flags on this descriptor to `flags`
+    fn bbm_permits_update(&self, pa: PhysicalAddress, flags: Attributes) -> bool {
+        if !self.is_live_and_valid() || !flags.contains(Attributes::VALID) {
+            return true;
         }
 
-        match &mut self.descriptor {
-            DescriptorEnum::Active(d) | DescriptorEnum::Inactive(d) => {
-                d.0.store(flags, Ordering::Release)
-            }
-            DescriptorEnum::ActiveClone(d) => *d = flags,
+        // Modifying the output address on a live valid descriptor is not allowed
+        if pa != self.output_address() {
+            return false;
         }
+
+        // Masks of bits that may be set resp. cleared on a live, valid mapping without BBM
+        let clear_allowed_mask = Attributes::VALID
+            | Attributes::READ_ONLY
+            | Attributes::ACCESSED
+            | Attributes::DBM
+            | Attributes::PXN
+            | Attributes::UXN
+            | Attributes::SWFLAG_0
+            | Attributes::SWFLAG_1
+            | Attributes::SWFLAG_2
+            | Attributes::SWFLAG_3;
+        let set_allowed_mask = clear_allowed_mask | Attributes::NON_GLOBAL;
+
+        (!self.flags() & flags & !set_allowed_mask).is_empty()
+            && (self.flags() & !flags & !clear_allowed_mask).is_empty()
+    }
+
+    /// Modifies the descriptor by setting or clearing its flags.
+    pub fn modify_flags(&mut self, set: Attributes, clear: Attributes) -> Result<(), ()> {
+        let oldval = self.flags();
+        let flags = (oldval | set) & !clear;
+
+        if (oldval ^ flags).contains(Attributes::TABLE_OR_PAGE) {
+            // Cannot convert between table and block/page descriptors, regardless of whether or
+            // not BBM permits this and whether the entry is live, given that doing so would
+            // corrupt our data strucutures.
+            return Err(());
+        }
+        let oa = self.output_address();
+        self.set(oa, flags)
     }
 }

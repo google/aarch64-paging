@@ -684,9 +684,7 @@ mod tests {
         assert!(
             idmap
                 .modify_range(&MemoryRegion::new(PAGE_SIZE * 2, 1), &|_range, entry| {
-                    entry
-                        .modify_flags(Attributes::SWFLAG_0, Attributes::from_bits(0usize).unwrap());
-                    Ok(())
+                    entry.modify_flags(Attributes::SWFLAG_0, Attributes::from_bits(0usize).unwrap())
                 },)
                 .is_err()
         );
@@ -703,7 +701,7 @@ mod tests {
             idmap
                 .modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|_range, entry| {
                     if !entry.is_table() {
-                        entry.modify_flags(Attributes::SWFLAG_0, Attributes::NON_GLOBAL);
+                        entry.modify_flags(Attributes::SWFLAG_0, Attributes::NON_GLOBAL)?;
                     }
                     Ok(())
                 })
@@ -712,8 +710,10 @@ mod tests {
         idmap
             .modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|_range, entry| {
                 if !entry.is_table() {
-                    entry
-                        .modify_flags(Attributes::SWFLAG_0, Attributes::from_bits(0usize).unwrap());
+                    entry.modify_flags(
+                        Attributes::SWFLAG_0,
+                        Attributes::from_bits(0usize).unwrap(),
+                    )?;
                 }
                 Ok(())
             })

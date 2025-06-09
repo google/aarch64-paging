@@ -919,10 +919,12 @@ mod tests {
             PhysicalAddress(0x12340000),
             Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1,
         );
-        UpdatableDescriptor::new(&mut desc, 3, true).modify_flags(
-            Attributes::DBM | Attributes::SWFLAG_3,
-            Attributes::VALID | Attributes::SWFLAG_1,
-        );
+        UpdatableDescriptor::new(&mut desc, 3, true)
+            .modify_flags(
+                Attributes::DBM | Attributes::SWFLAG_3,
+                Attributes::VALID | Attributes::SWFLAG_1,
+            )
+            .unwrap();
         assert!(!desc.is_valid());
         assert_eq!(
             desc.flags(),
@@ -940,7 +942,8 @@ mod tests {
             Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1,
         );
         UpdatableDescriptor::new(&mut desc, 3, false)
-            .modify_flags(Attributes::VALID, Attributes::TABLE_OR_PAGE);
+            .modify_flags(Attributes::VALID, Attributes::TABLE_OR_PAGE)
+            .unwrap();
     }
 
     #[cfg(feature = "alloc")]

@@ -533,6 +533,8 @@ bitflags! {
         const READ_ONLY     = 1 << 7;
         const ACCESSED      = 1 << 10;
         const NON_GLOBAL    = 1 << 11;
+        /// Guarded Page - indirect forward edge jumps expect an appropriate BTI landing pad.
+        const GP            = 1 << 50;
         const DBM           = 1 << 51;
         /// Privileged Execute-never, if two privilege levels are supported.
         const PXN           = 1 << 53;

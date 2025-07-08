@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### New features
+
+- Added `Attributes::GP` bit for BTI guarded pages.
+
+### Breaking changes
+
+- `zerocopy` feature has been removed. `PageTable::write_to` is provided instead.
+- `IdMap::activate` now returns the previous TTBR value rather than storing it, and
+  `IdMap::deactivate` takes the TTBR value to restore as a parameter. `IdMap::mark_active` no longer
+  takes a previous TTBR value parameter. The same applies to the equivalent methods on `LinearMap`.
+- Renamed `Mapping::activate_raw` to `activate`, and added previous TTBR value parameter to
+  `Mapping::deactivate`.
+- A page table may be activated multiple times (e.g. on multiple cores) and will keep track of how
+  many times it has been activated. It will only be considered inactive once it has been deactivated
+  the same number of times.
+- `MapError::PteUpdateFault` now contains a `usize` rather than a `Descriptor`.
+- `Descriptor` no longer implements `Copy`, `Clone`, `Default`, `PartialEq` or `Eq`, as it now
+  contains an `AtomicUsize` rather than just a `usize`. Various methods on `Descriptor` now take
+  `&self` rather than `self`.
+
 ## 0.9.1
 
 ### New features

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Improvements
+
+- `Debug` implementation for `RootTable` now includes `translation_regime` and `va_range` fields.
+
 ## 0.10.0
 
 ### New features

@@ -466,8 +466,8 @@ impl<T: Translation> Debug for RootTable<T> {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
         writeln!(
             f,
-            "RootTable {{ pa: {}, level: {}, table:",
-            self.pa, self.table.level
+            "RootTable {{ pa: {}, translation_regime: {:?}, va_range: {:?}, level: {}, table:",
+            self.pa, self.translation_regime, self.va_range, self.table.level
         )?;
         self.table.fmt_indented(f, &self.translation, 0)?;
         write!(f, "}}")

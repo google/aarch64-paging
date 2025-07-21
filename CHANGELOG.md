@@ -5,6 +5,7 @@
 ### Improvements
 
 - `Debug` implementation for `RootTable` now includes `translation_regime` and `va_range` fields.
+- `Debug` implementation for `RootTable` now groups contiguous mapped ranges together.
 
 ## 0.10.0
 

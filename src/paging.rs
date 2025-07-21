@@ -720,7 +720,7 @@ impl<T: Translation> PageTableWithLevel<T> {
             if let Some(subtable) = table.entries[i].subtable(translation, self.level) {
                 writeln!(
                     f,
-                    "{:indentation$}{: <WIDTH$}: {:?}",
+                    "{:indentation$}{: <WIDTH$}    : {:?}",
                     "", i, table.entries[i],
                 )?;
                 subtable.fmt_indented(f, translation, indentation + 2)?;
@@ -737,7 +737,7 @@ impl<T: Translation> PageTableWithLevel<T> {
                     i += 1;
                 }
                 if i - 1 == first_contiguous {
-                    write!(f, "{:indentation$}{: <WIDTH$}: ", "", first_contiguous)?;
+                    write!(f, "{:indentation$}{: <WIDTH$}    : ", "", first_contiguous)?;
                 } else {
                     write!(
                         f,
@@ -1275,13 +1275,13 @@ mod tests {
         assert_eq!(
             format!("{table:?}"),
 "RootTable { pa: 0x0000000000000000, translation_regime: El1And0, va_range: Lower, level: 1, table:
-0  : 0x00000000001003 (0x0000000000001000, Attributes(VALID | TABLE_OR_PAGE))
-  0  : 0x00000000002003 (0x0000000000002000, Attributes(VALID | TABLE_OR_PAGE))
+0      : 0x00000000001003 (0x0000000000001000, Attributes(VALID | TABLE_OR_PAGE))
+  0      : 0x00000000002003 (0x0000000000002000, Attributes(VALID | TABLE_OR_PAGE))
     0  -2  : 0
     3  -5  : 0x00000000003803 (0x0000000000003000, Attributes(VALID | TABLE_OR_PAGE | NON_GLOBAL))
-    6  : 0x00000000006083 (0x0000000000006000, Attributes(VALID | TABLE_OR_PAGE | READ_ONLY))
-    7  : 0
-    8  : 0x00000000008083 (0x0000000000008000, Attributes(VALID | TABLE_OR_PAGE | READ_ONLY))
+    6      : 0x00000000006083 (0x0000000000006000, Attributes(VALID | TABLE_OR_PAGE | READ_ONLY))
+    7      : 0
+    8      : 0x00000000008083 (0x0000000000008000, Attributes(VALID | TABLE_OR_PAGE | READ_ONLY))
     9  -511: 0
   1  -511: 0
 1  -511: 0

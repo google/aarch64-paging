@@ -717,26 +717,41 @@ impl<T: Translation> PageTableWithLevel<T> {
 
         let mut i = 0;
         while i < table.entries.len() {
-            if table.entries[i].bits() == 0 {
-                let first_zero = i;
-                while i < table.entries.len() && table.entries[i].bits() == 0 {
-                    i += 1;
-                }
-                if i - 1 == first_zero {
-                    writeln!(f, "{:indentation$}{: <WIDTH$}: 0", "", first_zero)?;
-                } else {
-                    writeln!(f, "{:indentation$}{: <WIDTH$}-{}: 0", "", first_zero, i - 1)?;
-                }
-            } else {
+            if let Some(subtable) = table.entries[i].subtable(translation, self.level) {
                 writeln!(
                     f,
                     "{:indentation$}{: <WIDTH$}: {:?}",
                     "", i, table.entries[i],
                 )?;
-                if let Some(subtable) = table.entries[i].subtable(translation, self.level) {
-                    subtable.fmt_indented(f, translation, indentation + 2)?;
-                }
+                subtable.fmt_indented(f, translation, indentation + 2)?;
                 i += 1;
+            } else {
+                let first_contiguous = i;
+                let first_entry = table.entries[i].bits();
+                while i < table.entries.len()
+                    && (table.entries[i].bits() == first_entry
+                        || (first_entry != 0
+                            && table.entries[i].bits()
+                                == first_entry + PAGE_SIZE * (i - first_contiguous)))
+                {
+                    i += 1;
+                }
+                if i - 1 == first_contiguous {
+                    write!(f, "{:indentation$}{: <WIDTH$}: ", "", first_contiguous)?;
+                } else {
+                    write!(
+                        f,
+                        "{:indentation$}{: <WIDTH$}-{: <WIDTH$}: ",
+                        "",
+                        first_contiguous,
+                        i - 1,
+                    )?;
+                }
+                if first_entry == 0 {
+                    writeln!(f, "0")?;
+                } else {
+                    writeln!(f, "{:?}", Descriptor(AtomicUsize::new(first_entry)))?;
+                }
             }
         }
         Ok(())
@@ -1262,10 +1277,8 @@ mod tests {
 "RootTable { pa: 0x0000000000000000, translation_regime: El1And0, va_range: Lower, level: 1, table:
 0  : 0x00000000001003 (0x0000000000001000, Attributes(VALID | TABLE_OR_PAGE))
   0  : 0x00000000002003 (0x0000000000002000, Attributes(VALID | TABLE_OR_PAGE))
-    0  -2: 0
-    3  : 0x00000000003803 (0x0000000000003000, Attributes(VALID | TABLE_OR_PAGE | NON_GLOBAL))
-    4  : 0x00000000004803 (0x0000000000004000, Attributes(VALID | TABLE_OR_PAGE | NON_GLOBAL))
-    5  : 0x00000000005803 (0x0000000000005000, Attributes(VALID | TABLE_OR_PAGE | NON_GLOBAL))
+    0  -2  : 0
+    3  -5  : 0x00000000003803 (0x0000000000003000, Attributes(VALID | TABLE_OR_PAGE | NON_GLOBAL))
     6  : 0x00000000006083 (0x0000000000006000, Attributes(VALID | TABLE_OR_PAGE | READ_ONLY))
     7  : 0
     8  : 0x00000000008083 (0x0000000000008000, Attributes(VALID | TABLE_OR_PAGE | READ_ONLY))

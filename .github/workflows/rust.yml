@@ -14,7 +14,7 @@ jobs:
       checks: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install aarch64 toolchain
         uses: actions-rs/toolchain@v1
         with:
@@ -41,6 +41,6 @@ jobs:
   format:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Format Rust code
         run: cargo fmt --all -- --check

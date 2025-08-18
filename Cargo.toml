@@ -13,7 +13,7 @@ keywords = ["arm", "aarch64", "cortex-a", "vmsa", "pagetable"]
 categories = ["embedded", "no-std", "hardware-support"]
 
 [dependencies]
-bitflags = "2.9.1"
+bitflags = "2.9.2"
 thiserror = { version = "2.0.15", default-features = false }
 
 [features]

@@ -16,10 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Install aarch64 toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          target: aarch64-unknown-none
+        run: rustup target add aarch64-unknown-none
       - name: Build
         run: cargo build
       - name: Build for aarch64

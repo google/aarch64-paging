@@ -61,8 +61,8 @@ extern crate alloc;
 use core::arch::asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use paging::{
-    Attributes, Constraints, Descriptor, DescriptorBits, MemoryRegion, PhysicalAddress, RootTable,
-    Translation, TranslationRegime, VaRange, VirtualAddress,
+    Constraints, Descriptor, DescriptorBits, MemoryRegion, PagingAttributes, PhysicalAddress,
+    RootTable, Stage1Attributes, Translation, TranslationRegime, VaRange, VirtualAddress,
 };
 use thiserror::Error;
 
@@ -83,8 +83,8 @@ pub enum MapError {
     #[error("Error updating page table entry {0:?}")]
     PteUpdateFault(DescriptorBits),
     /// The requested flags are not supported for this mapping
-    #[error("Flags {0:?} unsupported for mapping.")]
-    InvalidFlags(Attributes),
+    #[error("Flags {0:#x} unsupported for mapping.")]
+    InvalidFlags(usize),
     /// Updating the range violates break-before-make rules and the mapping is live
     #[error("Cannot remap region {0} while translation is live.")]
     BreakBeforeMakeViolation(MemoryRegion),
@@ -98,13 +98,13 @@ pub enum MapError {
 /// switch back to a previous static page table, and then `activate` again after making the desired
 /// changes.
 #[derive(Debug)]
-pub struct Mapping<T: Translation> {
-    root: RootTable<T>,
+pub struct Mapping<T: Translation, A: PagingAttributes = Stage1Attributes> {
+    root: RootTable<T, A>,
     asid: usize,
     active_count: AtomicUsize,
 }
 
-impl<T: Translation> Mapping<T> {
+impl<T: Translation, A: PagingAttributes> Mapping<T, A> {
     /// Creates a new page table with the given ASID, root level and translation mapping.
     pub fn new(
         translation: T,
@@ -217,6 +217,14 @@ impl<T: Translation> Mapping<T> {
                     previous_ttbr = out(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
+                (TranslationRegime::Stage2, VaRange::Lower) => asm!(
+                    "mrs   {previous_ttbr}, vttbr_el2",
+                    "msr   vttbr_el2, {ttbrval}",
+                    "isb",
+                    ttbrval = in(reg) self.root_address().0 | (self.asid << 48),
+                    previous_ttbr = out(reg) previous_ttbr,
+                    options(preserves_flags),
+                ),
                 _ => {
                     panic!("Invalid combination of exception level and VA range.");
                 }
@@ -289,6 +297,17 @@ impl<T: Translation> Mapping<T> {
                 (TranslationRegime::El3, VaRange::Lower) => {
                     panic!("EL3 page table can't safety be deactivated.");
                 }
+                (TranslationRegime::Stage2, VaRange::Lower) => asm!(
+                    // For Stage 2, we invalidate using the current VTTBR (which has our VMID),
+                    // then restore the previous VTTBR.
+                    "tlbi  vmalls12e1",
+                    "dsb   nsh",
+                    "isb",
+                    "msr   vttbr_el2, {ttbrval}",
+                    "isb",
+                    ttbrval = in(reg) previous_ttbr,
+                    options(preserves_flags),
+                ),
                 _ => {
                     panic!("Invalid combination of exception level and VA range.");
                 }
@@ -301,11 +320,11 @@ impl<T: Translation> Mapping<T> {
     /// without violating architectural break-before-make (BBM) requirements.
     fn check_range_bbm<F>(&self, range: &MemoryRegion, updater: &F) -> Result<(), MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut Descriptor<A>, usize) -> Result<(), ()> + ?Sized,
     {
         self.root.visit_range(
             range,
-            &mut |mr: &MemoryRegion, d: &Descriptor, level: usize| {
+            &mut |mr: &MemoryRegion, d: &Descriptor<A>, level: usize| {
                 if d.is_valid() {
                     let err = MapError::BreakBeforeMakeViolation(mr.clone());
 
@@ -322,7 +341,7 @@ impl<T: Translation> Mapping<T> {
                         (dd.flags(), dd.output_address())
                     };
 
-                    if !flags.contains(Attributes::VALID) {
+                    if !flags.contains(A::VALID) {
                         // Removing the valid bit is always ok
                         return Ok(());
                     }
@@ -334,15 +353,7 @@ impl<T: Translation> Mapping<T> {
 
                     let desc_flags = d.flags();
 
-                    if (desc_flags ^ flags).intersects(
-                        Attributes::ATTRIBUTE_INDEX_MASK | Attributes::SHAREABILITY_MASK,
-                    ) {
-                        // Cannot change memory type
-                        return Err(err);
-                    }
-
-                    if (desc_flags - flags).contains(Attributes::NON_GLOBAL) {
-                        // Cannot convert from non-global to global
+                    if !A::is_bbm_safe(desc_flags, flags) {
                         return Err(err);
                     }
                 }
@@ -358,7 +369,7 @@ impl<T: Translation> Mapping<T> {
     /// change that may require break-before-make per the architecture must be made while the page
     /// table is inactive. Mapping a previously unmapped memory range may be done while the page
     /// table is active. This function writes block and page entries, but only maps them if `flags`
-    /// contains `Attributes::VALID`, otherwise the entries remain invalid.
+    /// contains `A::VALID`, otherwise the entries remain invalid.
     ///
     /// # Errors
     ///
@@ -375,11 +386,11 @@ impl<T: Translation> Mapping<T> {
         &mut self,
         range: &MemoryRegion,
         pa: PhysicalAddress,
-        flags: Attributes,
+        flags: A,
         constraints: Constraints,
     ) -> Result<(), MapError> {
         if self.active() {
-            let c = |mr: &MemoryRegion, d: &mut Descriptor, lvl: usize| {
+            let c = |mr: &MemoryRegion, d: &mut Descriptor<A>, lvl: usize| {
                 let mask = !(paging::granularity_at_level(lvl) - 1);
                 let pa = (mr.start() - range.start() + pa.0) & mask;
                 d.set(PhysicalAddress(pa), flags);
@@ -416,7 +427,7 @@ impl<T: Translation> Mapping<T> {
     /// and modifying those would violate architectural break-before-make (BBM) requirements.
     pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut Descriptor<A>, usize) -> Result<(), ()> + ?Sized,
     {
         if self.active() {
             self.check_range_bbm(range, f)?;
@@ -440,7 +451,7 @@ impl<T: Translation> Mapping<T> {
     /// largest virtual address covered by the page table given its root level.
     pub fn walk_range<F>(&self, range: &MemoryRegion, f: &mut F) -> Result<(), MapError>
     where
-        F: FnMut(&MemoryRegion, &Descriptor, usize) -> Result<(), ()>,
+        F: FnMut(&MemoryRegion, &Descriptor<A>, usize) -> Result<(), ()>,
     {
         self.root.walk_range(range, f)
     }
@@ -486,7 +497,7 @@ impl<T: Translation> Mapping<T> {
     }
 }
 
-impl<T: Translation> Drop for Mapping<T> {
+impl<T: Translation, A: PagingAttributes> Drop for Mapping<T, A> {
     fn drop(&mut self) {
         if self.active() {
             panic!("Dropping active page table mapping!");
@@ -505,13 +516,25 @@ mod tests {
     #[test]
     #[should_panic]
     fn no_el2_asid() {
-        Mapping::new(IdTranslation, 1, 1, TranslationRegime::El2, VaRange::Lower);
+        Mapping::<IdTranslation, Stage1Attributes>::new(
+            IdTranslation,
+            1,
+            1,
+            TranslationRegime::El2,
+            VaRange::Lower,
+        );
     }
 
     #[cfg(feature = "alloc")]
     #[test]
     #[should_panic]
     fn no_el3_asid() {
-        Mapping::new(IdTranslation, 1, 1, TranslationRegime::El3, VaRange::Lower);
+        Mapping::<IdTranslation, Stage1Attributes>::new(
+            IdTranslation,
+            1,
+            1,
+            TranslationRegime::El3,
+            VaRange::Lower,
+        );
     }
 }

@@ -565,8 +565,7 @@ impl Attributes {
 }
 
 /// Smart pointer which owns a [`PageTable`] and knows what level it is at. This allows it to
-/// implement `Debug` and `Drop`, as walking the page table hierachy requires knowing the starting
-/// level.
+/// implement methods to walk the page table hierachy which require knowing the starting level.
 #[derive(Debug)]
 struct PageTableWithLevel<T: Translation> {
     table: NonNull<PageTable>,
@@ -700,6 +699,21 @@ impl<T: Translation> PageTableWithLevel<T> {
                 // a block mapping if the region is not already covered by
                 // a table mapping.
                 entry.set(pa, flags);
+            } else if chunk.is_block(level)
+                && let Some(mut subtable) = entry.subtable(translation, level)
+                && !flags.contains(Attributes::VALID)
+            {
+                // There is a subtable but we can remove it. To avoid break-before-make violations
+                // this is only allowed if the new mapping is not valid, i.e. we are unmapping the
+                // memory.
+                entry.set(pa, flags);
+
+                // SAFETY: The subtable was created with the same translation by
+                // `PageTableWithLevel::new`, and is no longer referenced by this table. We don't
+                // reuse subtables so there must not be any other references to it.
+                unsafe {
+                    subtable.free(translation);
+                }
             } else {
                 let mut subtable = entry
                     .subtable(translation, level)

@@ -776,6 +776,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn unmap_subtable() {
+        let mut idmap = IdMap::new(1, 1, TranslationRegime::El1And0);
+        assert_eq!(idmap.size(), PAGE_SIZE * 512 * 512 * 512);
+        // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
+        // active for the sake of BBM rules.
+        let ttbr = unsafe { idmap.activate() };
+
+        // Map one page, which will cause subtables to be split out.
+        idmap
+            .map_range(
+                &MemoryRegion::new(0, PAGE_SIZE),
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED,
+            )
+            .unwrap();
+        // Unmap the whole table's worth of address space.
+        idmap
+            .map_range(
+                &MemoryRegion::new(0, PAGE_SIZE * 512 * 512),
+                Attributes::empty(),
+            )
+            .unwrap();
+        // All entries in the top-level table should be 0.
+        idmap
+            .walk_range(
+                &MemoryRegion::new(0, idmap.size()),
+                &mut |region, descriptor, level| {
+                    assert_eq!(region.len(), PAGE_SIZE * 512 * 512);
+                    assert!(!descriptor.is_valid());
+                    assert_eq!(level, 1);
+                    Ok(())
+                },
+            )
+            .unwrap();
+
+        unsafe {
+            idmap.deactivate(ttbr);
+        }
+    }
+
     /// When an unmapped entry is split into a table, all entries should be zero.
     #[test]
     fn split_table_zero() {

@@ -419,6 +419,12 @@ impl<T: Translation> RootTable<T> {
         })
     }
 
+    /// Looks for subtables whose entries are all empty and replaces them with a single empty entry,
+    /// freeing the subtable.
+    pub fn compact_subtables(&mut self) {
+        self.table.compact_subtables(&mut self.translation);
+    }
+
     // Private version of `walk_range` using a closure that returns MapError on error
     pub(crate) fn visit_range<F>(&self, range: &MemoryRegion, f: &mut F) -> Result<(), MapError>
     where
@@ -864,6 +870,36 @@ impl<T: Translation> PageTableWithLevel<T> {
             }
         }
         Ok(())
+    }
+
+    /// Looks for subtables whose entries are all empty and replaces them with a single empty entry,
+    /// freeing the subtable.
+    ///
+    /// Returns true if this table is now entirely empty.
+    pub fn compact_subtables(&mut self, translation: &mut T) -> bool {
+        // SAFETY: We know that the pointer is aligned, initialised and dereferencable, and the
+        // PageTable won't be mutated while we are using it.
+        let table = unsafe { self.table.as_mut() };
+
+        let mut all_empty = true;
+        for entry in &mut table.entries {
+            if let Some(mut subtable) = entry.subtable(translation, self.level)
+                && subtable.compact_subtables(translation)
+            {
+                entry.set(PhysicalAddress(0), Attributes::empty());
+
+                // SAFETY: The subtable was created with the same translation by
+                // `PageTableWithLevel::new`, and is no longer referenced by this table. We don't
+                // reuse subtables so there must not be any other references to it.
+                unsafe {
+                    subtable.free(translation);
+                }
+            }
+            if entry.bits() != 0 {
+                all_empty = false;
+            }
+        }
+        all_empty
     }
 
     /// Returns the level of mapping used for the given virtual address:

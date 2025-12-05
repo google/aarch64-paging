@@ -293,6 +293,12 @@ impl IdMap {
         self.mapping.walk_range(range, f)
     }
 
+    /// Looks for subtables whose entries are all empty and replaces them with a single empty entry,
+    /// freeing the subtable.
+    pub fn compact_subtables(&mut self) {
+        self.mapping.compact_subtables();
+    }
+
     /// Returns the physical address of the root table.
     ///
     /// This may be used to activate the page table by setting the appropriate TTBRn_ELx if you wish
@@ -839,6 +845,85 @@ mod tests {
                 Attributes::empty(),
             )
             .unwrap();
+        // All entries in the top-level table should be 0.
+        idmap
+            .walk_range(
+                &MemoryRegion::new(0, idmap.size()),
+                &mut |region, descriptor, level| {
+                    assert_eq!(region.len(), PAGE_SIZE * 512 * 512);
+                    assert_eq!(descriptor.bits(), 0);
+                    assert_eq!(level, 1);
+                    Ok(())
+                },
+            )
+            .unwrap();
+
+        unsafe {
+            idmap.deactivate(ttbr);
+        }
+    }
+
+    #[test]
+    fn compact() {
+        let mut idmap = IdMap::new(1, 1, TranslationRegime::El1And0);
+        assert_eq!(idmap.size(), PAGE_SIZE * 512 * 512 * 512);
+        // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
+        // active for the sake of BBM rules.
+        let ttbr = unsafe { idmap.activate() };
+
+        // Map two pages, which will cause subtables to be split out.
+        idmap
+            .map_range(
+                &MemoryRegion::new(0, PAGE_SIZE * 2),
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED,
+            )
+            .unwrap();
+        // Unmap the pages again.
+        idmap
+            .map_range(&MemoryRegion::new(0, PAGE_SIZE * 2), Attributes::empty())
+            .unwrap();
+        // Compact to remove the subtables.
+        idmap.compact_subtables();
+        // All entries in the top-level table should be 0.
+        idmap
+            .walk_range(
+                &MemoryRegion::new(0, idmap.size()),
+                &mut |region, descriptor, level| {
+                    assert_eq!(region.len(), PAGE_SIZE * 512 * 512);
+                    assert_eq!(descriptor.bits(), 0);
+                    assert_eq!(level, 1);
+                    Ok(())
+                },
+            )
+            .unwrap();
+
+        unsafe {
+            idmap.deactivate(ttbr);
+        }
+    }
+
+    #[test]
+    fn compact_blocks() {
+        let mut idmap = IdMap::new(1, 1, TranslationRegime::El1And0);
+        assert_eq!(idmap.size(), PAGE_SIZE * 512 * 512 * 512);
+        // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
+        // active for the sake of BBM rules.
+        let ttbr = unsafe { idmap.activate() };
+
+        // Map two blocks at level 2, which will cause subtables to be split out.
+        const BLOCK_SIZE: usize = PAGE_SIZE * 512;
+        idmap
+            .map_range(
+                &MemoryRegion::new(0, BLOCK_SIZE * 2),
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED,
+            )
+            .unwrap();
+        // Unmap the blocks again.
+        idmap
+            .map_range(&MemoryRegion::new(0, BLOCK_SIZE * 2), Attributes::empty())
+            .unwrap();
+        // Compact to remove the subtables.
+        idmap.compact_subtables();
         // All entries in the top-level table should be 0.
         idmap
             .walk_range(

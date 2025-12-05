@@ -804,7 +804,48 @@ mod tests {
                 &MemoryRegion::new(0, idmap.size()),
                 &mut |region, descriptor, level| {
                     assert_eq!(region.len(), PAGE_SIZE * 512 * 512);
-                    assert!(!descriptor.is_valid());
+                    assert_eq!(descriptor.bits(), 0);
+                    assert_eq!(level, 1);
+                    Ok(())
+                },
+            )
+            .unwrap();
+
+        unsafe {
+            idmap.deactivate(ttbr);
+        }
+    }
+
+    #[test]
+    fn unmap_subtable_higher() {
+        let mut idmap = IdMap::new(1, 1, TranslationRegime::El1And0);
+        assert_eq!(idmap.size(), PAGE_SIZE * 512 * 512 * 512);
+        // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
+        // active for the sake of BBM rules.
+        let ttbr = unsafe { idmap.activate() };
+
+        const ROOT_GRANULARITY: usize = PAGE_SIZE * 512 * 512;
+        // Map one page in the the second entry of the root table.
+        idmap
+            .map_range(
+                &MemoryRegion::new(ROOT_GRANULARITY, ROOT_GRANULARITY + PAGE_SIZE),
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED,
+            )
+            .unwrap();
+        // Unmap the second entry of the root table.
+        idmap
+            .map_range(
+                &MemoryRegion::new(ROOT_GRANULARITY, ROOT_GRANULARITY * 2),
+                Attributes::empty(),
+            )
+            .unwrap();
+        // All entries in the top-level table should be 0.
+        idmap
+            .walk_range(
+                &MemoryRegion::new(0, idmap.size()),
+                &mut |region, descriptor, level| {
+                    assert_eq!(region.len(), PAGE_SIZE * 512 * 512);
+                    assert_eq!(descriptor.bits(), 0);
                     assert_eq!(level, 1);
                     Ok(())
                 },
@@ -832,6 +873,7 @@ mod tests {
                 &MemoryRegion::new(PAGE_SIZE, PAGE_SIZE * 20),
                 &mut |_, descriptor, _| {
                     assert!(!descriptor.is_valid());
+                    assert_eq!(descriptor.bits(), 0);
                     assert_eq!(descriptor.flags(), Attributes::empty());
                     assert_eq!(descriptor.output_address(), PhysicalAddress(0));
                     Ok(())

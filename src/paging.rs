@@ -662,6 +662,8 @@ impl<T: Translation> PageTableWithLevel<T> {
     /// address range starting at the given `pa`, recursing into any subtables as necessary. To map
     /// block and page entries, `Attributes::VALID` must be set in `flags`.
     ///
+    /// If `flags` doesn't contain `Attributes::VALID` then the `pa` is ignored.
+    ///
     /// Assumes that the entire range is within the range covered by this pagetable.
     ///
     /// Panics if the `translation` doesn't provide a corresponding physical address for some
@@ -682,8 +684,13 @@ impl<T: Translation> PageTableWithLevel<T> {
             let entry = self.get_entry_mut(chunk.0.start);
 
             if level == LEAF_LEVEL {
-                // Put down a page mapping.
-                entry.set(pa, flags | Attributes::TABLE_OR_PAGE);
+                if flags.contains(Attributes::VALID) {
+                    // Put down a page mapping.
+                    entry.set(pa, flags | Attributes::TABLE_OR_PAGE);
+                } else {
+                    // Put down an invalid entry.
+                    entry.set(PhysicalAddress(0), flags);
+                }
             } else if !entry.is_table_or_page()
                 && entry.flags() == flags
                 && entry.output_address().0 == pa.0 - chunk.0.start.0 % granularity
@@ -698,7 +705,11 @@ impl<T: Translation> PageTableWithLevel<T> {
                 // Rather than leak the entire subhierarchy, only put down
                 // a block mapping if the region is not already covered by
                 // a table mapping.
-                entry.set(pa, flags);
+                if flags.contains(Attributes::VALID) {
+                    entry.set(pa, flags);
+                } else {
+                    entry.set(PhysicalAddress(0), flags);
+                }
             } else if chunk.is_block(level)
                 && let Some(mut subtable) = entry.subtable(translation, level)
                 && !flags.contains(Attributes::VALID)
@@ -706,7 +717,7 @@ impl<T: Translation> PageTableWithLevel<T> {
                 // There is a subtable but we can remove it. To avoid break-before-make violations
                 // this is only allowed if the new mapping is not valid, i.e. we are unmapping the
                 // memory.
-                entry.set(pa, flags);
+                entry.set(PhysicalAddress(0), flags);
 
                 // SAFETY: The subtable was created with the same translation by
                 // `PageTableWithLevel::new`, and is no longer referenced by this table. We don't

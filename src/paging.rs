@@ -206,7 +206,7 @@ impl MemoryRegion {
         self.0.start.0 == self.0.end.0
     }
 
-    fn split(&self, level: usize) -> ChunkedIterator {
+    fn split(&self, level: usize) -> ChunkedIterator<'_> {
         ChunkedIterator {
             range: self,
             granularity: granularity_at_level(level),

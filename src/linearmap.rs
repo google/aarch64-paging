@@ -310,6 +310,10 @@ impl LinearMap {
 
     /// Looks for subtables whose entries are all empty and replaces them with a single empty entry,
     /// freeing the subtable.
+    ///
+    /// This requires walking the whole hierarchy of pagetables, so you may not want to call it
+    /// every time a region is unmapped. You could instead call it when the system is under memory
+    /// pressure.
     pub fn compact_subtables(&mut self) {
         self.mapping.compact_subtables();
     }

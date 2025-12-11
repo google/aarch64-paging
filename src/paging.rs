@@ -302,6 +302,9 @@ impl<T: Translation> RootTable<T> {
     /// the pages to the corresponding physical address range starting at `pa`. Block and page
     /// entries will be written to, but will only be mapped if `flags` contains `Attributes::VALID`.
     ///
+    /// To unmap a range, pass `flags` which don't contain the `Attributes::VALID` bit. In this case
+    /// the `pa` is ignored.
+    ///
     /// Returns an error if the virtual address range is out of the range covered by the pagetable,
     /// or if the `flags` argument has unsupported attributes set.
     pub fn map_range(
@@ -421,6 +424,10 @@ impl<T: Translation> RootTable<T> {
 
     /// Looks for subtables whose entries are all empty and replaces them with a single empty entry,
     /// freeing the subtable.
+    ///
+    /// This requires walking the whole hierarchy of pagetables, so you may not want to call it
+    /// every time a region is unmapped. You could instead call it when the system is under memory
+    /// pressure.
     pub fn compact_subtables(&mut self) {
         self.table.compact_subtables(&mut self.translation);
     }

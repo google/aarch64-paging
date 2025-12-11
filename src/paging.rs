@@ -685,6 +685,12 @@ impl<T: Translation> PageTableWithLevel<T> {
             if level == LEAF_LEVEL {
                 // Put down a page mapping.
                 entry.set(pa, flags | Attributes::TABLE_OR_PAGE);
+            } else if !entry.is_table_or_page()
+                && entry.flags() == flags
+                && entry.output_address().0 == pa.0 - chunk.0.start.0 % granularity
+            {
+                // There is no need to split up a block mapping if it already maps the desired `pa`
+                // with the desired `flags`. So do nothing in this case.
             } else if chunk.is_block(level)
                 && !entry.is_table_or_page()
                 && is_aligned(pa.0, granularity)

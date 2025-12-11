@@ -477,11 +477,21 @@ mod tests {
             Ok(())
         );
 
-        // Splitting a range is not permitted
+        // Remapping a region that intersects a block mapping is permitted if it does not result in
+        // a split.
         assert_eq!(
             idmap.map_range(
                 &MemoryRegion::new(BLOCK_SIZE, BLOCK_SIZE + PAGE_SIZE),
                 NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED,
+            ),
+            Ok(())
+        );
+
+        // Splitting a range is not permitted
+        assert_eq!(
+            idmap.map_range(
+                &MemoryRegion::new(BLOCK_SIZE, BLOCK_SIZE + PAGE_SIZE),
+                NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED | Attributes::READ_ONLY,
             ),
             Err(MapError::BreakBeforeMakeViolation(MemoryRegion::new(
                 BLOCK_SIZE,
@@ -489,7 +499,7 @@ mod tests {
             )))
         );
 
-        // Remapping a partially live range read-only is only permitted
+        // Partially remapping a live range read-only is only permitted
         // if it does not require splitting
         assert_eq!(
             idmap.map_range(
@@ -611,6 +621,41 @@ mod tests {
                 MAX_ADDRESS_FOR_ROOT_LEVEL_1 + PAGE_SIZE
             )))
         );
+    }
+
+    #[test]
+    #[should_panic]
+    fn split_live_block_mapping() -> () {
+        let mut idmap = IdMap::new(1, 1, TranslationRegime::El1And0);
+        idmap
+            .map_range(
+                &MemoryRegion::new(0, PAGE_SIZE << BITS_PER_LEVEL),
+                NORMAL_CACHEABLE
+                    | Attributes::NON_GLOBAL
+                    | Attributes::READ_ONLY
+                    | Attributes::VALID
+                    | Attributes::ACCESSED,
+            )
+            .unwrap();
+        // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
+        // active for the sake of BBM rules.
+        let ttbr = unsafe { idmap.activate() };
+        idmap
+            .map_range(
+                &MemoryRegion::new(0, PAGE_SIZE),
+                NORMAL_CACHEABLE
+                    | Attributes::NON_GLOBAL
+                    | Attributes::READ_ONLY
+                    | Attributes::VALID
+                    | Attributes::ACCESSED,
+            )
+            .unwrap();
+        let r = idmap.map_range(
+            &MemoryRegion::new(PAGE_SIZE, 2 * PAGE_SIZE),
+            NORMAL_CACHEABLE | Attributes::NON_GLOBAL | Attributes::VALID | Attributes::ACCESSED,
+        );
+        unsafe { idmap.deactivate(ttbr) };
+        r.unwrap();
     }
 
     fn make_map() -> (IdMap, usize) {

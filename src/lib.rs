@@ -309,11 +309,6 @@ impl<T: Translation> Mapping<T> {
                 if d.is_valid() {
                     let err = MapError::BreakBeforeMakeViolation(mr.clone());
 
-                    if !mr.is_block(level) {
-                        // Cannot split a live block mapping
-                        return Err(err);
-                    }
-
                     // Get the new flags and output address for this descriptor by applying
                     // the updater function to a copy
                     let (flags, oa) = {
@@ -322,8 +317,8 @@ impl<T: Translation> Mapping<T> {
                         (dd.flags(), dd.output_address())
                     };
 
-                    if !flags.contains(Attributes::VALID) {
-                        // Removing the valid bit is always ok
+                    if mr.is_block(level) && !flags.contains(Attributes::VALID) {
+                        // Removing the valid bit on an entire block mapping is always ok
                         return Ok(());
                     }
 
@@ -333,6 +328,15 @@ impl<T: Translation> Mapping<T> {
                     }
 
                     let desc_flags = d.flags();
+
+                    if !mr.is_block(level) && flags != desc_flags {
+                        // The region being mapped is smaller than a block mapping at the current
+                        // level. Given that the block mapping is live, replacing it with a table
+                        // mapping is not allowed by BBM. However, if the output address and flags
+                        // of the new smaller mapping match the ones of the block mapping, nothing
+                        // needs to be done and so it can be allowed.
+                        return Err(err);
+                    }
 
                     if (desc_flags ^ flags).intersects(
                         Attributes::ATTRIBUTE_INDEX_MASK | Attributes::SHAREABILITY_MASK,

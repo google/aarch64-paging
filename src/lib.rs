@@ -358,6 +358,9 @@ impl<T: Translation> Mapping<T> {
     /// Maps the given range of virtual addresses to the corresponding range of physical addresses
     /// starting at `pa`, with the given flags, taking the given constraints into account.
     ///
+    /// To unmap a range, pass `flags` which don't contain the `Attributes::VALID` bit. In this case
+    /// the `pa` is ignored.
+    ///
     /// This should generally only be called while the page table is not active. In particular, any
     /// change that may require break-before-make per the architecture must be made while the page
     /// table is inactive. Mapping a previously unmapped memory range may be done while the page
@@ -447,6 +450,16 @@ impl<T: Translation> Mapping<T> {
         F: FnMut(&MemoryRegion, &Descriptor, usize) -> Result<(), ()>,
     {
         self.root.walk_range(range, f)
+    }
+
+    /// Looks for subtables whose entries are all empty and replaces them with a single empty entry,
+    /// freeing the subtable.
+    ///
+    /// This requires walking the whole hierarchy of pagetables, so you may not want to call it
+    /// every time a region is unmapped. You could instead call it when the system is under memory
+    /// pressure.
+    pub fn compact_subtables(&mut self) {
+        self.root.compact_subtables();
     }
 
     /// Returns the physical address of the root table.

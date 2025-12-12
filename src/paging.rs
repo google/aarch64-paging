@@ -302,6 +302,9 @@ impl<T: Translation> RootTable<T> {
     /// the pages to the corresponding physical address range starting at `pa`. Block and page
     /// entries will be written to, but will only be mapped if `flags` contains `Attributes::VALID`.
     ///
+    /// To unmap a range, pass `flags` which don't contain the `Attributes::VALID` bit. In this case
+    /// the `pa` is ignored.
+    ///
     /// Returns an error if the virtual address range is out of the range covered by the pagetable,
     /// or if the `flags` argument has unsupported attributes set.
     pub fn map_range(
@@ -417,6 +420,16 @@ impl<T: Translation> RootTable<T> {
         self.visit_range(range, &mut |mr, desc, level| {
             f(mr, desc, level).map_err(|_| MapError::PteUpdateFault(desc.bits()))
         })
+    }
+
+    /// Looks for subtables whose entries are all empty and replaces them with a single empty entry,
+    /// freeing the subtable.
+    ///
+    /// This requires walking the whole hierarchy of pagetables, so you may not want to call it
+    /// every time a region is unmapped. You could instead call it when the system is under memory
+    /// pressure.
+    pub fn compact_subtables(&mut self) {
+        self.table.compact_subtables(&mut self.translation);
     }
 
     // Private version of `walk_range` using a closure that returns MapError on error
@@ -565,8 +578,7 @@ impl Attributes {
 }
 
 /// Smart pointer which owns a [`PageTable`] and knows what level it is at. This allows it to
-/// implement `Debug` and `Drop`, as walking the page table hierachy requires knowing the starting
-/// level.
+/// implement methods to walk the page table hierachy which require knowing the starting level.
 #[derive(Debug)]
 struct PageTableWithLevel<T: Translation> {
     table: NonNull<PageTable>,
@@ -663,6 +675,8 @@ impl<T: Translation> PageTableWithLevel<T> {
     /// address range starting at the given `pa`, recursing into any subtables as necessary. To map
     /// block and page entries, `Attributes::VALID` must be set in `flags`.
     ///
+    /// If `flags` doesn't contain `Attributes::VALID` then the `pa` is ignored.
+    ///
     /// Assumes that the entire range is within the range covered by this pagetable.
     ///
     /// Panics if the `translation` doesn't provide a corresponding physical address for some
@@ -683,8 +697,13 @@ impl<T: Translation> PageTableWithLevel<T> {
             let entry = self.get_entry_mut(chunk.0.start);
 
             if level == LEAF_LEVEL {
-                // Put down a page mapping.
-                entry.set(pa, flags | Attributes::TABLE_OR_PAGE);
+                if flags.contains(Attributes::VALID) {
+                    // Put down a page mapping.
+                    entry.set(pa, flags | Attributes::TABLE_OR_PAGE);
+                } else {
+                    // Put down an invalid entry.
+                    entry.set(PhysicalAddress(0), flags);
+                }
             } else if !entry.is_table_or_page()
                 && entry.flags() == flags
                 && entry.output_address().0 == pa.0 - chunk.0.start.0 % granularity
@@ -699,7 +718,26 @@ impl<T: Translation> PageTableWithLevel<T> {
                 // Rather than leak the entire subhierarchy, only put down
                 // a block mapping if the region is not already covered by
                 // a table mapping.
-                entry.set(pa, flags);
+                if flags.contains(Attributes::VALID) {
+                    entry.set(pa, flags);
+                } else {
+                    entry.set(PhysicalAddress(0), flags);
+                }
+            } else if chunk.is_block(level)
+                && let Some(mut subtable) = entry.subtable(translation, level)
+                && !flags.contains(Attributes::VALID)
+            {
+                // There is a subtable but we can remove it. To avoid break-before-make violations
+                // this is only allowed if the new mapping is not valid, i.e. we are unmapping the
+                // memory.
+                entry.set(PhysicalAddress(0), flags);
+
+                // SAFETY: The subtable was created with the same translation by
+                // `PageTableWithLevel::new`, and is no longer referenced by this table. We don't
+                // reuse subtables so there must not be any other references to it.
+                unsafe {
+                    subtable.free(translation);
+                }
             } else {
                 let mut subtable = entry
                     .subtable(translation, level)
@@ -839,6 +877,36 @@ impl<T: Translation> PageTableWithLevel<T> {
             }
         }
         Ok(())
+    }
+
+    /// Looks for subtables whose entries are all empty and replaces them with a single empty entry,
+    /// freeing the subtable.
+    ///
+    /// Returns true if this table is now entirely empty.
+    pub fn compact_subtables(&mut self, translation: &mut T) -> bool {
+        // SAFETY: We know that the pointer is aligned, initialised and dereferencable, and the
+        // PageTable won't be mutated while we are using it.
+        let table = unsafe { self.table.as_mut() };
+
+        let mut all_empty = true;
+        for entry in &mut table.entries {
+            if let Some(mut subtable) = entry.subtable(translation, self.level)
+                && subtable.compact_subtables(translation)
+            {
+                entry.set(PhysicalAddress(0), Attributes::empty());
+
+                // SAFETY: The subtable was created with the same translation by
+                // `PageTableWithLevel::new`, and is no longer referenced by this table. We don't
+                // reuse subtables so there must not be any other references to it.
+                unsafe {
+                    subtable.free(translation);
+                }
+            }
+            if entry.bits() != 0 {
+                all_empty = false;
+            }
+        }
+        all_empty
     }
 
     /// Returns the level of mapping used for the given virtual address:

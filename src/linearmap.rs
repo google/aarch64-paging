@@ -712,4 +712,53 @@ mod tests {
         )
         .unwrap();
     }
+
+    #[test]
+    #[should_panic]
+    fn split_live_block_mapping() -> () {
+        const BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
+        let mut lmap = LinearMap::new(
+            1,
+            1,
+            BLOCK_SIZE as isize,
+            TranslationRegime::El1And0,
+            VaRange::Lower,
+        );
+        lmap.map_range(
+            &MemoryRegion::new(0, BLOCK_SIZE),
+            NORMAL_CACHEABLE
+                | Attributes::NON_GLOBAL
+                | Attributes::READ_ONLY
+                | Attributes::VALID
+                | Attributes::ACCESSED,
+        )
+        .unwrap();
+        // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
+        // active for the sake of BBM rules.
+        let ttbr = unsafe { lmap.activate() };
+        lmap.map_range(
+            &MemoryRegion::new(0, PAGE_SIZE),
+            NORMAL_CACHEABLE
+                | Attributes::NON_GLOBAL
+                | Attributes::READ_ONLY
+                | Attributes::VALID
+                | Attributes::ACCESSED,
+        )
+        .unwrap();
+        lmap.map_range(
+            &MemoryRegion::new(PAGE_SIZE, 2 * PAGE_SIZE),
+            NORMAL_CACHEABLE
+                | Attributes::NON_GLOBAL
+                | Attributes::READ_ONLY
+                | Attributes::VALID
+                | Attributes::ACCESSED,
+        )
+        .unwrap();
+        let r = lmap.map_range(
+            &MemoryRegion::new(PAGE_SIZE, 2 * PAGE_SIZE),
+            NORMAL_CACHEABLE | Attributes::NON_GLOBAL | Attributes::VALID | Attributes::ACCESSED,
+        );
+        unsafe { lmap.deactivate(ttbr) };
+        r.unwrap();
+    }
 }

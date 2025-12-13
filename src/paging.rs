@@ -6,19 +6,25 @@
 //! addresses are mapped.
 
 use crate::MapError;
+use crate::descriptor::{
+    Attributes, Descriptor, PhysicalAddress, UpdatableDescriptor, VirtualAddress,
+};
+
 #[cfg(feature = "alloc")]
 use alloc::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use bitflags::bitflags;
+#[cfg(all(not(test), target_arch = "aarch64"))]
+use core::arch::asm;
 use core::fmt::{self, Debug, Display, Formatter};
 use core::marker::PhantomData;
-use core::ops::{Add, Range, Sub};
+use core::ops::Range;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::AtomicUsize;
 
 const PAGE_SHIFT: usize = 12;
 
 /// The pagetable level at which all entries are page mappings.
-const LEAF_LEVEL: usize = 3;
+pub const LEAF_LEVEL: usize = 3;
 
 /// The page size in bytes assumed by this library, 4 KiB.
 pub const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
@@ -60,94 +66,41 @@ impl TranslationRegime {
     pub(crate) fn supports_asid(self) -> bool {
         matches!(self, Self::El2And0 | Self::El1And0)
     }
-}
 
-/// An aarch64 virtual address, the input type of a stage 1 page table.
-#[derive(Copy, Clone, Default, Eq, Ord, PartialEq, PartialOrd)]
-#[repr(transparent)]
-pub struct VirtualAddress(pub usize);
+    /// Invalidates the memory range starting at `va`. The size of the range is unspecified, it is
+    /// up to the caller to apply this function as needed to invalidate a range of memory
+    pub(crate) fn invalidate_va(self, va: VirtualAddress) {
+        #[allow(unused)]
+        let va = va.0 >> 12;
 
-impl Display for VirtualAddress {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        write!(f, "{:#018x}", self.0)
-    }
-}
-
-impl Debug for VirtualAddress {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        write!(f, "VirtualAddress({})", self)
-    }
-}
-
-impl Sub for VirtualAddress {
-    type Output = usize;
-
-    fn sub(self, other: Self) -> Self::Output {
-        self.0 - other.0
-    }
-}
-
-impl Add<usize> for VirtualAddress {
-    type Output = Self;
-
-    fn add(self, other: usize) -> Self {
-        Self(self.0 + other)
-    }
-}
-
-impl Sub<usize> for VirtualAddress {
-    type Output = Self;
-
-    fn sub(self, other: usize) -> Self {
-        Self(self.0 - other)
+        // SAFETY: TLBI maintenance has no side effects that are observeable by the
+        // program
+        #[cfg(all(not(test), target_arch = "aarch64"))]
+        unsafe {
+            match self {
+                TranslationRegime::El3 => asm!(
+                    "tlbi vae3is, {va}",
+                    va = in(reg) va,
+                    options(preserves_flags, nostack),
+                ),
+                TranslationRegime::El2 | TranslationRegime::El2And0 => asm!(
+                    "tlbi vae2is, {va}",
+                    va = in(reg) va,
+                    options(preserves_flags, nostack),
+                ),
+                TranslationRegime::El1And0 => asm!(
+                    "tlbi vaae1is, {va}",
+                    va = in(reg) va,
+                    options(preserves_flags, nostack),
+                ),
+            };
+        };
     }
 }
 
 /// A range of virtual addresses which may be mapped in a page table.
 #[derive(Clone, Eq, PartialEq)]
 pub struct MemoryRegion(Range<VirtualAddress>);
-
-/// An aarch64 physical address or intermediate physical address, the output type of a stage 1 page
-/// table.
-#[derive(Copy, Clone, Default, Eq, Ord, PartialEq, PartialOrd)]
-#[repr(transparent)]
-pub struct PhysicalAddress(pub usize);
-
-impl Display for PhysicalAddress {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        write!(f, "{:#018x}", self.0)
-    }
-}
-
-impl Debug for PhysicalAddress {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        write!(f, "PhysicalAddress({})", self)
-    }
-}
-
-impl Sub for PhysicalAddress {
-    type Output = usize;
-
-    fn sub(self, other: Self) -> Self::Output {
-        self.0 - other.0
-    }
-}
-
-impl Add<usize> for PhysicalAddress {
-    type Output = Self;
-
-    fn add(self, other: usize) -> Self {
-        Self(self.0 + other)
-    }
-}
-
-impl Sub<usize> for PhysicalAddress {
-    type Output = Self;
-
-    fn sub(self, other: usize) -> Self {
-        Self(self.0 - other)
-    }
-}
 
 /// Returns the size in bytes of the address space covered by a single entry in the page table at
 /// the given level.
@@ -376,15 +329,23 @@ impl<T: Translation> RootTable<T> {
     ///
     /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
     /// largest virtual address covered by the page table given its root level.
-    ///
-    /// Returns [`MapError::BreakBeforeMakeViolation'] if the range intersects with live mappings,
-    /// and modifying those would violate architectural break-before-make (BBM) requirements.
-    pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
+    pub(crate) fn modify_range<F>(
+        &mut self,
+        range: &MemoryRegion,
+        f: &F,
+        live: bool,
+    ) -> Result<bool, MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut UpdatableDescriptor) -> Result<(), ()> + ?Sized,
     {
         self.verify_region(range)?;
-        self.table.modify_range(&mut self.translation, range, f)
+        self.table.modify_range(
+            &mut self.translation,
+            self.translation_regime,
+            range,
+            f,
+            live,
+        )
     }
 
     /// Applies the provided callback function to the page table descriptors covering a given
@@ -432,7 +393,7 @@ impl<T: Translation> RootTable<T> {
     /// - `None` if it is unmapped
     /// - `Some(LEAF_LEVEL)` if it is mapped as a single page
     /// - `Some(level)` if it is mapped as a block at `level`
-    #[cfg(test)]
+    #[cfg(all(test, feature = "alloc"))]
     pub(crate) fn mapping_level(&self, va: VirtualAddress) -> Option<usize> {
         self.table.mapping_level(&self.translation, va)
     }
@@ -509,66 +470,11 @@ impl Iterator for ChunkedIterator<'_> {
     }
 }
 
-bitflags! {
-    /// Attribute bits for a mapping in a page table.
-    #[derive(Copy, Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
-    pub struct Attributes: usize {
-        const VALID         = 1 << 0;
-        const TABLE_OR_PAGE = 1 << 1;
-
-        const ATTRIBUTE_INDEX_0 = 0 << 2;
-        const ATTRIBUTE_INDEX_1 = 1 << 2;
-        const ATTRIBUTE_INDEX_2 = 2 << 2;
-        const ATTRIBUTE_INDEX_3 = 3 << 2;
-        const ATTRIBUTE_INDEX_4 = 4 << 2;
-        const ATTRIBUTE_INDEX_5 = 5 << 2;
-        const ATTRIBUTE_INDEX_6 = 6 << 2;
-        const ATTRIBUTE_INDEX_7 = 7 << 2;
-
-        const OUTER_SHAREABLE = 2 << 8;
-        const INNER_SHAREABLE = 3 << 8;
-
-        const NS            = 1 << 5;
-        const USER          = 1 << 6;
-        const READ_ONLY     = 1 << 7;
-        const ACCESSED      = 1 << 10;
-        const NON_GLOBAL    = 1 << 11;
-        /// Guarded Page - indirect forward edge jumps expect an appropriate BTI landing pad.
-        const GP            = 1 << 50;
-        const DBM           = 1 << 51;
-        /// Privileged Execute-never, if two privilege levels are supported.
-        const PXN           = 1 << 53;
-        /// Unprivileged Execute-never, or just Execute-never if only one privilege level is
-        /// supported.
-        const UXN           = 1 << 54;
-
-        // Software flags in block and page descriptor entries.
-        const SWFLAG_0 = 1 << 55;
-        const SWFLAG_1 = 1 << 56;
-        const SWFLAG_2 = 1 << 57;
-        const SWFLAG_3 = 1 << 58;
-
-        const PXN_TABLE = 1 << 59;
-        const XN_TABLE = 1 << 60;
-        const AP_TABLE_NO_EL0 = 1 << 61;
-        const AP_TABLE_NO_WRITE = 1 << 62;
-        const NS_TABLE = 1 << 63;
-    }
-}
-
-impl Attributes {
-    /// Mask for the bits determining the shareability of the mapping.
-    pub const SHAREABILITY_MASK: Self = Self::INNER_SHAREABLE;
-
-    /// Mask for the bits determining the attribute index of the mapping.
-    pub const ATTRIBUTE_INDEX_MASK: Self = Self::ATTRIBUTE_INDEX_7;
-}
-
 /// Smart pointer which owns a [`PageTable`] and knows what level it is at. This allows it to
 /// implement `Debug` and `Drop`, as walking the page table hierachy requires knowing the starting
 /// level.
 #[derive(Debug)]
-struct PageTableWithLevel<T: Translation> {
+pub(crate) struct PageTableWithLevel<T: Translation> {
     table: NonNull<PageTable>,
     level: usize,
     _translation: PhantomData<T>,
@@ -595,7 +501,7 @@ impl<T: Translation> PageTableWithLevel<T> {
         )
     }
 
-    fn from_pointer(table: NonNull<PageTable>, level: usize) -> Self {
+    pub(crate) fn from_pointer(table: NonNull<PageTable>, level: usize) -> Self {
         Self {
             table,
             level,
@@ -797,12 +703,15 @@ impl<T: Translation> PageTableWithLevel<T> {
     fn modify_range<F>(
         &mut self,
         translation: &mut T,
+        translation_regime: TranslationRegime,
         range: &MemoryRegion,
         f: &F,
-    ) -> Result<(), MapError>
+        live: bool,
+    ) -> Result<bool, MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut UpdatableDescriptor) -> Result<(), ()> + ?Sized,
     {
+        let mut modified = false;
         let level = self.level;
         for chunk in range.split(level) {
             let entry = self.get_entry_mut(chunk.0.start);
@@ -815,12 +724,21 @@ impl<T: Translation> PageTableWithLevel<T> {
                     None
                 }
             }) {
-                subtable.modify_range(translation, &chunk, f)?;
+                modified |=
+                    subtable.modify_range(translation, translation_regime, &chunk, f, live)?;
             } else {
-                f(&chunk, entry, level).map_err(|_| MapError::PteUpdateFault(entry.bits()))?;
+                let bits = entry.bits();
+                let mut desc = UpdatableDescriptor::new(entry, level, live);
+                f(&chunk, &mut desc).map_err(|_| MapError::PteUpdateFault(bits))?;
+
+                if live && desc.updated() {
+                    // Live descriptor was updated so TLB maintenance is needed
+                    translation_regime.invalidate_va(chunk.start());
+                    modified = true;
+                }
             }
         }
-        Ok(())
+        Ok(modified)
     }
 
     /// Walks a range of page table entries and passes each one to a caller provided function.
@@ -845,7 +763,7 @@ impl<T: Translation> PageTableWithLevel<T> {
     /// - `None` if it is unmapped
     /// - `Some(LEAF_LEVEL)` if it is mapped as a single page
     /// - `Some(level)` if it is mapped as a block at `level`
-    #[cfg(test)]
+    #[cfg(all(test, feature = "alloc"))]
     fn mapping_level(&self, translation: &T, va: VirtualAddress) -> Option<usize> {
         let entry = self.get_entry(va);
         if let Some(subtable) = entry.subtable(translation, self.level) {
@@ -904,104 +822,6 @@ impl Default for PageTable {
     }
 }
 
-pub(crate) type DescriptorBits = usize;
-
-/// An entry in a page table.
-///
-/// A descriptor may be:
-///   - Invalid, i.e. the virtual address range is unmapped
-///   - A page mapping, if it is in the lowest level page table.
-///   - A block mapping, if it is not in the lowest level page table.
-///   - A pointer to a lower level pagetable, if it is not in the lowest level page table.
-#[repr(C)]
-pub struct Descriptor(AtomicUsize);
-
-impl Descriptor {
-    /// An empty (i.e. 0) descriptor.
-    pub const EMPTY: Self = Self(AtomicUsize::new(0));
-
-    const PHYSICAL_ADDRESS_BITMASK: usize = !(PAGE_SIZE - 1) & !(0xffff << 48);
-
-    /// Returns the contents of a descriptor which may be potentially live
-    /// Use acquire semantics so that the load is not reordered with subsequent loads
-    pub(crate) fn bits(&self) -> DescriptorBits {
-        self.0.load(Ordering::Acquire)
-    }
-
-    /// Returns the physical address that this descriptor refers to if it is valid.
-    ///
-    /// Depending on the flags this could be the address of a subtable, a mapping, or (if it is not
-    /// a valid mapping) entirely arbitrary.
-    pub fn output_address(&self) -> PhysicalAddress {
-        PhysicalAddress(self.bits() & Self::PHYSICAL_ADDRESS_BITMASK)
-    }
-
-    /// Returns the flags of this page table entry, or `None` if its state does not
-    /// contain a valid set of flags.
-    pub fn flags(&self) -> Attributes {
-        Attributes::from_bits_retain(self.bits() & !Self::PHYSICAL_ADDRESS_BITMASK)
-    }
-
-    /// Modifies the page table entry by setting or clearing its flags.
-    /// Panics when attempting to convert a table descriptor into a block/page descriptor or vice
-    /// versa - this is not supported via this API.
-    pub fn modify_flags(&mut self, set: Attributes, clear: Attributes) {
-        let oldval = self.bits();
-        let flags = (oldval | set.bits()) & !clear.bits();
-
-        if (oldval ^ flags) & Attributes::TABLE_OR_PAGE.bits() != 0 {
-            panic!("Cannot convert between table and block/page descriptors\n");
-        }
-
-        self.0.store(flags, Ordering::Release);
-    }
-
-    /// Returns `true` if [`Attributes::VALID`] is set on this entry, e.g. if the entry is mapped.
-    pub fn is_valid(&self) -> bool {
-        (self.bits() & Attributes::VALID.bits()) != 0
-    }
-
-    /// Returns `true` if this is a valid entry pointing to a next level translation table or a page.
-    pub fn is_table_or_page(&self) -> bool {
-        self.flags()
-            .contains(Attributes::TABLE_OR_PAGE | Attributes::VALID)
-    }
-
-    pub(crate) fn set(&mut self, pa: PhysicalAddress, flags: Attributes) {
-        self.0.store(
-            (pa.0 & Self::PHYSICAL_ADDRESS_BITMASK) | flags.bits(),
-            Ordering::Release,
-        );
-    }
-
-    fn subtable<T: Translation>(
-        &self,
-        translation: &T,
-        level: usize,
-    ) -> Option<PageTableWithLevel<T>> {
-        if level < LEAF_LEVEL && self.is_table_or_page() {
-            let output_address = self.output_address();
-            let table = translation.physical_to_virtual(output_address);
-            return Some(PageTableWithLevel::from_pointer(table, level + 1));
-        }
-        None
-    }
-
-    pub(crate) fn clone(&self) -> Self {
-        Descriptor(AtomicUsize::new(self.bits()))
-    }
-}
-
-impl Debug for Descriptor {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        write!(f, "{:#016x}", self.bits())?;
-        if self.is_valid() {
-            write!(f, " ({}, {:?})", self.output_address(), self.flags())?;
-        }
-        Ok(())
-    }
-}
-
 /// Allocates appropriately aligned heap space for a `T` and zeroes it.
 ///
 /// # Safety
@@ -1056,6 +876,7 @@ mod tests {
     use crate::target::TargetAllocator;
     #[cfg(feature = "alloc")]
     use alloc::{format, string::ToString, vec, vec::Vec};
+    use core::sync::atomic::AtomicUsize;
 
     #[cfg(feature = "alloc")]
     #[test]
@@ -1149,10 +970,12 @@ mod tests {
             PhysicalAddress(0x12340000),
             Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1,
         );
-        desc.modify_flags(
-            Attributes::DBM | Attributes::SWFLAG_3,
-            Attributes::VALID | Attributes::SWFLAG_1,
-        );
+        UpdatableDescriptor::new(&mut desc, 3, true)
+            .modify_flags(
+                Attributes::DBM | Attributes::SWFLAG_3,
+                Attributes::VALID | Attributes::SWFLAG_1,
+            )
+            .unwrap();
         assert!(!desc.is_valid());
         assert_eq!(
             desc.flags(),
@@ -1169,7 +992,9 @@ mod tests {
             PhysicalAddress(0x12340000),
             Attributes::TABLE_OR_PAGE | Attributes::USER | Attributes::SWFLAG_1,
         );
-        desc.modify_flags(Attributes::VALID, Attributes::TABLE_OR_PAGE);
+        UpdatableDescriptor::new(&mut desc, 3, false)
+            .modify_flags(Attributes::VALID, Attributes::TABLE_OR_PAGE)
+            .unwrap();
     }
 
     #[cfg(feature = "alloc")]

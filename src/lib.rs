@@ -19,7 +19,8 @@
 //! # #[cfg(feature = "alloc")] {
 //! use aarch64_paging::{
 //!     idmap::IdMap,
-//!     paging::{Attributes, MemoryRegion, TranslationRegime},
+//!     descriptor::Attributes,
+//!     paging::{MemoryRegion, TranslationRegime},
 //! };
 //!
 //! const ASID: usize = 1;
@@ -45,6 +46,7 @@
 #![deny(clippy::undocumented_unsafe_blocks)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+pub mod descriptor;
 #[cfg(feature = "alloc")]
 pub mod idmap;
 #[cfg(feature = "alloc")]
@@ -60,10 +62,10 @@ extern crate alloc;
 #[cfg(target_arch = "aarch64")]
 use core::arch::asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use paging::{
-    Attributes, Constraints, Descriptor, DescriptorBits, MemoryRegion, PhysicalAddress, RootTable,
-    Translation, TranslationRegime, VaRange, VirtualAddress,
+use descriptor::{
+    Attributes, Descriptor, DescriptorBits, PhysicalAddress, UpdatableDescriptor, VirtualAddress,
 };
+use paging::{Constraints, MemoryRegion, RootTable, Translation, TranslationRegime, VaRange};
 use thiserror::Error;
 
 /// An error attempting to map some range in the page table.
@@ -102,6 +104,18 @@ pub struct Mapping<T: Translation> {
     root: RootTable<T>,
     asid: usize,
     active_count: AtomicUsize,
+}
+
+/// Issues an inner-shareable data synchronization barrier (DSB) followed by an instruction
+/// synchronization barrier (ISB) so that execution does not proceed until all TLB maintenance is
+/// completed. 'ish' is strictly stronger than 'ishst', making this function suitable to wait on
+/// the completion of stores to memory as well.
+fn dsb() {
+    // SAFETY: Barriers have no side effects that are observeable by the program
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        asm!("dsb ish", "isb", options(preserves_flags, nostack));
+    }
 }
 
 impl<T: Translation> Mapping<T> {
@@ -153,7 +167,7 @@ impl<T: Translation> Mapping<T> {
     /// using, or introduce aliases which break Rust's aliasing rules. The page table must not be
     /// dropped while it is still active on any CPU.
     pub unsafe fn activate(&self) -> usize {
-        #[allow(unused_mut)]
+        #[allow(unused_mut, unused_assignments)]
         let mut previous_ttbr = usize::MAX;
 
         // Mark the page tables as active before actually activating them, to avoid a race
@@ -167,7 +181,7 @@ impl<T: Translation> Mapping<T> {
         unsafe {
             // Ensure that all page table updates, as well as the increment of the active counter,
             // are visible to all observers before proceeding
-            asm!("dsb ishst", "isb", options(preserves_flags),);
+            dsb();
             match (self.root.translation_regime(), self.root.va_range()) {
                 (TranslationRegime::El1And0, VaRange::Lower) => asm!(
                     "mrs   {previous_ttbr}, ttbr0_el1",
@@ -301,58 +315,47 @@ impl<T: Translation> Mapping<T> {
     /// without violating architectural break-before-make (BBM) requirements.
     fn check_range_bbm<F>(&self, range: &MemoryRegion, updater: &F) -> Result<(), MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut UpdatableDescriptor) -> Result<(), ()> + ?Sized,
     {
         self.root.visit_range(
             range,
             &mut |mr: &MemoryRegion, d: &Descriptor, level: usize| {
-                if d.is_valid() {
-                    let err = MapError::BreakBeforeMakeViolation(mr.clone());
+                let err = MapError::BreakBeforeMakeViolation(mr.clone());
+                let mut desc = UpdatableDescriptor::clone_from(d, level);
 
-                    // Get the new flags and output address for this descriptor by applying
-                    // the updater function to a copy
-                    let (flags, oa) = {
-                        let mut dd = d.clone();
-                        updater(mr, &mut dd, level).or(Err(err.clone()))?;
-                        (dd.flags(), dd.output_address())
-                    };
-
-                    if mr.is_block(level) && !flags.contains(Attributes::VALID) {
-                        // Removing the valid bit on an entire block mapping is always ok
-                        return Ok(());
-                    }
-
-                    if oa != d.output_address() {
-                        // Cannot change output address on a live mapping
-                        return Err(err);
-                    }
-
-                    let desc_flags = d.flags();
-
-                    if !mr.is_block(level) && flags != desc_flags {
-                        // The region being mapped is smaller than a block mapping at the current
-                        // level. Given that the block mapping is live, replacing it with a table
-                        // mapping is not allowed by BBM. However, if the output address and flags
-                        // of the new smaller mapping match the ones of the block mapping, nothing
-                        // needs to be done and so it can be allowed.
-                        return Err(err);
-                    }
-
-                    if (desc_flags ^ flags).intersects(
-                        Attributes::ATTRIBUTE_INDEX_MASK | Attributes::SHAREABILITY_MASK,
-                    ) {
-                        // Cannot change memory type
-                        return Err(err);
-                    }
-
-                    if (desc_flags - flags).contains(Attributes::NON_GLOBAL) {
-                        // Cannot convert from non-global to global
-                        return Err(err);
-                    }
-                }
-                Ok(())
+                updater(mr, &mut desc)
+                    .and_then(|_| {
+                        if d.is_valid() && !mr.is_block(level) && d.flags() != desc.flags() {
+                            // Cannot split a live block mapping
+                            Err(())
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .or(Err(err))
             },
         )
+    }
+
+    /// Invalidates `range` in the TLBs, so that permission changes are guaranteed to have taken
+    /// effect by the time the function returns
+    fn invalidate_range(&self, range: &MemoryRegion) {
+        if self.active() {
+            // If the mapping is active, no modifications are permitted that add or remove paging
+            // levels. This means it is not necessary to iterate over the entire range at page
+            // granularity, as invalidating a 2MiB block mapping or larger only requires a single
+            // TLBI call.
+            // If the mapping is not active, it was either never activated, or has previously been
+            // deactivated, at which point TLB invalidation would have occurred, and so no TLB
+            // maintenance is needed.
+            self.root
+                .visit_range(range, &mut |mr: &MemoryRegion, _: &Descriptor, _: usize| {
+                    Ok(self.root.translation_regime().invalidate_va(mr.start()))
+                })
+                .unwrap();
+
+            dsb(); // wait for the TLBI to complete
+        }
     }
 
     /// Maps the given range of virtual addresses to the corresponding range of physical addresses
@@ -383,15 +386,20 @@ impl<T: Translation> Mapping<T> {
         constraints: Constraints,
     ) -> Result<(), MapError> {
         if self.active() {
-            let c = |mr: &MemoryRegion, d: &mut Descriptor, lvl: usize| {
-                let mask = !(paging::granularity_at_level(lvl) - 1);
+            let c = |mr: &MemoryRegion, d: &mut UpdatableDescriptor| {
+                let mask = !(paging::granularity_at_level(d.level()) - 1);
                 let pa = (mr.start() - range.start() + pa.0) & mask;
-                d.set(PhysicalAddress(pa), flags);
-                Ok(())
+                let flags = if d.level() == 3 {
+                    flags | Attributes::TABLE_OR_PAGE
+                } else {
+                    flags
+                };
+                d.set(PhysicalAddress(pa), flags)
             };
             self.check_range_bbm(range, &c)?;
         }
         self.root.map_range(range, pa, flags, constraints)?;
+        self.invalidate_range(range);
         Ok(())
     }
 
@@ -420,12 +428,20 @@ impl<T: Translation> Mapping<T> {
     /// and modifying those would violate architectural break-before-make (BBM) requirements.
     pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
     where
-        F: Fn(&MemoryRegion, &mut Descriptor, usize) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut UpdatableDescriptor) -> Result<(), ()> + ?Sized,
     {
         if self.active() {
             self.check_range_bbm(range, f)?;
         }
-        self.root.modify_range(range, f)?;
+
+        // modify_range() might fail halfway, in which case its Err() result will be returned
+        // directly, and no barrier will be issued. The purpose of the barrier is to ensure that
+        // the new state is visible to all observers before proceeding, but in case of a failure,
+        // what that new state entails is uncertain anyway, and so there is no point in
+        // synchronizing it.
+        if self.root.modify_range(range, f, self.active())? && self.active() {
+            dsb(); // wait for the TLBI to complete
+        }
         Ok(())
     }
 

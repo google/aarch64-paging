@@ -19,20 +19,20 @@
 //! # #[cfg(feature = "alloc")] {
 //! use aarch64_paging::{
 //!     idmap::IdMap,
-//!     descriptor::Stage1Attributes,
-//!     paging::{MemoryRegion, TranslationRegime},
+//!     descriptor::El1Attributes,
+//!     paging::{MemoryRegion, El1And0},
 //! };
 //!
 //! const ASID: usize = 1;
 //! const ROOT_LEVEL: usize = 1;
-//! const NORMAL_CACHEABLE: Stage1Attributes = Stage1Attributes::ATTRIBUTE_INDEX_1.union(Stage1Attributes::INNER_SHAREABLE);
+//! const NORMAL_CACHEABLE: El1Attributes = El1Attributes::ATTRIBUTE_INDEX_1.union(El1Attributes::INNER_SHAREABLE);
 //!
 //! // Create a new EL1 page table with identity mapping.
-//! let mut idmap = IdMap::new(ASID, ROOT_LEVEL, TranslationRegime::El1And0);
+//! let mut idmap = IdMap::new(ASID, ROOT_LEVEL, El1And0);
 //! // Map a 2 MiB region of memory as read-write.
 //! idmap.map_range(
 //!     &MemoryRegion::new(0x80200000, 0x80400000),
-//!     NORMAL_CACHEABLE | Stage1Attributes::NON_GLOBAL | Stage1Attributes::VALID | Stage1Attributes::ACCESSED,
+//!     NORMAL_CACHEABLE | El1Attributes::NON_GLOBAL | El1Attributes::VALID | El1Attributes::ACCESSED,
 //! ).unwrap();
 //! // SAFETY: Everything the program uses is within the 2 MiB region mapped above.
 //! unsafe {
@@ -63,8 +63,8 @@ extern crate alloc;
 use core::arch::asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use descriptor::{
-    Descriptor, DescriptorBits, PagingAttributes, PhysicalAddress, Stage1Attributes,
-    UpdatableDescriptor, VirtualAddress,
+    Descriptor, DescriptorBits, PagingAttributes, PhysicalAddress, UpdatableDescriptor,
+    VirtualAddress,
 };
 use paging::{Constraints, MemoryRegion, RootTable, Translation, TranslationRegime, VaRange};
 use thiserror::Error;
@@ -101,9 +101,9 @@ pub enum MapError {
 /// switch back to a previous static page table, and then `activate` again after making the desired
 /// changes.
 #[derive(Debug)]
-pub struct Mapping<T: Translation<A>, A: PagingAttributes = Stage1Attributes> {
-    root: RootTable<T, A>,
-    asid: usize,
+pub struct Mapping<T: Translation<R::Attributes>, R: TranslationRegime> {
+    root: RootTable<R, T>,
+    asid: R::Asid,
     active_count: AtomicUsize,
 }
 
@@ -118,20 +118,17 @@ fn wait_for_tlb_maintenance() {
     }
 }
 
-impl<T: Translation<A>, A: PagingAttributes> Mapping<T, A> {
+impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
     /// Creates a new page table with the given ASID, root level and translation mapping.
     pub fn new(
         translation: T,
-        asid: usize,
+        asid: R::Asid,
         rootlevel: usize,
-        translation_regime: TranslationRegime,
+        regime: R,
         va_range: VaRange,
     ) -> Self {
-        if !translation_regime.supports_asid() && asid != 0 {
-            panic!("{:?} doesn't support ASID, must be 0.", translation_regime);
-        }
         Self {
-            root: RootTable::new(translation, rootlevel, translation_regime, va_range),
+            root: RootTable::new(translation, rootlevel, regime, va_range),
             asid,
             active_count: AtomicUsize::new(0),
         }
@@ -182,67 +179,7 @@ impl<T: Translation<A>, A: PagingAttributes> Mapping<T, A> {
             // Ensure that all page table updates, as well as the increment of the active counter,
             // are visible to all observers before proceeding
             asm!("dmb ishst", "isb", options(preserves_flags),);
-            match (self.root.translation_regime(), self.root.va_range()) {
-                (TranslationRegime::El1And0, VaRange::Lower) => asm!(
-                    "mrs   {previous_ttbr}, ttbr0_el1",
-                    "msr   ttbr0_el1, {ttbrval}",
-                    "isb",
-                    ttbrval = in(reg) self.root_address().0 | (self.asid << 48),
-                    previous_ttbr = out(reg) previous_ttbr,
-                    options(preserves_flags),
-                ),
-                (TranslationRegime::El1And0, VaRange::Upper) => asm!(
-                    "mrs   {previous_ttbr}, ttbr1_el1",
-                    "msr   ttbr1_el1, {ttbrval}",
-                    "isb",
-                    ttbrval = in(reg) self.root_address().0 | (self.asid << 48),
-                    previous_ttbr = out(reg) previous_ttbr,
-                    options(preserves_flags),
-                ),
-                (TranslationRegime::El2And0, VaRange::Lower) => asm!(
-                    "mrs   {previous_ttbr}, ttbr0_el2",
-                    "msr   ttbr0_el2, {ttbrval}",
-                    "isb",
-                    ttbrval = in(reg) self.root_address().0 | (self.asid << 48),
-                    previous_ttbr = out(reg) previous_ttbr,
-                    options(preserves_flags),
-                ),
-                (TranslationRegime::El2And0, VaRange::Upper) => asm!(
-                    "mrs   {previous_ttbr}, s3_4_c2_c0_1", // ttbr1_el2
-                    "msr   s3_4_c2_c0_1, {ttbrval}",
-                    "isb",
-                    ttbrval = in(reg) self.root_address().0 | (self.asid << 48),
-                    previous_ttbr = out(reg) previous_ttbr,
-                    options(preserves_flags),
-                ),
-                (TranslationRegime::El2, VaRange::Lower) => asm!(
-                    "mrs   {previous_ttbr}, ttbr0_el2",
-                    "msr   ttbr0_el2, {ttbrval}",
-                    "isb",
-                    ttbrval = in(reg) self.root_address().0,
-                    previous_ttbr = out(reg) previous_ttbr,
-                    options(preserves_flags),
-                ),
-                (TranslationRegime::El3, VaRange::Lower) => asm!(
-                    "mrs   {previous_ttbr}, ttbr0_el3",
-                    "msr   ttbr0_el3, {ttbrval}",
-                    "isb",
-                    ttbrval = in(reg) self.root_address().0,
-                    previous_ttbr = out(reg) previous_ttbr,
-                    options(preserves_flags),
-                ),
-                (TranslationRegime::Stage2, VaRange::Lower) => asm!(
-                    "mrs   {previous_ttbr}, vttbr_el2",
-                    "msr   vttbr_el2, {ttbrval}",
-                    "isb",
-                    ttbrval = in(reg) self.root_address().0 | (self.asid << 48),
-                    previous_ttbr = out(reg) previous_ttbr,
-                    options(preserves_flags),
-                ),
-                _ => {
-                    panic!("Invalid combination of exception level and VA range.");
-                }
-            }
+            previous_ttbr = R::activate(self.root_address(), self.asid, self.root.va_range());
         }
         previous_ttbr
     }
@@ -264,68 +201,7 @@ impl<T: Translation<A>, A: PagingAttributes> Mapping<T, A> {
         // SAFETY: This just restores the previously saved value of `TTBRn_ELx`, which must have
         // been valid.
         unsafe {
-            match (self.root.translation_regime(), self.root.va_range()) {
-                (TranslationRegime::El1And0, VaRange::Lower) => asm!(
-                    "msr   ttbr0_el1, {ttbrval}",
-                    "isb",
-                    "tlbi  aside1, {asid}",
-                    "dsb   nsh",
-                    "isb",
-                    asid = in(reg) self.asid << 48,
-                    ttbrval = in(reg) previous_ttbr,
-                    options(preserves_flags),
-                ),
-                (TranslationRegime::El1And0, VaRange::Upper) => asm!(
-                    "msr   ttbr1_el1, {ttbrval}",
-                    "isb",
-                    "tlbi  aside1, {asid}",
-                    "dsb   nsh",
-                    "isb",
-                    asid = in(reg) self.asid << 48,
-                    ttbrval = in(reg) previous_ttbr,
-                    options(preserves_flags),
-                ),
-                (TranslationRegime::El2And0, VaRange::Lower) => asm!(
-                    "msr   ttbr0_el2, {ttbrval}",
-                    "isb",
-                    "tlbi  aside1, {asid}",
-                    "dsb   nsh",
-                    "isb",
-                    asid = in(reg) self.asid << 48,
-                    ttbrval = in(reg) previous_ttbr,
-                    options(preserves_flags),
-                ),
-                (TranslationRegime::El2And0, VaRange::Upper) => asm!(
-                    "msr   s3_4_c2_c0_1, {ttbrval}", // ttbr1_el2
-                    "isb",
-                    "tlbi  aside1, {asid}",
-                    "dsb   nsh",
-                    "isb",
-                    asid = in(reg) self.asid << 48,
-                    ttbrval = in(reg) previous_ttbr,
-                    options(preserves_flags),
-                ),
-                (TranslationRegime::El2, VaRange::Lower) => {
-                    panic!("EL2 page table can't safety be deactivated.");
-                }
-                (TranslationRegime::El3, VaRange::Lower) => {
-                    panic!("EL3 page table can't safety be deactivated.");
-                }
-                (TranslationRegime::Stage2, VaRange::Lower) => asm!(
-                    // For Stage 2, we invalidate using the current VTTBR (which has our VMID),
-                    // then restore the previous VTTBR.
-                    "tlbi  vmalls12e1",
-                    "dsb   nsh",
-                    "isb",
-                    "msr   vttbr_el2, {ttbrval}",
-                    "isb",
-                    ttbrval = in(reg) previous_ttbr,
-                    options(preserves_flags),
-                ),
-                _ => {
-                    panic!("Invalid combination of exception level and VA range.");
-                }
-            }
+            R::deactivate(previous_ttbr, self.asid, self.root.va_range());
         }
         self.mark_inactive();
     }
@@ -334,11 +210,11 @@ impl<T: Translation<A>, A: PagingAttributes> Mapping<T, A> {
     /// without violating architectural break-before-make (BBM) requirements.
     fn check_range_bbm<F>(&self, range: &MemoryRegion, updater: &F) -> Result<(), MapError>
     where
-        F: Fn(&MemoryRegion, &mut UpdatableDescriptor<A>) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut UpdatableDescriptor<R::Attributes>) -> Result<(), ()> + ?Sized,
     {
         self.root.visit_range(
             range,
-            &mut |mr: &MemoryRegion, d: &Descriptor<A>, level: usize| {
+            &mut |mr: &MemoryRegion, d: &Descriptor<R::Attributes>, level: usize| {
                 let err = MapError::BreakBeforeMakeViolation(mr.clone());
                 let mut desc = UpdatableDescriptor::clone_from(d, level);
 
@@ -370,8 +246,8 @@ impl<T: Translation<A>, A: PagingAttributes> Mapping<T, A> {
             self.root
                 .visit_range(
                     range,
-                    &mut |mr: &MemoryRegion, _: &Descriptor<A>, _: usize| {
-                        self.root.translation_regime().invalidate_va(mr.start());
+                    &mut |mr: &MemoryRegion, _: &Descriptor<R::Attributes>, _: usize| {
+                        R::invalidate_va(mr.start());
                         Ok(())
                     },
                 )
@@ -408,15 +284,15 @@ impl<T: Translation<A>, A: PagingAttributes> Mapping<T, A> {
         &mut self,
         range: &MemoryRegion,
         pa: PhysicalAddress,
-        flags: A,
+        flags: R::Attributes,
         constraints: Constraints,
     ) -> Result<(), MapError> {
         if self.active() {
-            let c = |mr: &MemoryRegion, d: &mut UpdatableDescriptor<A>| {
+            let c = |mr: &MemoryRegion, d: &mut UpdatableDescriptor<R::Attributes>| {
                 let mask = !(paging::granularity_at_level(d.level()) - 1);
                 let pa = (mr.start() - range.start() + pa.0) & mask;
                 let flags = if d.level() == 3 {
-                    flags | A::TABLE_OR_PAGE
+                    flags | R::Attributes::TABLE_OR_PAGE
                 } else {
                     flags
                 };
@@ -467,7 +343,7 @@ impl<T: Translation<A>, A: PagingAttributes> Mapping<T, A> {
     /// and modifying those would violate architectural break-before-make (BBM) requirements.
     pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
     where
-        F: Fn(&MemoryRegion, &mut UpdatableDescriptor<A>) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut UpdatableDescriptor<R::Attributes>) -> Result<(), ()> + ?Sized,
     {
         if self.active() {
             self.check_range_bbm(range, f)?;
@@ -499,7 +375,7 @@ impl<T: Translation<A>, A: PagingAttributes> Mapping<T, A> {
     /// largest virtual address covered by the page table given its root level.
     pub fn walk_range<F>(&self, range: &MemoryRegion, f: &mut F) -> Result<(), MapError>
     where
-        F: FnMut(&MemoryRegion, &Descriptor<A>, usize) -> Result<(), ()>,
+        F: FnMut(&MemoryRegion, &Descriptor<R::Attributes>, usize) -> Result<(), ()>,
     {
         self.root.walk_range(range, f)
     }
@@ -524,7 +400,7 @@ impl<T: Translation<A>, A: PagingAttributes> Mapping<T, A> {
     }
 
     /// Returns the ASID of the page table.
-    pub fn asid(&self) -> usize {
+    pub fn asid(&self) -> R::Asid {
         self.asid
     }
 
@@ -555,44 +431,10 @@ impl<T: Translation<A>, A: PagingAttributes> Mapping<T, A> {
     }
 }
 
-impl<T: Translation<A>, A: PagingAttributes> Drop for Mapping<T, A> {
+impl<T: Translation<R::Attributes>, R: TranslationRegime> Drop for Mapping<T, R> {
     fn drop(&mut self) {
         if self.active() {
             panic!("Dropping active page table mapping!");
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[cfg(feature = "alloc")]
-    use self::idmap::IdTranslation;
-    #[cfg(feature = "alloc")]
-    use super::*;
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    #[should_panic]
-    fn no_el2_asid() {
-        Mapping::<IdTranslation, Stage1Attributes>::new(
-            IdTranslation::new(),
-            1,
-            1,
-            TranslationRegime::El2,
-            VaRange::Lower,
-        );
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    #[should_panic]
-    fn no_el3_asid() {
-        Mapping::<IdTranslation, Stage1Attributes>::new(
-            IdTranslation::new(),
-            1,
-            1,
-            TranslationRegime::El3,
-            VaRange::Lower,
-        );
     }
 }

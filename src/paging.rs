@@ -68,6 +68,7 @@ pub trait TranslationRegime: Copy + Clone + Debug + Eq + PartialEq + Send + Sync
     unsafe fn deactivate(previous_ttbr: usize, asid: Self::Asid, va_range: VaRange);
 }
 
+/// Non-secure EL1&0, stage 1 translation regime.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct El1And0;
 
@@ -92,19 +93,19 @@ impl TranslationRegime for El1And0 {
         }
     }
 
-    unsafe fn activate(_root_pa: PhysicalAddress, _asid: usize, _va_range: VaRange) -> usize {
-        #[allow(unused_mut, unused_assignments)]
+    #[allow(unused_mut, unused_assignments, unused_variables, reason = "used only on aarch64")]
+    unsafe fn activate(root_pa: PhysicalAddress, asid: usize, va_range: VaRange) -> usize {
         let mut previous_ttbr = usize::MAX;
         #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: We trust that _root_pa returns a valid physical address of a page table,
         // and the `Drop` implementation will reset `TTBRn_ELx` before it becomes invalid.
         unsafe {
-            match _va_range {
+            match va_range {
                 VaRange::Lower => asm!(
                     "mrs   {previous_ttbr}, ttbr0_el1",
                     "msr   ttbr0_el1, {ttbrval}",
                     "isb",
-                    ttbrval = in(reg) _root_pa.0 | (_asid << 48),
+                    ttbrval = in(reg) root_pa.0 | (asid << 48),
                     previous_ttbr = out(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
@@ -112,7 +113,7 @@ impl TranslationRegime for El1And0 {
                     "mrs   {previous_ttbr}, ttbr1_el1",
                     "msr   ttbr1_el1, {ttbrval}",
                     "isb",
-                    ttbrval = in(reg) _root_pa.0 | (_asid << 48),
+                    ttbrval = in(reg) root_pa.0 | (asid << 48),
                     previous_ttbr = out(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
@@ -121,20 +122,21 @@ impl TranslationRegime for El1And0 {
         previous_ttbr
     }
 
-    unsafe fn deactivate(_previous_ttbr: usize, _asid: usize, _va_range: VaRange) {
+    #[allow(unused_mut, unused_assignments, unused_variables, reason = "used only on aarch64")]
+    unsafe fn deactivate(previous_ttbr: usize, asid: usize, va_range: VaRange) {
         #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: This just restores the previously saved value of `TTBRn_ELx`, which must have
         // been valid.
         unsafe {
-            match _va_range {
+            match va_range {
                 VaRange::Lower => asm!(
                     "msr   ttbr0_el1, {ttbrval}",
                     "isb",
                     "tlbi  aside1, {asid}",
                     "dsb   nsh",
                     "isb",
-                    asid = in(reg) _asid << 48,
-                    ttbrval = in(reg) _previous_ttbr,
+                    asid = in(reg) asid << 48,
+                    ttbrval = in(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
                 VaRange::Upper => asm!(
@@ -143,8 +145,8 @@ impl TranslationRegime for El1And0 {
                     "tlbi  aside1, {asid}",
                     "dsb   nsh",
                     "isb",
-                    asid = in(reg) _asid << 48,
-                    ttbrval = in(reg) _previous_ttbr,
+                    asid = in(reg) asid << 48,
+                    ttbrval = in(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
             }
@@ -152,6 +154,7 @@ impl TranslationRegime for El1And0 {
     }
 }
 
+/// Non-secure EL2&0, with VHE translation regime.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct El2And0;
 
@@ -176,19 +179,19 @@ impl TranslationRegime for El2And0 {
         }
     }
 
-    unsafe fn activate(_root_pa: PhysicalAddress, _asid: usize, _va_range: VaRange) -> usize {
-        #[allow(unused_mut, unused_assignments)]
+    #[allow(unused_mut, unused_assignments, unused_variables, reason = "used only on aarch64")]
+    unsafe fn activate(root_pa: PhysicalAddress, asid: usize, va_range: VaRange) -> usize {
         let mut previous_ttbr = usize::MAX;
         #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: We trust that _root_pa returns a valid physical address of a page table,
         // and the `Drop` implementation will reset `TTBRn_ELx` before it becomes invalid.
         unsafe {
-            match _va_range {
+            match va_range {
                 VaRange::Lower => asm!(
                     "mrs   {previous_ttbr}, ttbr0_el2",
                     "msr   ttbr0_el2, {ttbrval}",
                     "isb",
-                    ttbrval = in(reg) _root_pa.0 | (_asid << 48),
+                    ttbrval = in(reg) root_pa.0 | (asid << 48),
                     previous_ttbr = out(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
@@ -196,7 +199,7 @@ impl TranslationRegime for El2And0 {
                     "mrs   {previous_ttbr}, s3_4_c2_c0_1", // ttbr1_el2
                     "msr   s3_4_c2_c0_1, {ttbrval}",
                     "isb",
-                    ttbrval = in(reg) _root_pa.0 | (_asid << 48),
+                    ttbrval = in(reg) root_pa.0 | (asid << 48),
                     previous_ttbr = out(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
@@ -205,20 +208,21 @@ impl TranslationRegime for El2And0 {
         previous_ttbr
     }
 
-    unsafe fn deactivate(_previous_ttbr: usize, _asid: usize, _va_range: VaRange) {
+    #[allow(unused_mut, unused_assignments, unused_variables, reason = "used only on aarch64")]
+    unsafe fn deactivate(previous_ttbr: usize, asid: usize, va_range: VaRange) {
         #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: This just restores the previously saved value of `TTBRn_ELx`, which must have
         // been valid.
         unsafe {
-            match _va_range {
+            match va_range {
                 VaRange::Lower => asm!(
                     "msr   ttbr0_el2, {ttbrval}",
                     "isb",
                     "tlbi  aside1, {asid}",
                     "dsb   nsh",
                     "isb",
-                    asid = in(reg) _asid << 48,
-                    ttbrval = in(reg) _previous_ttbr,
+                    asid = in(reg) asid << 48,
+                    ttbrval = in(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
                 VaRange::Upper => asm!(
@@ -227,8 +231,8 @@ impl TranslationRegime for El2And0 {
                     "tlbi  aside1, {asid}",
                     "dsb   nsh",
                     "isb",
-                    asid = in(reg) _asid << 48,
-                    ttbrval = in(reg) _previous_ttbr,
+                    asid = in(reg) asid << 48,
+                    ttbrval = in(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
             }
@@ -236,6 +240,7 @@ impl TranslationRegime for El2And0 {
     }
 }
 
+/// Non-secure EL2 translation regime.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct El2;
 
@@ -260,19 +265,19 @@ impl TranslationRegime for El2 {
         }
     }
 
-    unsafe fn activate(_root_pa: PhysicalAddress, _asid: (), _va_range: VaRange) -> usize {
-        #[allow(unused_mut, unused_assignments)]
+    #[allow(unused_mut, unused_assignments, unused_variables, reason = "used only on aarch64")]
+    unsafe fn activate(root_pa: PhysicalAddress, asid: (), va_range: ()) -> usize {
         let mut previous_ttbr = usize::MAX;
         #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: We trust that _root_pa returns a valid physical address of a page table,
         // and the `Drop` implementation will reset `TTBRn_ELx` before it becomes invalid.
         unsafe {
-            match _va_range {
+            match va_range {
                 VaRange::Lower => asm!(
                     "mrs   {previous_ttbr}, ttbr0_el2",
                     "msr   ttbr0_el2, {ttbrval}",
                     "isb",
-                    ttbrval = in(reg) _root_pa.0,
+                    ttbrval = in(reg) root_pa.0,
                     previous_ttbr = out(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
@@ -282,11 +287,12 @@ impl TranslationRegime for El2 {
         previous_ttbr
     }
 
-    unsafe fn deactivate(_previous_ttbr: usize, _asid: (), _va_range: VaRange) {
+    unsafe fn deactivate(_previous_ttbr: usize, _asid: (), _va_range: ()) {
         panic!("EL2 page table can't safely be deactivated.");
     }
 }
 
+/// Secure EL3 translation regime.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct El3;
 
@@ -311,19 +317,19 @@ impl TranslationRegime for El3 {
         }
     }
 
-    unsafe fn activate(_root_pa: PhysicalAddress, _asid: (), _va_range: VaRange) -> usize {
-        #[allow(unused_mut, unused_assignments)]
+    #[allow(unused_mut, unused_assignments, unused_variables, reason = "used only on aarch64")]
+    unsafe fn activate(root_pa: PhysicalAddress, asid: (), va_range: ()) -> usize {
         let mut previous_ttbr = usize::MAX;
         #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: We trust that _root_pa returns a valid physical address of a page table,
         // and the `Drop` implementation will reset `TTBRn_ELx` before it becomes invalid.
         unsafe {
-            match _va_range {
+            match va_range {
                 VaRange::Lower => asm!(
                     "mrs   {previous_ttbr}, ttbr0_el3",
                     "msr   ttbr0_el3, {ttbrval}",
                     "isb",
-                    ttbrval = in(reg) _root_pa.0,
+                    ttbrval = in(reg) root_pa.0,
                     previous_ttbr = out(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
@@ -333,11 +339,12 @@ impl TranslationRegime for El3 {
         previous_ttbr
     }
 
-    unsafe fn deactivate(_previous_ttbr: usize, _asid: (), _va_range: VaRange) {
+    unsafe fn deactivate(_previous_ttbr: usize, _asid: (), _va_range: ()) {
         panic!("EL3 page table can't safely be deactivated.");
     }
 }
 
+/// Non-secure Stage 2 translation regime.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Stage2;
 
@@ -345,8 +352,7 @@ impl TranslationRegime for Stage2 {
     type Attributes = Stage2Attributes;
 
     type Asid = ();
-
-    const HAS_UPPER_VA_RANGE: bool = false;
+    type VaRange = ();
 
     fn invalidate_va(va: VirtualAddress) {
         #[allow(unused)]
@@ -363,19 +369,19 @@ impl TranslationRegime for Stage2 {
         }
     }
 
-    unsafe fn activate(_root_pa: PhysicalAddress, _asid: (), _va_range: VaRange) -> usize {
-        #[allow(unused_mut, unused_assignments)]
+    #[allow(unused_mut, unused_assignments, unused_variables, reason = "used only on aarch64")]
+    unsafe fn activate(root_pa: PhysicalAddress, asid: (), va_range: ()) -> usize {
         let mut previous_ttbr = usize::MAX;
         #[cfg(all(not(test), target_arch = "aarch64"))]
-        // SAFETY: We trust that _root_pa returns a valid physical address of a page table,
+        // SAFETY: We trust that root_pa returns a valid physical address of a page table,
         // and the `Drop` implementation will reset `TTBRn_ELx` before it becomes invalid.
         unsafe {
-            match _va_range {
+            match va_range {
                 VaRange::Lower => asm!(
                     "mrs   {previous_ttbr}, vttbr_el2",
                     "msr   vttbr_el2, {ttbrval}",
                     "isb",
-                    ttbrval = in(reg) _root_pa.0,
+                    ttbrval = in(reg) root_pa.0,
                     previous_ttbr = out(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
@@ -385,12 +391,13 @@ impl TranslationRegime for Stage2 {
         previous_ttbr
     }
 
-    unsafe fn deactivate(_previous_ttbr: usize, _asid: (), _va_range: VaRange) {
+    #[allow(unused_mut, unused_assignments, unused_variables, reason = "used only on aarch64")]
+    unsafe fn deactivate(previous_ttbr: usize, asid: (), va_range: ()) {
         #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: This just restores the previously saved value of `TTBRn_ELx`, which must have
         // been valid.
         unsafe {
-            match _va_range {
+            match va_range {
                 VaRange::Lower => asm!(
                     // For Stage 2, we invalidate using the current VTTBR (which has our VMID),
                     // then restore the previous VTTBR.
@@ -399,7 +406,7 @@ impl TranslationRegime for Stage2 {
                     "isb",
                     "msr   vttbr_el2, {ttbrval}",
                     "isb",
-                    ttbrval = in(reg) _previous_ttbr,
+                    ttbrval = in(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
                 _ => panic!("Invalid VA range for Stage2"),

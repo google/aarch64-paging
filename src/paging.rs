@@ -6,7 +6,10 @@
 //! addresses are mapped.
 
 use crate::MapError;
-use crate::descriptor::{Descriptor, El1Attributes, El23Attributes, PagingAttributes, PhysicalAddress, Stage2Attributes, UpdatableDescriptor, VirtualAddress};
+use crate::descriptor::{
+    Descriptor, El1Attributes, El23Attributes, PagingAttributes, PhysicalAddress, Stage2Attributes,
+    UpdatableDescriptor, VirtualAddress,
+};
 
 use crate::paging::private::IntoVaRange;
 #[cfg(feature = "alloc")]

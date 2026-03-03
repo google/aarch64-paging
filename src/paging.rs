@@ -46,10 +46,15 @@ pub enum VaRange {
 }
 
 /// Which translation regime a page table is for.
+///
+/// Note that these methods are not intended to be called directly, but rather through [`crate::Mapping`].
 pub trait TranslationRegime: Copy + Clone + Debug + Eq + PartialEq + Send + Sync + 'static {
     type Attributes: PagingAttributes;
 
+    /// The type of the ASID, or the unit type (`()`) if the translation regime does not support ASID.
     type Asid: Copy + Clone + Debug + Eq + PartialEq + Send + Sync + 'static;
+
+    /// The type of the VA range, or the unit type (`()`) if the translation regime does not support the upper VA range.
     type VaRange: private::IntoVaRange
         + Copy
         + Clone
@@ -60,6 +65,7 @@ pub trait TranslationRegime: Copy + Clone + Debug + Eq + PartialEq + Send + Sync
         + Sync
         + 'static;
 
+    /// Invalidates the translation for the given virtual address from the Translation Lookaside Buffer (TLB).
     fn invalidate_va(va: VirtualAddress);
 
     /// Activates the page table.

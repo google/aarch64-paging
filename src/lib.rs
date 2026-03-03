@@ -28,7 +28,7 @@
 //! const NORMAL_CACHEABLE: El1Attributes = El1Attributes::ATTRIBUTE_INDEX_1.union(El1Attributes::INNER_SHAREABLE);
 //!
 //! // Create a new EL1 page table with identity mapping.
-//! let mut idmap = IdMap::new(ASID, ROOT_LEVEL, El1And0);
+//! let mut idmap = IdMap::with_asid(ASID, ROOT_LEVEL, El1And0);
 //! // Map a 2 MiB region of memory as read-write.
 //! idmap.map_range(
 //!     &MemoryRegion::new(0x80200000, 0x80400000),
@@ -118,17 +118,35 @@ fn wait_for_tlb_maintenance() {
     }
 }
 
-impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
+impl<T: Translation<R::Attributes>, R: TranslationRegime<Asid = (), VaRange = ()>> Mapping<T, R> {
+    /// Creates a new page table with the given root level and translation mapping.
+    pub fn new(translation: T, rootlevel: usize, regime: R) -> Self {
+        Self::new_impl(RootTable::new(translation, rootlevel, regime), ())
+    }
+}
+
+impl<T: Translation<R::Attributes>, R: TranslationRegime<Asid = usize, VaRange = VaRange>>
+    Mapping<T, R>
+{
     /// Creates a new page table with the given ASID, root level and translation mapping.
-    pub fn new(
+    pub fn with_asid_and_va_range(
         translation: T,
-        asid: R::Asid,
+        asid: usize,
         rootlevel: usize,
         regime: R,
         va_range: VaRange,
     ) -> Self {
+        Self::new_impl(
+            RootTable::with_va_range(translation, rootlevel, regime, va_range),
+            asid,
+        )
+    }
+}
+
+impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
+    fn new_impl(root: RootTable<R, T>, asid: R::Asid) -> Self {
         Self {
-            root: RootTable::new(translation, rootlevel, regime, va_range),
+            root,
             asid,
             active_count: AtomicUsize::new(0),
         }
@@ -179,7 +197,8 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
             // Ensure that all page table updates, as well as the increment of the active counter,
             // are visible to all observers before proceeding
             asm!("dmb ishst", "isb", options(preserves_flags),);
-            previous_ttbr = R::activate(self.root_address(), self.asid, self.root.va_range());
+            previous_ttbr =
+                R::activate(self.root_address(), self.asid, self.root.va_range_or_unit());
         }
         previous_ttbr
     }
@@ -201,7 +220,7 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
         // SAFETY: This just restores the previously saved value of `TTBRn_ELx`, which must have
         // been valid.
         unsafe {
-            R::deactivate(previous_ttbr, self.asid, self.root.va_range());
+            R::deactivate(previous_ttbr, self.asid, self.root.va_range_or_unit());
         }
         self.mark_inactive();
     }

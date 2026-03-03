@@ -11,6 +11,7 @@ use crate::descriptor::{
     Stage2Attributes, UpdatableDescriptor, VirtualAddress,
 };
 
+use crate::paging::private::IntoVaRange;
 #[cfg(feature = "alloc")]
 use alloc::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use bitflags::{Flags, bitflags};
@@ -49,7 +50,15 @@ pub trait TranslationRegime: Copy + Clone + Debug + Eq + PartialEq + Send + Sync
     type Attributes: PagingAttributes;
 
     type Asid: Copy + Clone + Debug + Eq + PartialEq + Send + Sync + 'static;
-    const HAS_UPPER_VA_RANGE: bool;
+    type VaRange: private::IntoVaRange
+        + Copy
+        + Clone
+        + Debug
+        + Eq
+        + PartialEq
+        + Send
+        + Sync
+        + 'static;
 
     fn invalidate_va(va: VirtualAddress);
 
@@ -58,14 +67,38 @@ pub trait TranslationRegime: Copy + Clone + Debug + Eq + PartialEq + Send + Sync
     /// # Safety
     ///
     /// See `Mapping::activate`.
-    unsafe fn activate(root_pa: PhysicalAddress, asid: Self::Asid, va_range: VaRange) -> usize;
+    unsafe fn activate(
+        root_pa: PhysicalAddress,
+        asid: Self::Asid,
+        va_range: Self::VaRange,
+    ) -> usize;
 
     /// Deactivates the page table.
     ///
     /// # Safety
     ///
     /// See `Mapping::deactivate`.
-    unsafe fn deactivate(previous_ttbr: usize, asid: Self::Asid, va_range: VaRange);
+    unsafe fn deactivate(previous_ttbr: usize, asid: Self::Asid, va_range: Self::VaRange);
+}
+
+mod private {
+    use crate::paging::VaRange;
+
+    pub trait IntoVaRange {
+        fn into_va_range(self) -> VaRange;
+    }
+
+    impl IntoVaRange for VaRange {
+        fn into_va_range(self) -> VaRange {
+            self
+        }
+    }
+
+    impl IntoVaRange for () {
+        fn into_va_range(self) -> VaRange {
+            VaRange::Lower
+        }
+    }
 }
 
 /// Non-secure EL1&0, stage 1 translation regime.
@@ -76,7 +109,7 @@ impl TranslationRegime for El1And0 {
     type Attributes = El1Attributes;
 
     type Asid = usize;
-    const HAS_UPPER_VA_RANGE: bool = true;
+    type VaRange = VaRange;
 
     fn invalidate_va(va: VirtualAddress) {
         #[allow(unused)]
@@ -93,7 +126,12 @@ impl TranslationRegime for El1And0 {
         }
     }
 
-    #[allow(unused_mut, unused_assignments, unused_variables, reason = "used only on aarch64")]
+    #[allow(
+        unused_mut,
+        unused_assignments,
+        unused_variables,
+        reason = "used only on aarch64"
+    )]
     unsafe fn activate(root_pa: PhysicalAddress, asid: usize, va_range: VaRange) -> usize {
         let mut previous_ttbr = usize::MAX;
         #[cfg(all(not(test), target_arch = "aarch64"))]
@@ -122,7 +160,12 @@ impl TranslationRegime for El1And0 {
         previous_ttbr
     }
 
-    #[allow(unused_mut, unused_assignments, unused_variables, reason = "used only on aarch64")]
+    #[allow(
+        unused_mut,
+        unused_assignments,
+        unused_variables,
+        reason = "used only on aarch64"
+    )]
     unsafe fn deactivate(previous_ttbr: usize, asid: usize, va_range: VaRange) {
         #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: This just restores the previously saved value of `TTBRn_ELx`, which must have
@@ -162,7 +205,7 @@ impl TranslationRegime for El2And0 {
     type Attributes = El1Attributes;
 
     type Asid = usize;
-    const HAS_UPPER_VA_RANGE: bool = true;
+    type VaRange = VaRange;
 
     fn invalidate_va(va: VirtualAddress) {
         #[allow(unused)]
@@ -179,7 +222,12 @@ impl TranslationRegime for El2And0 {
         }
     }
 
-    #[allow(unused_mut, unused_assignments, unused_variables, reason = "used only on aarch64")]
+    #[allow(
+        unused_mut,
+        unused_assignments,
+        unused_variables,
+        reason = "used only on aarch64"
+    )]
     unsafe fn activate(root_pa: PhysicalAddress, asid: usize, va_range: VaRange) -> usize {
         let mut previous_ttbr = usize::MAX;
         #[cfg(all(not(test), target_arch = "aarch64"))]
@@ -208,7 +256,12 @@ impl TranslationRegime for El2And0 {
         previous_ttbr
     }
 
-    #[allow(unused_mut, unused_assignments, unused_variables, reason = "used only on aarch64")]
+    #[allow(
+        unused_mut,
+        unused_assignments,
+        unused_variables,
+        reason = "used only on aarch64"
+    )]
     unsafe fn deactivate(previous_ttbr: usize, asid: usize, va_range: VaRange) {
         #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: This just restores the previously saved value of `TTBRn_ELx`, which must have
@@ -248,7 +301,7 @@ impl TranslationRegime for El2 {
     type Attributes = El2Attributes;
 
     type Asid = ();
-    const HAS_UPPER_VA_RANGE: bool = false;
+    type VaRange = ();
 
     fn invalidate_va(va: VirtualAddress) {
         #[allow(unused)]
@@ -265,24 +318,26 @@ impl TranslationRegime for El2 {
         }
     }
 
-    #[allow(unused_mut, unused_assignments, unused_variables, reason = "used only on aarch64")]
+    #[allow(
+        unused_mut,
+        unused_assignments,
+        unused_variables,
+        reason = "used only on aarch64"
+    )]
     unsafe fn activate(root_pa: PhysicalAddress, asid: (), va_range: ()) -> usize {
         let mut previous_ttbr = usize::MAX;
         #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: We trust that _root_pa returns a valid physical address of a page table,
         // and the `Drop` implementation will reset `TTBRn_ELx` before it becomes invalid.
         unsafe {
-            match va_range {
-                VaRange::Lower => asm!(
-                    "mrs   {previous_ttbr}, ttbr0_el2",
-                    "msr   ttbr0_el2, {ttbrval}",
-                    "isb",
-                    ttbrval = in(reg) root_pa.0,
-                    previous_ttbr = out(reg) previous_ttbr,
-                    options(preserves_flags),
-                ),
-                _ => panic!("Invalid VA range for EL2"),
-            }
+            asm!(
+                "mrs   {previous_ttbr}, ttbr0_el2",
+                "msr   ttbr0_el2, {ttbrval}",
+                "isb",
+                ttbrval = in(reg) root_pa.0,
+                previous_ttbr = out(reg) previous_ttbr,
+                options(preserves_flags),
+            );
         }
         previous_ttbr
     }
@@ -300,7 +355,7 @@ impl TranslationRegime for El3 {
     type Attributes = El3Attributes;
 
     type Asid = ();
-    const HAS_UPPER_VA_RANGE: bool = false;
+    type VaRange = ();
 
     fn invalidate_va(va: VirtualAddress) {
         #[allow(unused)]
@@ -317,24 +372,26 @@ impl TranslationRegime for El3 {
         }
     }
 
-    #[allow(unused_mut, unused_assignments, unused_variables, reason = "used only on aarch64")]
+    #[allow(
+        unused_mut,
+        unused_assignments,
+        unused_variables,
+        reason = "used only on aarch64"
+    )]
     unsafe fn activate(root_pa: PhysicalAddress, asid: (), va_range: ()) -> usize {
         let mut previous_ttbr = usize::MAX;
         #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: We trust that _root_pa returns a valid physical address of a page table,
         // and the `Drop` implementation will reset `TTBRn_ELx` before it becomes invalid.
         unsafe {
-            match va_range {
-                VaRange::Lower => asm!(
-                    "mrs   {previous_ttbr}, ttbr0_el3",
-                    "msr   ttbr0_el3, {ttbrval}",
-                    "isb",
-                    ttbrval = in(reg) root_pa.0,
-                    previous_ttbr = out(reg) previous_ttbr,
-                    options(preserves_flags),
-                ),
-                _ => panic!("Invalid VA range for EL3"),
-            }
+            asm!(
+                "mrs   {previous_ttbr}, ttbr0_el3",
+                "msr   ttbr0_el3, {ttbrval}",
+                "isb",
+                ttbrval = in(reg) root_pa.0,
+                previous_ttbr = out(reg) previous_ttbr,
+                options(preserves_flags),
+            );
         }
         previous_ttbr
     }
@@ -369,48 +426,52 @@ impl TranslationRegime for Stage2 {
         }
     }
 
-    #[allow(unused_mut, unused_assignments, unused_variables, reason = "used only on aarch64")]
+    #[allow(
+        unused_mut,
+        unused_assignments,
+        unused_variables,
+        reason = "used only on aarch64"
+    )]
     unsafe fn activate(root_pa: PhysicalAddress, asid: (), va_range: ()) -> usize {
         let mut previous_ttbr = usize::MAX;
         #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: We trust that root_pa returns a valid physical address of a page table,
         // and the `Drop` implementation will reset `TTBRn_ELx` before it becomes invalid.
         unsafe {
-            match va_range {
-                VaRange::Lower => asm!(
-                    "mrs   {previous_ttbr}, vttbr_el2",
-                    "msr   vttbr_el2, {ttbrval}",
-                    "isb",
-                    ttbrval = in(reg) root_pa.0,
-                    previous_ttbr = out(reg) previous_ttbr,
-                    options(preserves_flags),
-                ),
-                _ => panic!("Invalid VA range for Stage2"),
-            }
+            asm!(
+                "mrs   {previous_ttbr}, vttbr_el2",
+                "msr   vttbr_el2, {ttbrval}",
+                "isb",
+                ttbrval = in(reg) root_pa.0,
+                previous_ttbr = out(reg) previous_ttbr,
+                options(preserves_flags),
+            );
         }
         previous_ttbr
     }
 
-    #[allow(unused_mut, unused_assignments, unused_variables, reason = "used only on aarch64")]
+    #[allow(
+        unused_mut,
+        unused_assignments,
+        unused_variables,
+        reason = "used only on aarch64"
+    )]
     unsafe fn deactivate(previous_ttbr: usize, asid: (), va_range: ()) {
         #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: This just restores the previously saved value of `TTBRn_ELx`, which must have
         // been valid.
         unsafe {
-            match va_range {
-                VaRange::Lower => asm!(
-                    // For Stage 2, we invalidate using the current VTTBR (which has our VMID),
-                    // then restore the previous VTTBR.
-                    "tlbi  vmalls12e1",
-                    "dsb   nsh",
-                    "isb",
-                    "msr   vttbr_el2, {ttbrval}",
-                    "isb",
-                    ttbrval = in(reg) previous_ttbr,
-                    options(preserves_flags),
-                ),
-                _ => panic!("Invalid VA range for Stage2"),
-            }
+            asm!(
+                // For Stage 2, we invalidate using the current VTTBR (which has our VMID),
+                // then restore the previous VTTBR.
+                "tlbi  vmalls12e1",
+                "dsb   nsh",
+                "isb",
+                "msr   vttbr_el2, {ttbrval}",
+                "isb",
+                ttbrval = in(reg) previous_ttbr,
+                options(preserves_flags),
+            );
         }
     }
 }
@@ -525,22 +586,43 @@ pub struct RootTable<R: TranslationRegime, T: Translation<R::Attributes>> {
     table: PageTableWithLevel<T, R::Attributes>,
     translation: T,
     pa: PhysicalAddress,
-    va_range: VaRange,
+    va_range: R::VaRange,
     _regime: PhantomData<R>,
 }
 
-impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
+impl<R: TranslationRegime<VaRange = ()>, T: Translation<R::Attributes>> RootTable<R, T> {
     /// Creates a new page table starting at the given root level.
     ///
     /// The level must be between 0 and 3; level -1 (for 52-bit addresses with LPA2) is not
     /// currently supported by this library. The value of `TCR_EL1.T0SZ` must be set appropriately
     /// to match.
-    pub fn new(mut translation: T, level: usize, _regime: R, va_range: VaRange) -> Self {
+    pub fn new(translation: T, level: usize, regime: R) -> Self {
+        Self::new_impl(translation, level, regime, ())
+    }
+}
+
+impl<R: TranslationRegime<VaRange = VaRange>, T: Translation<R::Attributes>> RootTable<R, T> {
+    /// Creates a new page table starting at the given root level.
+    ///
+    /// The level must be between 0 and 3; level -1 (for 52-bit addresses with LPA2) is not
+    /// currently supported by this library. The value of `TCR_EL1.T0SZ` must be set appropriately
+    /// to match.
+    pub fn with_va_range(translation: T, level: usize, regime: R, va_range: VaRange) -> Self {
+        Self::new_impl(translation, level, regime, va_range)
+    }
+
+    /// Returns the virtual address range for which this table is intended.
+    ///
+    /// This affects which TTBR register is used.
+    pub fn va_range(&self) -> VaRange {
+        self.va_range
+    }
+}
+
+impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
+    fn new_impl(mut translation: T, level: usize, _regime: R, va_range: R::VaRange) -> Self {
         if level > LEAF_LEVEL {
             panic!("Invalid root table level {}.", level);
-        }
-        if !R::HAS_UPPER_VA_RANGE && va_range != VaRange::Lower {
-            panic!("{:?} doesn't have an upper virtual address range.", _regime);
         }
         let (table, pa) = PageTableWithLevel::new(&mut translation, level);
         RootTable {
@@ -588,13 +670,6 @@ impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
     /// Returns the physical address of the root table in memory.
     pub fn to_physical(&self) -> PhysicalAddress {
         self.pa
-    }
-
-    /// Returns the virtual address range for which this table is intended.
-    ///
-    /// This affects which TTBR register is used.
-    pub fn va_range(&self) -> VaRange {
-        self.va_range
     }
 
     /// Returns a reference to the translation used for this page table.
@@ -652,6 +727,10 @@ impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
         self.verify_region(range)?;
         self.table
             .modify_range::<F, R>(&mut self.translation, range, f, live)
+    }
+
+    pub(crate) fn va_range_or_unit(&self) -> R::VaRange {
+        self.va_range
     }
 
     /// Applies the provided callback function to the page table descriptors covering a given
@@ -719,7 +798,7 @@ impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
         if region.end() < region.start() {
             return Err(MapError::RegionBackwards(region.clone()));
         }
-        match self.va_range {
+        match self.va_range.into_va_range() {
             VaRange::Lower => {
                 if (region.start().0 as isize) < 0 {
                     return Err(MapError::AddressRange(region.start()));
@@ -1238,8 +1317,6 @@ pub(crate) const fn is_aligned(value: usize, alignment: usize) -> bool {
 mod tests {
     use super::*;
     #[cfg(feature = "alloc")]
-    use crate::idmap::IdTranslation;
-    #[cfg(feature = "alloc")]
     use crate::target::TargetAllocator;
     #[cfg(feature = "alloc")]
     use alloc::{format, string::ToString, vec, vec::Vec};
@@ -1386,30 +1463,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "alloc")]
-    #[test]
-    #[should_panic]
-    fn no_el2_ttbr1() {
-        RootTable::<El2, IdTranslation<El2Attributes>>::new(
-            IdTranslation::new(),
-            1,
-            El2,
-            VaRange::Upper,
-        );
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    #[should_panic]
-    fn no_el3_ttbr1() {
-        RootTable::<El3, IdTranslation<El3Attributes>>::new(
-            IdTranslation::new(),
-            1,
-            El3,
-            VaRange::Upper,
-        );
-    }
-
     #[test]
     fn table_or_page() {
         // Invalid.
@@ -1442,7 +1495,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn debug_roottable_empty() {
-        let table = RootTable::new(TargetAllocator::new(0), 1, El1And0, VaRange::Lower);
+        let table = RootTable::with_va_range(TargetAllocator::new(0), 1, El1And0, VaRange::Lower);
         assert_eq!(
             format!("{table:?}"),
 "RootTable { pa: 0x0000000000000000, translation_regime: PhantomData<aarch64_paging::paging::El1And0>, va_range: Lower, level: 1, table:
@@ -1454,7 +1507,8 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn debug_roottable_contiguous() {
-        let mut table = RootTable::new(TargetAllocator::new(0), 1, El1And0, VaRange::Lower);
+        let mut table =
+            RootTable::with_va_range(TargetAllocator::new(0), 1, El1And0, VaRange::Lower);
         table
             .map_range(
                 &MemoryRegion::new(PAGE_SIZE * 3, PAGE_SIZE * 6),
@@ -1498,7 +1552,8 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn debug_roottable_contiguous_block() {
-        let mut table = RootTable::new(TargetAllocator::new(0), 1, El1And0, VaRange::Lower);
+        let mut table =
+            RootTable::with_va_range(TargetAllocator::new(0), 1, El1And0, VaRange::Lower);
         const BLOCK_SIZE: usize = PAGE_SIZE * 512;
         table
             .map_range(

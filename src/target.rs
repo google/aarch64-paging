@@ -25,7 +25,7 @@ use core::{mem::size_of, ptr::NonNull};
 ///
 /// const ROOT_LEVEL: usize = 1;
 ///
-/// let mut map = RootTable::new(
+/// let mut map = RootTable::with_va_range(
 ///     TargetAllocator::new(0x1_0000),
 ///     ROOT_LEVEL,
 ///     El1And0,
@@ -144,7 +144,7 @@ mod tests {
 
     #[test]
     fn map_one_page() {
-        let mut map = RootTable::new(
+        let mut map = RootTable::with_va_range(
             TargetAllocator::new(0x1_0000),
             ROOT_LEVEL,
             El1And0,

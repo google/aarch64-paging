@@ -6,10 +6,7 @@
 //! addresses are mapped.
 
 use crate::MapError;
-use crate::descriptor::{
-    Descriptor, El1Attributes, El2Attributes, El3Attributes, PagingAttributes, PhysicalAddress,
-    Stage2Attributes, UpdatableDescriptor, VirtualAddress,
-};
+use crate::descriptor::{Descriptor, El1Attributes, El23Attributes, PagingAttributes, PhysicalAddress, Stage2Attributes, UpdatableDescriptor, VirtualAddress};
 
 use crate::paging::private::IntoVaRange;
 #[cfg(feature = "alloc")]
@@ -304,7 +301,7 @@ impl TranslationRegime for El2And0 {
 pub struct El2;
 
 impl TranslationRegime for El2 {
-    type Attributes = El2Attributes;
+    type Attributes = El23Attributes;
 
     type Asid = ();
     type VaRange = ();
@@ -358,7 +355,7 @@ impl TranslationRegime for El2 {
 pub struct El3;
 
 impl TranslationRegime for El3 {
-    type Attributes = El3Attributes;
+    type Attributes = El23Attributes;
 
     type Asid = ();
     type VaRange = ();

@@ -1006,6 +1006,7 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
                 && !entry.is_table_or_page()
                 && is_aligned(pa.0, granularity)
                 && !constraints.contains(Constraints::NO_BLOCK_MAPPINGS)
+                && level > 0
             {
                 // Rather than leak the entire subhierarchy, only put down
                 // a block mapping if the region is not already covered by

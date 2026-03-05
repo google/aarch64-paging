@@ -128,7 +128,7 @@ pub struct IdMap<R: TranslationRegime> {
 }
 
 impl<R: TranslationRegime<Asid = (), VaRange = ()>> IdMap<R> {
-    /// Creates a new identity-mapping page table with the given ASID and root level.
+    /// Creates a new identity-mapping page table with the given root level.
     pub fn new(rootlevel: usize, regime: R) -> Self {
         Self {
             mapping: Mapping::new(IdTranslation::<R::Attributes>::new(), rootlevel, regime),

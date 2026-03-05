@@ -112,7 +112,7 @@ pub struct LinearMap<R: TranslationRegime> {
 }
 
 impl<R: TranslationRegime<Asid = (), VaRange = ()>> LinearMap<R> {
-    /// Creates a new identity-mapping page table with the given ASID, root level and offset, for
+    /// Creates a new identity-mapping page table with the given root level and offset, for
     /// use in the given TTBR.
     ///
     /// This will map any virtual address `va` which is added to the table to the physical address
@@ -127,7 +127,7 @@ impl<R: TranslationRegime<Asid = (), VaRange = ()>> LinearMap<R> {
 }
 
 impl<R: TranslationRegime<Asid = usize, VaRange = VaRange>> LinearMap<R> {
-    /// Creates a new identity-mapping page table with the given root level and offset, for
+    /// Creates a new identity-mapping page table with the given ASID, root level and offset, for
     /// use in the given TTBR.
     ///
     /// This will map any virtual address `va` which is added to the table to the physical address

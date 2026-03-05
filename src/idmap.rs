@@ -1069,4 +1069,26 @@ mod tests {
         assert_eq!(IdMap::<El1And0>::with_asid(1, 2, El1And0).size(), 1 << 30);
         assert_eq!(IdMap::<El1And0>::with_asid(1, 3, El1And0).size(), 1 << 21);
     }
+
+    #[test]
+    fn dont_use_l0_block_mapping() {
+        // We don't currently support FEAT_LPA2; test that the mappings do not attempt to use huge tables
+        let mut idmap = IdMap::with_asid(1, 0, El1And0);
+        let block_size = PAGE_SIZE * 512 * 512 * 512; // 512 GiB, corresponding to Level 0
+        let range = MemoryRegion::new(0, block_size);
+
+        // The range should map at Level 1 even though it's big enough for Level 0
+        idmap
+            .map_range(
+                &range,
+                NORMAL_CACHEABLE | El1Attributes::VALID | El1Attributes::ACCESSED,
+            )
+            .unwrap();
+        assert_eq!(idmap.mapping.root.mapping_level(range.start()), Some(1));
+
+        // The subtable should be cleaned up correctly after unmapping
+        idmap.map_range(&range, El1Attributes::empty()).unwrap();
+        idmap.compact_subtables();
+        assert_eq!(idmap.mapping.root.mapping_level(range.start()), None);
+    }
 }

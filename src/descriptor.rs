@@ -131,7 +131,7 @@ pub trait PagingAttributes:
 bitflags! {
     /// Attribute bits for a mapping in a Stage 1 page table.
     #[derive(Copy, Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
-    pub struct Stage1Attributes: usize {
+    pub struct El1Attributes: usize {
         const VALID         = 1 << 0;
         const TABLE_OR_PAGE = 1 << 1;
 
@@ -155,10 +155,9 @@ bitflags! {
         /// Guarded Page - indirect forward edge jumps expect an appropriate BTI landing pad.
         const GP            = 1 << 50;
         const DBM           = 1 << 51;
-        /// Privileged Execute-never, if two privilege levels are supported.
+        /// Privileged Execute-never.
         const PXN           = 1 << 53;
-        /// Unprivileged Execute-never, or just Execute-never if only one privilege level is
-        /// supported.
+        /// Unprivileged Execute-never.
         const UXN           = 1 << 54;
 
         // Software flags in block and page descriptor entries.
@@ -175,7 +174,7 @@ bitflags! {
     }
 }
 
-impl PagingAttributes for Stage1Attributes {
+impl PagingAttributes for El1Attributes {
     const VALID: Self = Self::VALID;
     const TABLE_OR_PAGE: Self = Self::TABLE_OR_PAGE;
 
@@ -197,7 +196,79 @@ impl PagingAttributes for Stage1Attributes {
     }
 }
 
-impl Stage1Attributes {
+impl El1Attributes {
+    /// Mask for the bits determining the shareability of the mapping.
+    pub const SHAREABILITY_MASK: Self = Self::INNER_SHAREABLE;
+
+    /// Mask for the bits determining the attribute index of the mapping.
+    pub const ATTRIBUTE_INDEX_MASK: Self = Self::ATTRIBUTE_INDEX_7;
+}
+
+bitflags! {
+    /// Attribute bits for a mapping in a Stage 1 page table.
+    #[derive(Copy, Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    pub struct El23Attributes: usize {
+        const VALID         = 1 << 0;
+        const TABLE_OR_PAGE = 1 << 1;
+
+        const ATTRIBUTE_INDEX_0 = 0 << 2;
+        const ATTRIBUTE_INDEX_1 = 1 << 2;
+        const ATTRIBUTE_INDEX_2 = 2 << 2;
+        const ATTRIBUTE_INDEX_3 = 3 << 2;
+        const ATTRIBUTE_INDEX_4 = 4 << 2;
+        const ATTRIBUTE_INDEX_5 = 5 << 2;
+        const ATTRIBUTE_INDEX_6 = 6 << 2;
+        const ATTRIBUTE_INDEX_7 = 7 << 2;
+
+        const OUTER_SHAREABLE = 2 << 8;
+        const INNER_SHAREABLE = 3 << 8;
+
+        const NS            = 1 << 5;
+        const READ_ONLY     = 1 << 7;
+        const ACCESSED      = 1 << 10;
+        const NON_GLOBAL    = 1 << 11;
+        /// Guarded Page - indirect forward edge jumps expect an appropriate BTI landing pad.
+        const GP            = 1 << 50;
+        const DBM           = 1 << 51;
+        /// Execute-never.
+        const XN           = 1 << 53;
+
+        // Software flags in block and page descriptor entries.
+        const SWFLAG_0 = 1 << 55;
+        const SWFLAG_1 = 1 << 56;
+        const SWFLAG_2 = 1 << 57;
+        const SWFLAG_3 = 1 << 58;
+
+        const PXN_TABLE = 1 << 59;
+        const XN_TABLE = 1 << 60;
+        const AP_TABLE_NO_EL0 = 1 << 61;
+        const AP_TABLE_NO_WRITE = 1 << 62;
+        const NS_TABLE = 1 << 63;
+    }
+}
+
+impl PagingAttributes for El23Attributes {
+    const VALID: Self = Self::VALID;
+    const TABLE_OR_PAGE: Self = Self::TABLE_OR_PAGE;
+
+    fn is_bbm_safe(old: Self, new: Self) -> bool {
+        // Masks of bits that may be set resp. cleared on a live, valid mapping without BBM
+        let clear_allowed_mask = Self::VALID
+            | Self::READ_ONLY
+            | Self::ACCESSED
+            | Self::DBM
+            | Self::XN
+            | Self::SWFLAG_0
+            | Self::SWFLAG_1
+            | Self::SWFLAG_2
+            | Self::SWFLAG_3;
+        let set_allowed_mask = clear_allowed_mask | Self::NON_GLOBAL;
+
+        (!old & new & !set_allowed_mask).is_empty() && (old & !new & !clear_allowed_mask).is_empty()
+    }
+}
+
+impl El23Attributes {
     /// Mask for the bits determining the shareability of the mapping.
     pub const SHAREABILITY_MASK: Self = Self::INNER_SHAREABLE;
 
@@ -278,10 +349,7 @@ pub(crate) type DescriptorBits = usize;
 ///   - A block mapping, if it is not in the lowest level page table.
 ///   - A pointer to a lower level pagetable, if it is not in the lowest level page table.
 #[repr(C)]
-pub struct Descriptor<A: PagingAttributes = Stage1Attributes>(
-    pub(crate) AtomicUsize,
-    PhantomData<A>,
-);
+pub struct Descriptor<A: PagingAttributes>(pub(crate) AtomicUsize, PhantomData<A>);
 
 impl<A: PagingAttributes> Descriptor<A> {
     /// An empty (i.e. 0) descriptor.
@@ -377,7 +445,7 @@ enum DescriptorEnum<'a, A: PagingAttributes> {
     ActiveClone(DescriptorBits, PhantomData<A>),
 }
 
-pub struct UpdatableDescriptor<'a, A: PagingAttributes = Stage1Attributes> {
+pub struct UpdatableDescriptor<'a, A: PagingAttributes> {
     descriptor: DescriptorEnum<'a, A>,
     level: usize,
     updated: bool,

@@ -9,8 +9,7 @@
 use crate::{
     MapError, Mapping,
     descriptor::{
-        Descriptor, PagingAttributes, PhysicalAddress, Stage1Attributes, UpdatableDescriptor,
-        VirtualAddress,
+        Descriptor, PagingAttributes, PhysicalAddress, UpdatableDescriptor, VirtualAddress,
     },
     paging::{
         Constraints, MemoryRegion, PAGE_SIZE, PageTable, Translation, TranslationRegime, VaRange,
@@ -23,7 +22,7 @@ use core::ptr::NonNull;
 /// Linear mapping, where every virtual address is either unmapped or mapped to an IPA with a fixed
 /// offset.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct LinearTranslation<A: PagingAttributes = Stage1Attributes> {
+pub struct LinearTranslation<A: PagingAttributes> {
     /// The offset from a virtual address to the corresponding (intermediate) physical address.
     offset: isize,
     _phantom: PhantomData<A>,
@@ -108,11 +107,26 @@ fn checked_add_to_unsigned(a: isize, b: isize) -> Option<usize> {
 /// This assumes that the same linear mapping is used both for the page table being managed, and for
 /// code that is managing it.
 #[derive(Debug)]
-pub struct LinearMap<A: PagingAttributes = Stage1Attributes> {
-    mapping: Mapping<LinearTranslation<A>, A>,
+pub struct LinearMap<R: TranslationRegime> {
+    mapping: Mapping<LinearTranslation<R::Attributes>, R>,
 }
 
-impl<A: PagingAttributes> LinearMap<A> {
+impl<R: TranslationRegime<Asid = (), VaRange = ()>> LinearMap<R> {
+    /// Creates a new identity-mapping page table with the given root level and offset, for
+    /// use in the given TTBR.
+    ///
+    /// This will map any virtual address `va` which is added to the table to the physical address
+    /// `va + offset`.
+    ///
+    /// The `offset` must be a multiple of [`PAGE_SIZE`]; if not this will panic.
+    pub fn new(rootlevel: usize, offset: isize, regime: R) -> Self {
+        Self {
+            mapping: Mapping::new(LinearTranslation::new(offset), rootlevel, regime),
+        }
+    }
+}
+
+impl<R: TranslationRegime<Asid = usize, VaRange = VaRange>> LinearMap<R> {
     /// Creates a new identity-mapping page table with the given ASID, root level and offset, for
     /// use in the given TTBR.
     ///
@@ -120,24 +134,26 @@ impl<A: PagingAttributes> LinearMap<A> {
     /// `va + offset`.
     ///
     /// The `offset` must be a multiple of [`PAGE_SIZE`]; if not this will panic.
-    pub fn new(
+    pub fn with_asid(
         asid: usize,
         rootlevel: usize,
         offset: isize,
-        translation_regime: TranslationRegime,
+        regime: R,
         va_range: VaRange,
     ) -> Self {
         Self {
-            mapping: Mapping::new(
+            mapping: Mapping::with_asid_and_va_range(
                 LinearTranslation::new(offset),
                 asid,
                 rootlevel,
-                translation_regime,
+                regime,
                 va_range,
             ),
         }
     }
+}
 
+impl<R: TranslationRegime> LinearMap<R> {
     /// Returns the size in bytes of the virtual address space which can be mapped in this page
     /// table.
     ///
@@ -203,7 +219,11 @@ impl<A: PagingAttributes> LinearMap<A> {
     ///
     /// Returns [`MapError::BreakBeforeMakeViolation`] if the range intersects with live mappings,
     /// and modifying those would violate architectural break-before-make (BBM) requirements.
-    pub fn map_range(&mut self, range: &MemoryRegion, flags: A) -> Result<(), MapError> {
+    pub fn map_range(
+        &mut self,
+        range: &MemoryRegion,
+        flags: R::Attributes,
+    ) -> Result<(), MapError> {
         self.map_range_with_constraints(range, flags, Constraints::empty())
     }
 
@@ -233,7 +253,7 @@ impl<A: PagingAttributes> LinearMap<A> {
     pub fn map_range_with_constraints(
         &mut self,
         range: &MemoryRegion,
-        flags: A,
+        flags: R::Attributes,
         constraints: Constraints,
     ) -> Result<(), MapError> {
         let pa = self
@@ -282,7 +302,7 @@ impl<A: PagingAttributes> LinearMap<A> {
     /// and modifying those would violate architectural break-before-make (BBM) requirements.
     pub fn modify_range<F>(&mut self, range: &MemoryRegion, f: &F) -> Result<(), MapError>
     where
-        F: Fn(&MemoryRegion, &mut UpdatableDescriptor<A>) -> Result<(), ()> + ?Sized,
+        F: Fn(&MemoryRegion, &mut UpdatableDescriptor<R::Attributes>) -> Result<(), ()> + ?Sized,
     {
         self.mapping.modify_range(range, f)
     }
@@ -312,7 +332,7 @@ impl<A: PagingAttributes> LinearMap<A> {
     /// largest virtual address covered by the page table given its root level.
     pub fn walk_range<F>(&self, range: &MemoryRegion, f: &mut F) -> Result<(), MapError>
     where
-        F: FnMut(&MemoryRegion, &Descriptor<A>, usize) -> Result<(), ()>,
+        F: FnMut(&MemoryRegion, &Descriptor<R::Attributes>, usize) -> Result<(), ()>,
     {
         self.mapping.walk_range(range, f)
     }
@@ -362,6 +382,8 @@ impl<A: PagingAttributes> LinearMap<A> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::descriptor::El1Attributes;
+    use crate::paging::El1And0;
     use crate::{
         MapError,
         paging::{BITS_PER_LEVEL, MemoryRegion, PAGE_SIZE},
@@ -370,40 +392,40 @@ mod tests {
     const MAX_ADDRESS_FOR_ROOT_LEVEL_1: usize = 1 << 39;
     const GIB_512_S: isize = 512 * 1024 * 1024 * 1024;
     const GIB_512: usize = 512 * 1024 * 1024 * 1024;
-    const NORMAL_CACHEABLE: Stage1Attributes =
-        Stage1Attributes::ATTRIBUTE_INDEX_1.union(Stage1Attributes::INNER_SHAREABLE);
+    const NORMAL_CACHEABLE: El1Attributes =
+        El1Attributes::ATTRIBUTE_INDEX_1.union(El1Attributes::INNER_SHAREABLE);
 
     #[test]
     fn map_valid() {
         // A single byte at the start of the address space.
-        let mut pagetable = LinearMap::new(1, 1, 4096, TranslationRegime::El1And0, VaRange::Lower);
+        let mut pagetable = LinearMap::with_asid(1, 1, 4096, El1And0, VaRange::Lower);
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(0, 1),
-                NORMAL_CACHEABLE | Stage1Attributes::VALID | Stage1Attributes::ACCESSED
+                NORMAL_CACHEABLE | El1Attributes::VALID | El1Attributes::ACCESSED
             ),
             Ok(())
         );
 
         // Two pages at the start of the address space.
-        let mut pagetable = LinearMap::new(1, 1, 4096, TranslationRegime::El1And0, VaRange::Lower);
+        let mut pagetable = LinearMap::with_asid(1, 1, 4096, El1And0, VaRange::Lower);
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(0, PAGE_SIZE * 2),
-                NORMAL_CACHEABLE | Stage1Attributes::VALID | Stage1Attributes::ACCESSED
+                NORMAL_CACHEABLE | El1Attributes::VALID | El1Attributes::ACCESSED
             ),
             Ok(())
         );
 
         // A single byte at the end of the address space.
-        let mut pagetable = LinearMap::new(1, 1, 4096, TranslationRegime::El1And0, VaRange::Lower);
+        let mut pagetable = LinearMap::with_asid(1, 1, 4096, El1And0, VaRange::Lower);
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1 - 1,
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1
                 ),
-                NORMAL_CACHEABLE | Stage1Attributes::VALID | Stage1Attributes::ACCESSED
+                NORMAL_CACHEABLE | El1Attributes::VALID | El1Attributes::ACCESSED
             ),
             Ok(())
         );
@@ -411,17 +433,12 @@ mod tests {
         // The entire valid address space. Use an offset that is a multiple of the level 2 block
         // size to avoid mapping everything as pages as that is really slow.
         const LEVEL_2_BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
-        let mut pagetable = LinearMap::new(
-            1,
-            1,
-            LEVEL_2_BLOCK_SIZE as isize,
-            TranslationRegime::El1And0,
-            VaRange::Lower,
-        );
+        let mut pagetable =
+            LinearMap::with_asid(1, 1, LEVEL_2_BLOCK_SIZE as isize, El1And0, VaRange::Lower);
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
-                NORMAL_CACHEABLE | Stage1Attributes::VALID | Stage1Attributes::ACCESSED
+                NORMAL_CACHEABLE | El1Attributes::VALID | El1Attributes::ACCESSED
             ),
             Ok(())
         );
@@ -430,52 +447,37 @@ mod tests {
     #[test]
     fn map_valid_negative_offset() {
         // A single byte which maps to IPA 0.
-        let mut pagetable = LinearMap::new(
-            1,
-            1,
-            -(PAGE_SIZE as isize),
-            TranslationRegime::El1And0,
-            VaRange::Lower,
-        );
+        let mut pagetable =
+            LinearMap::with_asid(1, 1, -(PAGE_SIZE as isize), El1And0, VaRange::Lower);
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(PAGE_SIZE, PAGE_SIZE + 1),
-                NORMAL_CACHEABLE | Stage1Attributes::VALID | Stage1Attributes::ACCESSED
+                NORMAL_CACHEABLE | El1Attributes::VALID | El1Attributes::ACCESSED
             ),
             Ok(())
         );
 
         // Two pages at the start of the address space.
-        let mut pagetable = LinearMap::new(
-            1,
-            1,
-            -(PAGE_SIZE as isize),
-            TranslationRegime::El1And0,
-            VaRange::Lower,
-        );
+        let mut pagetable =
+            LinearMap::with_asid(1, 1, -(PAGE_SIZE as isize), El1And0, VaRange::Lower);
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(PAGE_SIZE, PAGE_SIZE * 3),
-                NORMAL_CACHEABLE | Stage1Attributes::VALID | Stage1Attributes::ACCESSED
+                NORMAL_CACHEABLE | El1Attributes::VALID | El1Attributes::ACCESSED
             ),
             Ok(())
         );
 
         // A single byte at the end of the address space.
-        let mut pagetable = LinearMap::new(
-            1,
-            1,
-            -(PAGE_SIZE as isize),
-            TranslationRegime::El1And0,
-            VaRange::Lower,
-        );
+        let mut pagetable =
+            LinearMap::with_asid(1, 1, -(PAGE_SIZE as isize), El1And0, VaRange::Lower);
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1 - 1,
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1
                 ),
-                NORMAL_CACHEABLE | Stage1Attributes::VALID | Stage1Attributes::ACCESSED
+                NORMAL_CACHEABLE | El1Attributes::VALID | El1Attributes::ACCESSED
             ),
             Ok(())
         );
@@ -483,17 +485,17 @@ mod tests {
         // The entire valid address space. Use an offset that is a multiple of the level 2 block
         // size to avoid mapping everything as pages as that is really slow.
         const LEVEL_2_BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
-        let mut pagetable = LinearMap::new(
+        let mut pagetable = LinearMap::with_asid(
             1,
             1,
             -(LEVEL_2_BLOCK_SIZE as isize),
-            TranslationRegime::El1And0,
+            El1And0,
             VaRange::Lower,
         );
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(LEVEL_2_BLOCK_SIZE, MAX_ADDRESS_FOR_ROOT_LEVEL_1),
-                NORMAL_CACHEABLE | Stage1Attributes::VALID | Stage1Attributes::ACCESSED
+                NORMAL_CACHEABLE | El1Attributes::VALID | El1Attributes::ACCESSED
             ),
             Ok(())
         );
@@ -501,7 +503,7 @@ mod tests {
 
     #[test]
     fn map_out_of_range() {
-        let mut pagetable = LinearMap::new(1, 1, 4096, TranslationRegime::El1And0, VaRange::Lower);
+        let mut pagetable = LinearMap::with_asid(1, 1, 4096, El1And0, VaRange::Lower);
 
         // One byte, just past the edge of the valid range.
         assert_eq!(
@@ -510,7 +512,7 @@ mod tests {
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1,
                     MAX_ADDRESS_FOR_ROOT_LEVEL_1 + 1,
                 ),
-                NORMAL_CACHEABLE | Stage1Attributes::VALID | Stage1Attributes::ACCESSED
+                NORMAL_CACHEABLE | El1Attributes::VALID | El1Attributes::ACCESSED
             ),
             Err(MapError::AddressRange(VirtualAddress(
                 MAX_ADDRESS_FOR_ROOT_LEVEL_1 + PAGE_SIZE
@@ -521,7 +523,7 @@ mod tests {
         assert_eq!(
             pagetable.map_range(
                 &MemoryRegion::new(0, MAX_ADDRESS_FOR_ROOT_LEVEL_1 + 1),
-                NORMAL_CACHEABLE | Stage1Attributes::VALID | Stage1Attributes::ACCESSED
+                NORMAL_CACHEABLE | El1Attributes::VALID | El1Attributes::ACCESSED
             ),
             Err(MapError::AddressRange(VirtualAddress(
                 MAX_ADDRESS_FOR_ROOT_LEVEL_1 + PAGE_SIZE
@@ -531,7 +533,7 @@ mod tests {
 
     #[test]
     fn map_invalid_offset() {
-        let mut pagetable = LinearMap::new(1, 1, -4096, TranslationRegime::El1And0, VaRange::Lower);
+        let mut pagetable = LinearMap::with_asid(1, 1, -4096, El1And0, VaRange::Lower);
 
         // One byte, with an offset which would map it to a negative IPA.
         assert_eq!(
@@ -542,28 +544,28 @@ mod tests {
 
     #[test]
     fn physical_address_in_range_ttbr0() {
-        let translation = LinearTranslation::<Stage1Attributes>::new(4096);
+        let translation = LinearTranslation::<El1Attributes>::new(4096);
         assert_eq!(
             translation.physical_to_virtual(PhysicalAddress(8192)),
-            NonNull::new(4096 as *mut PageTable).unwrap(),
+            NonNull::new(4096 as *mut PageTable<El1Attributes>).unwrap(),
         );
         assert_eq!(
             translation.physical_to_virtual(PhysicalAddress(GIB_512 + 4096)),
-            NonNull::new(GIB_512 as *mut PageTable).unwrap(),
+            NonNull::new(GIB_512 as *mut PageTable<El1Attributes>).unwrap(),
         );
     }
 
     #[test]
     #[should_panic]
     fn physical_address_to_zero_ttbr0() {
-        let translation: LinearTranslation<Stage1Attributes> = LinearTranslation::new(4096);
+        let translation: LinearTranslation<El1Attributes> = LinearTranslation::new(4096);
         translation.physical_to_virtual(PhysicalAddress(4096));
     }
 
     #[test]
     #[should_panic]
     fn physical_address_out_of_range_ttbr0() {
-        let translation: LinearTranslation<Stage1Attributes> = LinearTranslation::new(4096);
+        let translation: LinearTranslation<El1Attributes> = LinearTranslation::new(4096);
         translation.physical_to_virtual(PhysicalAddress(-4096_isize as usize));
     }
 
@@ -574,11 +576,11 @@ mod tests {
         let translation = LinearTranslation::new(GIB_512_S + 4096);
         assert_eq!(
             translation.physical_to_virtual(PhysicalAddress(8192)),
-            NonNull::new((4096 - GIB_512_S) as *mut PageTable).unwrap(),
+            NonNull::new((4096 - GIB_512_S) as *mut PageTable<El1Attributes>).unwrap(),
         );
         assert_eq!(
             translation.physical_to_virtual(PhysicalAddress(GIB_512)),
-            NonNull::new(-4096_isize as *mut PageTable).unwrap(),
+            NonNull::new(-4096_isize as *mut PageTable<El1Attributes>).unwrap(),
         );
     }
 
@@ -587,7 +589,7 @@ mod tests {
     fn physical_address_to_zero_ttbr1() {
         // Map the 512 GiB region at the top of virtual address space to the bottom of physical
         // address space.
-        let translation: LinearTranslation<Stage1Attributes> = LinearTranslation::new(GIB_512_S);
+        let translation: LinearTranslation<El1Attributes> = LinearTranslation::new(GIB_512_S);
         translation.physical_to_virtual(PhysicalAddress(GIB_512));
     }
 
@@ -596,13 +598,13 @@ mod tests {
     fn physical_address_out_of_range_ttbr1() {
         // Map the 512 GiB region at the top of virtual address space to the bottom of physical
         // address space.
-        let translation: LinearTranslation<Stage1Attributes> = LinearTranslation::new(GIB_512_S);
+        let translation: LinearTranslation<El1Attributes> = LinearTranslation::new(GIB_512_S);
         translation.physical_to_virtual(PhysicalAddress(-4096_isize as usize));
     }
 
     #[test]
     fn virtual_address_out_of_range() {
-        let translation: LinearTranslation<Stage1Attributes> = LinearTranslation::new(-4096);
+        let translation: LinearTranslation<El1Attributes> = LinearTranslation::new(-4096);
         let va = VirtualAddress(1024);
         assert_eq!(
             translation.virtual_to_physical(va),
@@ -614,7 +616,7 @@ mod tests {
     fn virtual_address_range_ttbr1() {
         // Map the 512 GiB region at the top of virtual address space to the bottom of physical
         // address space.
-        let translation: LinearTranslation<Stage1Attributes> = LinearTranslation::new(GIB_512_S);
+        let translation: LinearTranslation<El1Attributes> = LinearTranslation::new(GIB_512_S);
 
         // The first page in the region covered by TTBR1.
         assert_eq!(
@@ -631,12 +633,11 @@ mod tests {
     #[test]
     fn block_mapping() {
         // Test that block mapping is used when the PA is appropriately aligned...
-        let mut pagetable =
-            LinearMap::new(1, 1, 1 << 30, TranslationRegime::El1And0, VaRange::Lower);
+        let mut pagetable = LinearMap::with_asid(1, 1, 1 << 30, El1And0, VaRange::Lower);
         pagetable
             .map_range(
                 &MemoryRegion::new(0, 1 << 30),
-                NORMAL_CACHEABLE | Stage1Attributes::VALID | Stage1Attributes::ACCESSED,
+                NORMAL_CACHEABLE | El1Attributes::VALID | El1Attributes::ACCESSED,
             )
             .unwrap();
         assert_eq!(
@@ -645,12 +646,11 @@ mod tests {
         );
 
         // ...but not when it is not.
-        let mut pagetable =
-            LinearMap::new(1, 1, 1 << 29, TranslationRegime::El1And0, VaRange::Lower);
+        let mut pagetable = LinearMap::with_asid(1, 1, 1 << 29, El1And0, VaRange::Lower);
         pagetable
             .map_range(
                 &MemoryRegion::new(0, 1 << 30),
-                NORMAL_CACHEABLE | Stage1Attributes::VALID | Stage1Attributes::ACCESSED,
+                NORMAL_CACHEABLE | El1Attributes::VALID | El1Attributes::ACCESSED,
             )
             .unwrap();
         assert_eq!(
@@ -659,8 +659,8 @@ mod tests {
         );
     }
 
-    fn make_map() -> LinearMap<Stage1Attributes> {
-        let mut lmap = LinearMap::new(1, 1, 4096, TranslationRegime::El1And0, VaRange::Lower);
+    fn make_map() -> LinearMap<El1And0> {
+        let mut lmap = LinearMap::with_asid(1, 1, 4096, El1And0, VaRange::Lower);
         // Mapping VA range 0x0 - 0x2000 to PA range 0x1000 - 0x3000
         lmap.map_range(&MemoryRegion::new(0, PAGE_SIZE * 2), NORMAL_CACHEABLE)
             .unwrap();
@@ -673,8 +673,8 @@ mod tests {
         assert!(
             lmap.modify_range(&MemoryRegion::new(PAGE_SIZE * 2, 1), &|_range, entry| {
                 entry.modify_flags(
-                    Stage1Attributes::SWFLAG_0,
-                    Stage1Attributes::from_bits(0usize).unwrap(),
+                    El1Attributes::SWFLAG_0,
+                    El1Attributes::from_bits(0usize).unwrap(),
                 )
             },)
                 .is_err()
@@ -687,8 +687,8 @@ mod tests {
         lmap.modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|_range, entry| {
             if !entry.is_table() {
                 entry.modify_flags(
-                    Stage1Attributes::SWFLAG_0,
-                    Stage1Attributes::from_bits(0usize).unwrap(),
+                    El1Attributes::SWFLAG_0,
+                    El1Attributes::from_bits(0usize).unwrap(),
                 )?;
             }
             Ok(())
@@ -696,7 +696,7 @@ mod tests {
         .unwrap();
         lmap.modify_range(&MemoryRegion::new(1, PAGE_SIZE), &|range, entry| {
             if !entry.is_table() {
-                assert!(entry.flags().contains(Stage1Attributes::SWFLAG_0));
+                assert!(entry.flags().contains(El1Attributes::SWFLAG_0));
                 assert_eq!(range.end() - range.start(), PAGE_SIZE);
             }
             Ok(())
@@ -708,23 +708,23 @@ mod tests {
     fn breakup_invalid_block() {
         const BLOCK_RANGE: usize = 0x200000;
 
-        let mut lmap = LinearMap::new(1, 1, 0x1000, TranslationRegime::El1And0, VaRange::Lower);
+        let mut lmap = LinearMap::with_asid(1, 1, 0x1000, El1And0, VaRange::Lower);
         lmap.map_range(
             &MemoryRegion::new(0, BLOCK_RANGE),
-            NORMAL_CACHEABLE | Stage1Attributes::NON_GLOBAL | Stage1Attributes::SWFLAG_0,
+            NORMAL_CACHEABLE | El1Attributes::NON_GLOBAL | El1Attributes::SWFLAG_0,
         )
         .unwrap();
         lmap.map_range(
             &MemoryRegion::new(0, PAGE_SIZE),
             NORMAL_CACHEABLE
-                | Stage1Attributes::NON_GLOBAL
-                | Stage1Attributes::VALID
-                | Stage1Attributes::ACCESSED,
+                | El1Attributes::NON_GLOBAL
+                | El1Attributes::VALID
+                | El1Attributes::ACCESSED,
         )
         .unwrap();
         lmap.modify_range(&MemoryRegion::new(0, BLOCK_RANGE), &|range, entry| {
             if entry.level() == 3 {
-                let has_swflag = entry.flags().contains(Stage1Attributes::SWFLAG_0);
+                let has_swflag = entry.flags().contains(El1Attributes::SWFLAG_0);
                 let is_first_page = range.start().0 == 0usize;
                 assert!(has_swflag != is_first_page);
             }
@@ -737,20 +737,14 @@ mod tests {
     #[should_panic]
     fn split_live_block_mapping() -> () {
         const BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
-        let mut lmap = LinearMap::new(
-            1,
-            1,
-            BLOCK_SIZE as isize,
-            TranslationRegime::El1And0,
-            VaRange::Lower,
-        );
+        let mut lmap = LinearMap::with_asid(1, 1, BLOCK_SIZE as isize, El1And0, VaRange::Lower);
         lmap.map_range(
             &MemoryRegion::new(0, BLOCK_SIZE),
             NORMAL_CACHEABLE
-                | Stage1Attributes::NON_GLOBAL
-                | Stage1Attributes::READ_ONLY
-                | Stage1Attributes::VALID
-                | Stage1Attributes::ACCESSED,
+                | El1Attributes::NON_GLOBAL
+                | El1Attributes::READ_ONLY
+                | El1Attributes::VALID
+                | El1Attributes::ACCESSED,
         )
         .unwrap();
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
@@ -759,27 +753,27 @@ mod tests {
         lmap.map_range(
             &MemoryRegion::new(0, PAGE_SIZE),
             NORMAL_CACHEABLE
-                | Stage1Attributes::NON_GLOBAL
-                | Stage1Attributes::READ_ONLY
-                | Stage1Attributes::VALID
-                | Stage1Attributes::ACCESSED,
+                | El1Attributes::NON_GLOBAL
+                | El1Attributes::READ_ONLY
+                | El1Attributes::VALID
+                | El1Attributes::ACCESSED,
         )
         .unwrap();
         lmap.map_range(
             &MemoryRegion::new(PAGE_SIZE, 2 * PAGE_SIZE),
             NORMAL_CACHEABLE
-                | Stage1Attributes::NON_GLOBAL
-                | Stage1Attributes::READ_ONLY
-                | Stage1Attributes::VALID
-                | Stage1Attributes::ACCESSED,
+                | El1Attributes::NON_GLOBAL
+                | El1Attributes::READ_ONLY
+                | El1Attributes::VALID
+                | El1Attributes::ACCESSED,
         )
         .unwrap();
         let r = lmap.map_range(
             &MemoryRegion::new(PAGE_SIZE, 2 * PAGE_SIZE),
             NORMAL_CACHEABLE
-                | Stage1Attributes::NON_GLOBAL
-                | Stage1Attributes::VALID
-                | Stage1Attributes::ACCESSED,
+                | El1Attributes::NON_GLOBAL
+                | El1Attributes::VALID
+                | El1Attributes::ACCESSED,
         );
         unsafe { lmap.deactivate(ttbr) };
         r.unwrap();

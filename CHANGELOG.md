@@ -1,15 +1,27 @@
 # Changelog
 
-## Unreleased
+## 0.12.0
 
 ### Breaking changes
 
-- `Attributes` is now called `Stage1Attributes`.
-- `TranslationRegime` enum now includes the `Stage2` variant.
+- `Attributes` has been split into `El1Attributes`, `El23Attributes` and `Stage2Attributes`. Use the
+  appropriate type for the translation regime you are using. This has been added as a generic
+  parameter to `Descriptor`, `PageTable`, `TargetAllocator`, `IdTranslation`, `LinearTranslation`
+  and `UpdatableDescriptor`.
+- `TranslationRegime` is now a trait rather than an enum, with implementations for each regime. This
+  has been added as a generic parameter to `RootTable`, `Mapping`, `IdMap` and `LinearMap`.
+- `MapError::InvalidFlags` has a `usize` rather than an `Attributes` value.
+- `Mapping`, `IdMap` and `LinearMap` now have separate constructors for regimes with (`with_asid` or
+  `with_asid_and_va_range`) and without (`new`) an ASID.
+- `IdTranslation` is no longer a unit struct; it can be constructed with `IdTranslation::new`.
 
 ### New features
 
 - Added support for stage-2 page tables.
+
+### Bugfixes
+
+- Don't use blocks at level 0. This doesn't work unless LPA2 is enabled, which we don't yet support.
 
 ## 0.11.0
 

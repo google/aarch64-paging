@@ -6,6 +6,11 @@
 
 - Fixed value of `El23Attributes::XN`.
 
+### Improvements
+
+- Added `NT` and `CONTIGUOUS_OR_PROTECTED` bits to `El1Attributes` and `El23Attributes`.
+- Added `El23Attributes::USER_RES1`.
+
 ## 0.12.0
 
 ### Breaking changes

@@ -231,7 +231,7 @@ bitflags! {
         const GP            = 1 << 50;
         const DBM           = 1 << 51;
         /// Execute-never.
-        const XN           = 1 << 53;
+        const XN           = 1 << 54;
 
         // Software flags in block and page descriptor entries.
         const SWFLAG_0 = 1 << 55;

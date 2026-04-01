@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Bugfixes
+
+- Fixed value of `El23Attributes::XN`.
+
 ## 0.12.0
 
 ### Breaking changes

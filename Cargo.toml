@@ -23,3 +23,4 @@ alloc = []
 [package.metadata.docs.rs]
 all-features = true
 default-target = "aarch64-unknown-none"
+rustdoc-args = ["--cfg", "docsrs"]

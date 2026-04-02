@@ -152,9 +152,11 @@ bitflags! {
         const READ_ONLY     = 1 << 7;
         const ACCESSED      = 1 << 10;
         const NON_GLOBAL    = 1 << 11;
+        const NT            = 1 << 16;
         /// Guarded Page - indirect forward edge jumps expect an appropriate BTI landing pad.
         const GP            = 1 << 50;
         const DBM           = 1 << 51;
+        const CONTIGUOUS_OR_PROTECTED = 1 << 52;
         /// Privileged Execute-never.
         const PXN           = 1 << 53;
         /// Unprivileged Execute-never.
@@ -224,14 +226,17 @@ bitflags! {
         const INNER_SHAREABLE = 3 << 8;
 
         const NS            = 1 << 5;
+        const USER_RES1     = 1 << 6;
         const READ_ONLY     = 1 << 7;
         const ACCESSED      = 1 << 10;
         const NON_GLOBAL    = 1 << 11;
+        const NT            = 1 << 16;
         /// Guarded Page - indirect forward edge jumps expect an appropriate BTI landing pad.
         const GP            = 1 << 50;
         const DBM           = 1 << 51;
+        const CONTIGUOUS_OR_PROTECTED = 1 << 52;
         /// Execute-never.
-        const XN           = 1 << 53;
+        const XN           = 1 << 54;
 
         // Software flags in block and page descriptor entries.
         const SWFLAG_0 = 1 << 55;

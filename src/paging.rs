@@ -859,12 +859,12 @@ impl Iterator for ChunkedIterator<'_> {
         if !self.range.0.contains(&VirtualAddress(self.start)) {
             return None;
         }
-        let end = self
-            .range
-            .0
-            .end
-            .0
-            .min((self.start | (self.granularity - 1)) + 1);
+        // The end of the chunk containing `self.start`. For the last chunk of the address space this
+        // is 2^64, which doesn't fit in a usize, so the chunk ends with the range instead.
+        let end = match (self.start | (self.granularity - 1)).checked_add(1) {
+            Some(chunk_end) => self.range.0.end.0.min(chunk_end),
+            None => self.range.0.end.0,
+        };
         let c = MemoryRegion::new(self.start, end);
         self.start = end;
         Some(c)
@@ -1467,6 +1467,21 @@ mod tests {
                 MemoryRegion::new(0x0000_2000, 0x0020_0000),
                 MemoryRegion::new(0x0020_0000, 0x0020_5000),
             ]
+        );
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn chunks_at_top_of_address_space() {
+        // The level 0 chunk containing this region ends at 2^64, which doesn't fit in a usize.
+        let region = MemoryRegion::new(0xffff_ffff_8000_0000, 0xffff_ffff_8020_0000);
+        let chunks = region.split(0).collect::<Vec<_>>();
+        assert_eq!(
+            chunks,
+            vec![MemoryRegion::new(
+                0xffff_ffff_8000_0000,
+                0xffff_ffff_8020_0000
+            )]
         );
     }
 

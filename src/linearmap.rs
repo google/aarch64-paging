@@ -502,6 +502,21 @@ mod tests {
     }
 
     #[test]
+    fn map_top_of_upper_range() {
+        // With 4 levels of page tables, the topmost 512 GiB of the address space is the last level 0
+        // chunk, which ends at 2^64. Map a region there, as a kernel linked at
+        // 0xffff_ffff_8000_0000 would.
+        let mut pagetable = LinearMap::with_asid(1, 0, GIB_512_S, El1And0, VaRange::Upper);
+        assert_eq!(
+            pagetable.map_range(
+                &MemoryRegion::new(0xffff_ffff_8000_0000, 0xffff_ffff_8020_0000),
+                NORMAL_CACHEABLE | El1Attributes::VALID | El1Attributes::ACCESSED
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
     fn map_out_of_range() {
         let mut pagetable = LinearMap::with_asid(1, 1, 4096, El1And0, VaRange::Lower);
 

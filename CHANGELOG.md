@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Bugfixes
+
+- Fixed overflow when mapping a region in the topmost chunk of the address space, such as the top
+  512 GiB of the upper VA range with 4 levels of page tables.
+
 ## 0.12.1
 
 ### Bugfixes

@@ -9,6 +9,10 @@
 - Fixed TLB invalidation operand masking. The shifted address was not masked, so the sign extension
   of an upper range address could spill into the TTL field at bits [47:44] and cause invalidations
   with a mismatched TTL to be discarded. The operand is now masked to bits [43:0].
+- Fixed TLB invalidation for the `El2And0` translation regime, which used `TLBI VAE2IS` without an
+  ASID and so failed to invalidate non-global entries whose ASID was not 0. It now uses
+  `TLBI VAAE1IS`, which invalidates entries for all ASIDs and is redirected by the architecture
+  to the `EL2&0` regime while `HCR_EL2.TGE` is set.
 
 ## 0.12.2
 

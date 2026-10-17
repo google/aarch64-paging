@@ -205,6 +205,9 @@ impl TranslationRegime for El1And0 {
 }
 
 /// Non-secure EL2&0, with VHE translation regime.
+///
+/// TLB maintenance for this regime uses the EL1 TLB invalidation instructions, so it may only be
+/// performed while `HCR_EL2.TGE` is set.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct El2And0;
 
@@ -222,7 +225,7 @@ impl TranslationRegime for El2And0 {
         // program
         unsafe {
             asm!(
-                "tlbi vae2is, {va}",
+                "tlbi vaae1is, {va}",
                 va = in(reg) va,
                 options(preserves_flags, nostack),
             );

@@ -270,10 +270,10 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
         if self.active() {
             wait_for_store_completion();
 
-            // If the mapping is active, no modifications are permitted that add or remove paging
-            // levels. This means it is not necessary to iterate over the entire range at page
-            // granularity, as invalidating a 2MiB block mapping or larger only requires a single
-            // TLBI call.
+            // If the mapping is active, invalidate each leaf now covering the range. A block mapping
+            // of any size is removed from the TLBs by a single TLBI for any address inside it, so
+            // there is no need to iterate at page granularity. Subtables removed by the update were
+            // already invalidated before they were freed (see `PageTableWithLevel::free_detached`).
             // If the mapping is not active, it was either never activated, or has previously been
             // deactivated, at which point TLB invalidation would have occurred, and so no TLB
             // maintenance is needed.
@@ -321,7 +321,8 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
         flags: R::Attributes,
         constraints: Constraints,
     ) -> Result<(), MapError> {
-        if self.active() {
+        let live = self.active();
+        if live {
             let c = |mr: &MemoryRegion, d: &mut UpdatableDescriptor<R::Attributes>| {
                 let mask = !(paging::granularity_at_level(d.level()) - 1);
                 let pa = (mr.start() - range.start() + pa.0) & mask;
@@ -334,7 +335,8 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
             };
             self.check_range_bbm(range, &c)?;
         }
-        self.root.map_range(range, pa, flags, constraints)?;
+        self.root
+            .map_range_impl(range, pa, flags, constraints, live)?;
         self.invalidate_range(range);
         Ok(())
     }
@@ -421,7 +423,7 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
     /// every time a region is unmapped. You could instead call it when the system is under memory
     /// pressure.
     pub fn compact_subtables(&mut self) {
-        self.root.compact_subtables();
+        self.root.compact_subtables_impl(self.active());
     }
 
     /// Returns the physical address of the root table.

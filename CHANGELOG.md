@@ -13,6 +13,10 @@
   ASID and so failed to invalidate non-global entries whose ASID was not 0. It now uses
   `TLBI VAAE1IS`, which invalidates entries for all ASIDs and is redirected by the architecture
   to the `EL2&0` regime while `HCR_EL2.TGE` is set.
+- Fixed TLB maintenance when a subtable is removed from a live page table (by `map_range`
+  unmapping its whole range, or by `compact_subtables`): every translation cached from it is now
+  invalidated, and the invalidation completed, before the subtable is freed. Previously only its
+  first address was invalidated by `map_range` and none by `compact_subtables`.
 
 ## 0.12.2
 

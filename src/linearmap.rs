@@ -517,6 +517,42 @@ mod tests {
     }
 
     #[test]
+    fn unmap_and_compact_top_of_upper_range() {
+        // The topmost tables of the upper VA range cover ranges which end at 2^64. Unmap a whole
+        // level 3 table's worth of pages near the top while the page table is live, and then
+        // compact away the empty tables above it.
+        const BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
+        let region =
+            MemoryRegion::new(usize::MAX - 2 * BLOCK_SIZE + 1, usize::MAX - BLOCK_SIZE + 1);
+        let mut pagetable = LinearMap::with_asid(1, 0, GIB_512_S, El1And0, VaRange::Upper);
+        pagetable
+            .map_range_with_constraints(
+                &region,
+                NORMAL_CACHEABLE | El1Attributes::VALID | El1Attributes::ACCESSED,
+                Constraints::NO_BLOCK_MAPPINGS,
+            )
+            .unwrap();
+        // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
+        // active for the sake of BBM rules and TLB maintenance.
+        let ttbr = unsafe { pagetable.activate() };
+
+        pagetable
+            .map_range(&region, El1Attributes::empty())
+            .unwrap();
+        pagetable.compact_subtables();
+
+        // SAFETY: This doesn't actually deactivate the page table in tests.
+        unsafe { pagetable.deactivate(ttbr) };
+        pagetable
+            .walk_range(&region, &mut |_, descriptor, level| {
+                assert_eq!(level, 0);
+                assert_eq!(descriptor.bits(), 0);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
     fn map_out_of_range() {
         let mut pagetable = LinearMap::with_asid(1, 1, 4096, El1And0, VaRange::Lower);
 

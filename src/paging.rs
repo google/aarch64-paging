@@ -1156,6 +1156,7 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
 
                 if live && desc.updated() {
                     // Live descriptor was updated so TLB maintenance is needed
+                    crate::wait_for_store_completion();
                     R::invalidate_va(chunk.start());
                     modified = true;
                 }

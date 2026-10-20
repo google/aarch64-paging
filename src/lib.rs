@@ -120,6 +120,17 @@ fn wait_for_tlb_maintenance() {
     }
 }
 
+/// Issues an inner-shareable data synchronization barrier (DSB) with store scope so that subsequent
+/// TLB invalidation is guaranteed to purge all TLB entries that were derived from the old values of
+/// descriptors that were recently modified. No ISB is needed in this case.
+fn wait_for_store_completion() {
+    // SAFETY: Barriers have no side effects that are observeable by the program
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        asm!("dsb ishst", options(preserves_flags, nostack));
+    }
+}
+
 impl<T: Translation<R::Attributes>, R: TranslationRegime<Asid = (), VaRange = ()>> Mapping<T, R> {
     /// Creates a new page table with the given root level and translation mapping.
     pub fn new(translation: T, rootlevel: usize, regime: R) -> Self {
@@ -198,7 +209,7 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
         unsafe {
             // Ensure that all page table updates, as well as the increment of the active counter,
             // are visible to all observers before proceeding
-            asm!("dmb ishst", "isb", options(preserves_flags),);
+            asm!("dsb ishst", "isb", options(preserves_flags, nostack),);
             previous_ttbr =
                 R::activate(self.root_address(), self.asid, self.root.va_range_or_unit());
         }
@@ -257,6 +268,8 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
     /// effect by the time the function returns
     fn invalidate_range(&self, range: &MemoryRegion) {
         if self.active() {
+            wait_for_store_completion();
+
             // If the mapping is active, no modifications are permitted that add or remove paging
             // levels. This means it is not necessary to iterate over the entire range at page
             // granularity, as invalidating a 2MiB block mapping or larger only requires a single

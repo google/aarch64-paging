@@ -23,6 +23,7 @@ use core::ops::Range;
 use core::ptr::NonNull;
 
 const PAGE_SHIFT: usize = 12;
+const TLBI_ADDRESS_MASK: usize = (1 << 44) - 1;
 
 /// The pagetable level at which all entries are page mappings.
 pub const LEAF_LEVEL: usize = 3;
@@ -119,7 +120,7 @@ impl TranslationRegime for El1And0 {
 
     fn invalidate_va(va: VirtualAddress) {
         #[allow(unused)]
-        let va = va.0 >> 12;
+        let va = tlbi_address(va);
         #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: TLBI maintenance has no side effects that are observeable by the
         // program
@@ -215,7 +216,7 @@ impl TranslationRegime for El2And0 {
 
     fn invalidate_va(va: VirtualAddress) {
         #[allow(unused)]
-        let va = va.0 >> 12;
+        let va = tlbi_address(va);
         #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: TLBI maintenance has no side effects that are observeable by the
         // program
@@ -311,7 +312,7 @@ impl TranslationRegime for El2 {
 
     fn invalidate_va(va: VirtualAddress) {
         #[allow(unused)]
-        let va = va.0 >> 12;
+        let va = tlbi_address(va);
         #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: TLBI maintenance has no side effects that are observeable by the
         // program
@@ -365,7 +366,7 @@ impl TranslationRegime for El3 {
 
     fn invalidate_va(va: VirtualAddress) {
         #[allow(unused)]
-        let va = va.0 >> 12;
+        let va = tlbi_address(va);
         #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: TLBI maintenance has no side effects that are observeable by the
         // program
@@ -419,7 +420,7 @@ impl TranslationRegime for Stage2 {
 
     fn invalidate_va(va: VirtualAddress) {
         #[allow(unused)]
-        let va = va.0 >> 12;
+        let va = tlbi_address(va);
         #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: TLBI maintenance has no side effects that are observeable by the
         // program
@@ -1365,6 +1366,11 @@ pub(crate) const fn is_aligned(value: usize, alignment: usize) -> bool {
     value & (alignment - 1) == 0
 }
 
+/// Builds the value to pass to a TLB invalidation instruction which invalidates by VA or IPA.
+const fn tlbi_address(va: VirtualAddress) -> usize {
+    (va.0 >> PAGE_SHIFT) & TLBI_ADDRESS_MASK
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1511,6 +1517,17 @@ mod tests {
         assert!(!bitmap.is_empty());
         for index in 0..(1 << BITS_PER_LEVEL) {
             assert_eq!(bitmap.contains(index), [0, 63, 64, 511].contains(&index));
+        }
+    }
+
+    #[test]
+    fn tlbi_address_masks_the_sign_extension() {
+        for va in [0xffff_ffff_8000_0000, 0x8000_0000] {
+            let value = tlbi_address(VirtualAddress(va));
+            // The TTL field and the bits above it are clear.
+            assert_eq!(value >> 44, 0);
+            // VA[55:12] is kept.
+            assert_eq!(value << PAGE_SHIFT, va & 0x00ff_ffff_ffff_f000);
         }
     }
 

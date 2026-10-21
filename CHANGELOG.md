@@ -18,6 +18,13 @@
   invalidated, and the invalidation completed, before the subtable is freed. Previously only its
   first address was invalidated by `map_range` and none by `compact_subtables`.
 
+### Other changes
+
+- Added a TLB emulation for testing, which panics when the TLB maintenance performed for live page
+  tables is insufficient to prevent TLB conflicts, e.g., because a live mapping is changed without
+  break-before-make, or because the required barriers or TLB invalidation instructions are missing
+  or issued in the wrong order.
+
 ## 0.12.2
 
 ### Bugfixes

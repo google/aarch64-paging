@@ -57,6 +57,8 @@ pub mod mair;
 pub mod paging;
 #[cfg(feature = "alloc")]
 pub mod target;
+#[cfg(test)]
+mod tlb;
 
 #[cfg(any(test, feature = "alloc"))]
 extern crate alloc;
@@ -120,6 +122,8 @@ fn dsb_ish() {
     unsafe {
         asm!("dsb ish", options(preserves_flags, nostack));
     }
+    #[cfg(test)]
+    tlb::dsb(tlb::Dsb::Full);
 }
 
 /// Issues an inner-shareable data synchronization barrier (DSB) with store scope, which waits for
@@ -130,6 +134,8 @@ fn dsb_ishst() {
     unsafe {
         asm!("dsb ishst", options(preserves_flags, nostack));
     }
+    #[cfg(test)]
+    tlb::dsb(tlb::Dsb::Store);
 }
 
 /// Issues an instruction synchronization barrier (ISB), so that the effects of preceding context
@@ -263,6 +269,8 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
         unsafe {
             R::deactivate(previous_ttbr, self.asid, self.root.va_range_or_unit());
         }
+        #[cfg(test)]
+        tlb::deactivate::<R>(self.asid);
         self.mark_inactive();
     }
 
@@ -363,6 +371,8 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
             };
             self.check_range_bbm(range, &c)?;
         }
+        #[cfg(test)]
+        let _tlb = self.enter_tlb_context();
         self.root
             .map_range_impl(range, pa, flags, constraints, live)?;
         self.invalidate_range(range);
@@ -413,6 +423,8 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
             self.check_range_bbm(range, f)?;
         }
 
+        #[cfg(test)]
+        let _tlb = self.enter_tlb_context();
         // modify_range() might fail halfway, in which case its Err() result will be returned
         // directly, and no barrier will be issued. The purpose of the barrier is to ensure that
         // the new state is visible to all observers before proceeding, but in case of a failure,
@@ -451,6 +463,8 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
     /// every time a region is unmapped. You could instead call it when the system is under memory
     /// pressure.
     pub fn compact_subtables(&mut self) {
+        #[cfg(test)]
+        let _tlb = self.enter_tlb_context();
         self.root.compact_subtables_impl(self.active());
     }
 
@@ -492,6 +506,12 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
             // If the old value was 0, the new value underflowed
             panic!("Underflow in active count.");
         }
+    }
+
+    /// Informs the TLB emulation about the page table hierarchy that is about to be accessed.
+    #[cfg(test)]
+    fn enter_tlb_context(&self) -> tlb::ContextGuard {
+        tlb::ContextGuard::enter::<R>(self.root.tlb_id(), self.asid, self.active())
     }
 }
 

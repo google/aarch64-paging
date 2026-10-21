@@ -109,6 +109,10 @@ mod private {
 }
 
 /// Issues the TLB invalidation instruction `TLBI <op>, <Xt>`, with `$operand` in register `<Xt>`.
+///
+/// In test builds, the instruction is passed to the TLB emulation instead, along with the
+/// translation regime it applies to, which is taken to be `Self`. This means that the macro must
+/// only be used in implementations of [`TranslationRegime`].
 macro_rules! tlbi {
     ($op:ident, $operand:expr) => {{
         #[allow(unused)]
@@ -122,6 +126,8 @@ macro_rules! tlbi {
                 options(preserves_flags, nostack),
             );
         }
+        #[cfg(test)]
+        crate::tlb::tlbi::<Self>(stringify!($op), operand);
     }};
 }
 
@@ -783,6 +789,12 @@ impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
         }
     }
 
+    /// Returns an identifier for this hierarchy of page tables, for the TLB emulation.
+    #[cfg(test)]
+    pub(crate) fn tlb_id(&self) -> usize {
+        self.table.table.as_ptr() as usize
+    }
+
     // Private version of `walk_range` using a closure that returns MapError on error
     pub(crate) fn visit_range<F>(&self, range: &MemoryRegion, f: &mut F) -> Result<(), MapError>
     where
@@ -1089,6 +1101,8 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
                 // There is a subtable but we can remove it. To avoid break-before-make violations
                 // this is only allowed if the new mapping is not valid, i.e. we are unmapping the
                 // memory.
+                #[cfg(test)]
+                subtable.tlb_disconnect(translation, chunk.start());
                 entry.set_at(
                     PhysicalAddress(0),
                     flags,
@@ -1258,6 +1272,8 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
         // SAFETY: Our caller promised that the table was created by `PageTableWithLevel::new` with
         // `translation`, which then allocated it by calling `allocate_table` on `translation`.
         unsafe {
+            #[cfg(test)]
+            crate::tlb::table_freed(self.table.as_ptr() as usize);
             // Actually free the memory used by the `PageTable`.
             translation.deallocate_table(self.table);
         }
@@ -1409,6 +1425,29 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
                 Some(self.level)
             } else {
                 None
+            }
+        }
+    }
+
+    /// Informs the TLB emulation that this table, which maps the virtual address range starting at
+    /// `va`, is about to be disconnected from a page table hierarchy, which may be live. This means
+    /// that any of its valid descriptors and those of its subtables may have been cached in the TLB.
+    #[cfg(test)]
+    fn tlb_disconnect(&self, translation: &T, va: VirtualAddress) {
+        let granularity = granularity_at_level(self.level);
+        // SAFETY: We know that the pointer is aligned, initialised and dereferencable, and the
+        // PageTable won't be mutated while we are using it.
+        let table = unsafe { self.table.as_ref() };
+        for (i, entry) in table.entries.iter().enumerate() {
+            let entry_va = va + i * granularity;
+            crate::tlb::disconnect(
+                entry.bits(),
+                entry_va,
+                self.level,
+                entry as *const Descriptor<A> as usize,
+            );
+            if let Some(subtable) = entry.subtable(translation, self.level) {
+                subtable.tlb_disconnect(translation, entry_va);
             }
         }
     }

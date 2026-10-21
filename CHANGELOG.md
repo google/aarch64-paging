@@ -42,6 +42,9 @@
 - The TLB emulation also checks that `map_range` and `modify_range` leave no stale TLB entries
   behind for the range they update on a live page table, so that missing TLB maintenance is detected
   even for changes that cannot cause TLB conflicts, such as permission changes.
+- The TLB emulation also detects translation tables being freed while they are still part of a live
+  page table, or while the TLB may still hold a table descriptor that points to them, either of
+  which would allow the page table walker to fetch descriptors from memory that has been reused.
 
 ## 0.12.3
 

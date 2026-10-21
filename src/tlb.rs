@@ -42,6 +42,9 @@
 //!   contiguous bit set is considered to cover the entire contiguous range, but as the contiguous
 //!   bit is only a hint, a TLBI by address only applies to TLB entries for descriptors that
 //!   actually map the address.
+//! - Freeing a translation table while it is still part of a live hierarchy, or while the TLB may
+//!   still hold an entry for a table descriptor that points to it, results in a panic, as the
+//!   walker may still fetch descriptors from it.
 //!
 //! In addition, after updating a live mapping, [`Mapping::map_range`](crate::Mapping::map_range)
 //! and [`Mapping::modify_range`](crate::Mapping::modify_range) check that no stale TLB entries
@@ -696,13 +699,37 @@ impl Tlb {
         Ok(())
     }
 
-    /// Models the translation table at address `table` being freed.
-    fn freed(&mut self, table: usize) {
+    /// Models the translation table at address `table`, whose physical address is `pa`, being
+    /// freed.
+    fn freed(&mut self, table: usize, pa: usize) -> Result<(), String> {
         self.pending
             .retain(|&desc, _| !(table..table + PAGE_SIZE).contains(&desc));
         // Forget all entries of a translation table hierarchy once its root table is freed.
         self.entries.retain(|entry| entry.ctx != table);
-        self.tables.remove(&table);
+        let connected = self.tables.remove(&table).is_some();
+        // Don't report errors while unwinding, e.g., from a panic raised by the TLB emulation while
+        // the table hierarchy was being updated, as panicking again would abort the test run.
+        if std::thread::panicking() {
+            return Ok(());
+        }
+        if connected {
+            return Err(format!(
+                "Translation table at {pa:#x} freed while it is still part of a live translation \
+                 table hierarchy"
+            ));
+        }
+        // The walker may still fetch descriptors from the table via a cached table descriptor that
+        // points to it, so the table must not be freed before such entries have been invalidated.
+        match self
+            .entries
+            .iter()
+            .find(|entry| entry.is_table() && entry.bits & OUTPUT_ADDRESS == pa)
+        {
+            Some(entry) => Err(format!(
+                "Translation table at {pa:#x} freed while the TLB may still refer to it:\n  {entry}"
+            )),
+            None => Ok(()),
+        }
     }
 }
 
@@ -729,12 +756,13 @@ pub(crate) fn table_allocated(table: usize, pa: PhysicalAddress, level: usize) {
 
 /// Called before the library deallocates the translation table at address `table`.
 pub(crate) fn table_freed(table: usize) {
-    with_tlb(|tlb| {
-        if let Some(pa) = tlb.physical.remove(&table) {
-            tlb.allocations.remove(&pa);
-        }
-        tlb.freed(table);
-    });
+    report(with_tlb(|tlb| {
+        let Some(pa) = tlb.physical.remove(&table) else {
+            return Ok(());
+        };
+        tlb.allocations.remove(&pa);
+        tlb.freed(table, pa)
+    }));
 }
 
 /// Models the store of `new` to the descriptor `desc`, which held `old`.
@@ -1215,6 +1243,42 @@ mod tests {
         assert_eq!(entry_count(), 0);
     }
 
+    /// Unmaps a live table descriptor, and frees the table it pointed to after performing the given
+    /// TLB maintenance.
+    fn free_unmapped_table(maintenance: impl FnOnce()) {
+        let _ctx = enter(true);
+        let mut desc = Desc::EMPTY;
+        set(&mut desc, VA, 2, 0x1234_5000, TABLE);
+        wait_for_tlb_maintenance();
+        set(&mut desc, VA, 2, 0, INVALID);
+        maintenance();
+        report(with_tlb(|tlb| tlb.freed(0x2_0000, 0x1234_5000)));
+    }
+
+    #[test]
+    fn free_table_after_tlb_maintenance() {
+        free_unmapped_table(|| {
+            wait_for_store_completion();
+            invalidate(VA);
+            wait_for_tlb_maintenance();
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "freed while the TLB may still refer to it")]
+    fn free_table_without_tlbi() {
+        free_unmapped_table(wait_for_tlb_maintenance);
+    }
+
+    #[test]
+    #[should_panic(expected = "freed while the TLB may still refer to it")]
+    fn free_table_before_tlbi_completes() {
+        free_unmapped_table(|| {
+            wait_for_store_completion();
+            invalidate(VA);
+        });
+    }
+
     #[test]
     fn global_to_non_global() {
         let _ctx = enter(true);
@@ -1433,5 +1497,27 @@ mod tests {
             .unwrap();
         // SAFETY: As above.
         unsafe { idmap.deactivate(ttbr) };
+    }
+
+    /// Freeing a translation table that is still part of a live hierarchy is reported, even if
+    /// the TLB holds no entries that refer to it.
+    #[cfg(feature = "alloc")]
+    #[test]
+    #[should_panic(expected = "freed while it is still part of a live translation table hierarchy")]
+    fn free_connected_table() {
+        let mut idmap = IdMap::with_asid(ASID, 1, Emulated(El1And0));
+        idmap
+            .map_range(&MemoryRegion::new(0, PAGE_SIZE), NORMAL)
+            .unwrap();
+        // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
+        // active for the sake of BBM rules and the TLB emulation.
+        let _ttbr = unsafe { idmap.activate() };
+        let subtable = with_tlb(|tlb| {
+            let (root, ..) = *tlb.active.last().unwrap();
+            tlb.tables.keys().copied().find(|&table| table != root)
+        })
+        .flatten()
+        .unwrap();
+        table_freed(subtable);
     }
 }

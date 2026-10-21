@@ -393,6 +393,8 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
         self.root
             .map_range_impl(range, pa, flags, constraints, live)?;
         self.invalidate_range(range);
+        #[cfg(test)]
+        tlb::check_coherency(self.root_address(), range);
         Ok(())
     }
 
@@ -456,6 +458,8 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
         if matches!(result, Ok(true) | Err(MapError::PteUpdateFault(_))) && self.active() {
             R::complete_tlb_maintenance();
         }
+        #[cfg(test)]
+        tlb::check_coherency(self.root_address(), range);
         result.map(|_| ())
     }
 

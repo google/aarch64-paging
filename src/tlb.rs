@@ -43,6 +43,11 @@
 //!   bit is only a hint, a TLBI by address only applies to TLB entries for descriptors that
 //!   actually map the address.
 //!
+//! In addition, after updating a live mapping, [`Mapping::map_range`](crate::Mapping::map_range)
+//! and [`Mapping::modify_range`](crate::Mapping::modify_range) check that no stale TLB entries
+//! remain for the updated range, as those functions guarantee that the updates have taken effect by
+//! the time they return.
+//!
 //! Each thread has its own TLB, and TLB entries are tagged with the translation table hierarchy
 //! they were created from, so that unrelated tests or mappings do not interfere with each other.
 
@@ -50,8 +55,8 @@ use crate::descriptor::{DescriptorBits, PhysicalAddress, VirtualAddress};
 #[cfg(feature = "alloc")]
 use crate::paging::VaRange;
 use crate::paging::{
-    BITS_PER_LEVEL, El1And0, El2And0, LEAF_LEVEL, PAGE_SIZE, Stage2, TranslationRegime,
-    granularity_at_level,
+    BITS_PER_LEVEL, El1And0, El2And0, LEAF_LEVEL, MemoryRegion, PAGE_SIZE, Stage2,
+    TranslationRegime, granularity_at_level,
 };
 use core::any::{Any, TypeId, type_name};
 use core::cell::RefCell;
@@ -71,6 +76,8 @@ const NON_GLOBAL: DescriptorBits = 1 << 11;
 const CONTIGUOUS: DescriptorBits = 1 << 52;
 /// The bits reserved for software use, which are ignored by the walker.
 const SOFTWARE: DescriptorBits = 0b1111 << 55;
+/// PXNTable, UXNTable, APTable and NSTable.
+const TABLE_ATTRIBUTES: DescriptorBits = 0b11111 << 59;
 const OUTPUT_ADDRESS: DescriptorBits = ((1 << 48) - 1) & !(PAGE_SIZE - 1);
 /// The number of descriptors covered by a single TLB entry if their contiguous bit is set.
 const CONTIGUOUS_COUNT: usize = 16;
@@ -169,6 +176,8 @@ fn is_valid(bits: DescriptorBits, level: usize) -> bool {
 struct Context {
     /// Identifies the translation table hierarchy, i.e., the address of its root table.
     id: usize,
+    /// The level of the root table.
+    level: usize,
     regime: TypeId,
     regime_name: &'static str,
     /// The ASID the translation table hierarchy is used with, if the regime has ASIDs.
@@ -280,6 +289,18 @@ impl Entry {
                 }
             }
         }
+    }
+
+    /// Returns whether the entry is consistent with `current`, the value of the descriptor that
+    /// the walker would fetch at the entry's level when translating the entry's VA, if the walk
+    /// gets that far.
+    fn is_consistent_with(&self, current: Option<DescriptorBits>) -> bool {
+        let mask = if self.is_table() {
+            OUTPUT_ADDRESS | TABLE_ATTRIBUTES | TABLE_OR_PAGE | VALID
+        } else {
+            !SOFTWARE
+        };
+        current.is_some_and(|bits| (bits ^ self.bits) & mask == 0)
     }
 }
 
@@ -626,6 +647,55 @@ impl Tlb {
         }
     }
 
+    /// Returns the descriptor at `level` that the walker would use to translate `va` in the live
+    /// translation table hierarchy `ctx`, or `None` if the walk terminates at a higher level.
+    fn lookup(&self, ctx: &Context, va: usize, level: usize) -> Option<DescriptorBits> {
+        let mut table = ctx.id;
+        let mut current = ctx.level;
+        loop {
+            let index = (va / granularity_at_level(current)) % ENTRIES;
+            let bits = load(table + index * size_of::<DescriptorBits>());
+            if current == level {
+                return Some(bits);
+            }
+            table = self.subtable(bits, current)?;
+            current += 1;
+        }
+    }
+
+    /// Returns an error if the TLB holds entries for the translation table hierarchy `id` that
+    /// overlap with `range` but that are inconsistent with the descriptors the walker would fetch
+    /// now, as returned by `lookup(va, level)`.
+    fn check_coherency(
+        &self,
+        id: usize,
+        range: &MemoryRegion,
+        lookup: impl Fn(usize, usize) -> Option<DescriptorBits>,
+    ) -> Result<(), String> {
+        if range.is_empty() {
+            return Ok(());
+        }
+        let (first, last) = (range.start().0, range.end().0.wrapping_sub(1));
+        for entry in self
+            .entries
+            .iter()
+            .filter(|entry| entry.ctx == id && entry.overlaps(first, last))
+        {
+            let current = lookup(entry.va, entry.level);
+            if !entry.is_consistent_with(current) {
+                let current = match current {
+                    Some(bits) => format!("{bits:#018x}"),
+                    None => String::from("none (the walk terminates at a higher level)"),
+                };
+                return Err(format!(
+                    "Stale TLB entry after TLB maintenance of {range}:\n  entry: {entry}\n  \
+                     current descriptor: {current}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Models the translation table at address `table` being freed.
     fn freed(&mut self, table: usize) {
         self.pending
@@ -693,6 +763,22 @@ pub(crate) fn tlbi<R: TranslationRegime>(op: &str, xt: Option<usize>) {
     with_tlb(|tlb| tlb.tlbi(TypeId::of::<R>(), op));
 }
 
+/// Panics if the TLB holds entries that overlap with `range` for the live translation table
+/// hierarchy whose root table is at physical address `root`, but that are inconsistent with the
+/// descriptors the walker would fetch now.
+pub(crate) fn check_coherency(root: PhysicalAddress, range: &MemoryRegion) {
+    report(with_tlb(|tlb| {
+        let Some(ctx) = tlb
+            .allocations
+            .get(&root.0)
+            .and_then(|allocation| tlb.hierarchies.get(&allocation.table))
+        else {
+            return Ok(());
+        };
+        tlb.check_coherency(ctx.id, range, |va, level| tlb.lookup(ctx, va, level))
+    }));
+}
+
 /// Models the TLB maintenance performed by [`TranslationRegime::deactivate`] for translation regime
 /// `R`, after the translation table hierarchy that used `asid` has been deactivated.
 fn invalidate_asid<R: TranslationRegime>(asid: R::Asid) {
@@ -741,6 +827,7 @@ impl<R: TranslationRegime> TranslationRegime for Emulated<R> {
             }
             let ctx = Context {
                 id: table,
+                level,
                 regime: TypeId::of::<R>(),
                 regime_name: type_name::<R>(),
                 asid: asid_of::<R>(asid),
@@ -783,7 +870,7 @@ mod tests {
     use super::*;
     use crate::descriptor::{Descriptor, El1Attributes, PagingAttributes};
     #[cfg(feature = "alloc")]
-    use crate::{idmap::IdMap, paging::MemoryRegion};
+    use crate::idmap::IdMap;
     use crate::{wait_for_store_completion, wait_for_tlb_maintenance};
     use core::cell::Cell;
 
@@ -827,6 +914,7 @@ mod tests {
     fn enter_regime<R: TranslationRegime>(asid: R::Asid, live: bool) -> TestHierarchy {
         let ctx = Context {
             id: ROOT,
+            level: 0,
             regime: TypeId::of::<R>(),
             regime_name: type_name::<R>(),
             asid: asid_of::<R>(asid),
@@ -867,6 +955,16 @@ mod tests {
     fn is_pending<A: PagingAttributes>(desc: &Descriptor<A>) -> bool {
         let desc = &desc.0 as *const AtomicUsize as usize;
         with_tlb(|tlb| tlb.pending.contains_key(&desc)).unwrap()
+    }
+
+    /// Checks that the TLB holds no stale entries for `desc`, which maps `va` at `level`.
+    fn check<A: PagingAttributes>(desc: &Descriptor<A>, va: usize, level: usize) {
+        let size = granularity_at_level(level);
+        report(with_tlb(|tlb| {
+            tlb.check_coherency(ROOT, &MemoryRegion::new(va, va + size), |v, l| {
+                (v == va && l == level).then(|| desc.bits())
+            })
+        }));
     }
 
     /// Returns the number of TLB entries for the test translation table hierarchy.
@@ -1050,6 +1148,52 @@ mod tests {
         set(&mut desc, VA, 1, 0x1234_5000, TABLE);
         wait_for_tlb_maintenance();
         set(&mut desc, VA, 1, 0x1234_6000, TABLE);
+    }
+
+    #[test]
+    fn permission_change() {
+        let _ctx = enter(true);
+        let mut desc = Desc::EMPTY;
+        set(&mut desc, VA, 3, PA, PAGE);
+        wait_for_tlb_maintenance();
+        // Permissions may be changed without break-before-make, but they only take effect after
+        // TLB maintenance.
+        set(
+            &mut desc,
+            VA,
+            3,
+            PA,
+            PAGE | El1Attributes::READ_ONLY | El1Attributes::UXN,
+        );
+        wait_for_store_completion();
+        invalidate(VA);
+        wait_for_tlb_maintenance();
+        check(&desc, VA, 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "Stale TLB entry")]
+    fn permission_change_without_tlbi() {
+        let _ctx = enter(true);
+        let mut desc = Desc::EMPTY;
+        set(&mut desc, VA, 3, PA, PAGE);
+        wait_for_tlb_maintenance();
+        set(&mut desc, VA, 3, PA, PAGE | El1Attributes::READ_ONLY);
+        wait_for_tlb_maintenance();
+        check(&desc, VA, 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "Stale TLB entry")]
+    fn permission_change_without_dsb_before_tlbi() {
+        let _ctx = enter(true);
+        let mut desc = Desc::EMPTY;
+        set(&mut desc, VA, 3, PA, PAGE);
+        wait_for_tlb_maintenance();
+        set(&mut desc, VA, 3, PA, PAGE | El1Attributes::READ_ONLY);
+        invalidate(VA);
+        wait_for_tlb_maintenance();
+        check(&desc, VA, 3);
     }
 
     #[test]

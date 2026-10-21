@@ -17,6 +17,9 @@
   unmapping its whole range, or by `compact_subtables`): every translation cached from it is now
   invalidated, and the invalidation completed, before the subtable is freed. Previously only its
   first address was invalidated by `map_range` and none by `compact_subtables`.
+- Fixed `modify_range` splitting live block mappings that are only partially covered by the range
+  without break-before-make if the updater function left them unmodified. This now fails with
+  `MapError::BreakBeforeMakeViolation`, like any other update that would split a live block mapping.
 
 ### Other changes
 

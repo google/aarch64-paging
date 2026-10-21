@@ -275,8 +275,15 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
     }
 
     /// Checks whether the given range can be mapped or updated while the translation is live,
-    /// without violating architectural break-before-make (BBM) requirements.
-    fn check_range_bbm<F>(&self, range: &MemoryRegion, updater: &F) -> Result<(), MapError>
+    /// without violating architectural break-before-make (BBM) requirements. `splits_blocks`
+    /// indicates whether block mappings that are only partially covered by the range will be split
+    /// even if `updater` leaves them unmodified.
+    fn check_range_bbm<F>(
+        &self,
+        range: &MemoryRegion,
+        updater: &F,
+        splits_blocks: bool,
+    ) -> Result<(), MapError>
     where
         F: Fn(&MemoryRegion, &mut UpdatableDescriptor<R::Attributes>) -> Result<(), ()> + ?Sized,
     {
@@ -288,7 +295,10 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
 
                 updater(mr, &mut desc)
                     .and_then(|_| {
-                        if d.is_valid() && !mr.is_block(level) && d.flags() != desc.flags() {
+                        if d.is_valid()
+                            && !mr.is_block(level)
+                            && (splits_blocks || d.flags() != desc.flags())
+                        {
                             // Cannot split a live block mapping
                             Err(())
                         } else {
@@ -369,7 +379,8 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
                 };
                 d.set(PhysicalAddress(pa), flags)
             };
-            self.check_range_bbm(range, &c)?;
+            // map_range() only splits a block mapping if its output address or attributes change.
+            self.check_range_bbm(range, &c, false)?;
         }
         #[cfg(test)]
         let _tlb = self.enter_tlb_context();
@@ -422,7 +433,9 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
         F: Fn(&MemoryRegion, &mut UpdatableDescriptor<R::Attributes>) -> Result<(), ()> + ?Sized,
     {
         if self.active() {
-            self.check_range_bbm(range, f)?;
+            // modify_range() splits all block mappings that are only partially covered by the
+            // range, regardless of whether they are modified.
+            self.check_range_bbm(range, f, true)?;
         }
 
         #[cfg(test)]

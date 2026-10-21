@@ -909,10 +909,15 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
         }
     }
 
+    /// Returns the index within this table of the entry covering the given virtual address.
+    fn entry_index(&self, va: VirtualAddress) -> usize {
+        let shift = PAGE_SHIFT + (LEAF_LEVEL - self.level) * BITS_PER_LEVEL;
+        (va.0 >> shift) % (1 << BITS_PER_LEVEL)
+    }
+
     /// Returns a reference to the descriptor corresponding to a given virtual address.
     fn get_entry(&self, va: VirtualAddress) -> &Descriptor<A> {
-        let shift = PAGE_SHIFT + (LEAF_LEVEL - self.level) * BITS_PER_LEVEL;
-        let index = (va.0 >> shift) % (1 << BITS_PER_LEVEL);
+        let index = self.entry_index(va);
         // SAFETY: We know that the pointer is properly aligned, dereferenced and initialised, and
         // nothing else can access the page table while we hold a mutable reference to the
         // PageTableWithLevel (assuming it is not currently active).
@@ -922,8 +927,7 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
 
     /// Returns a mutable reference to the descriptor corresponding to a given virtual address.
     fn get_entry_mut(&mut self, va: VirtualAddress) -> &mut Descriptor<A> {
-        let shift = PAGE_SHIFT + (LEAF_LEVEL - self.level) * BITS_PER_LEVEL;
-        let index = (va.0 >> shift) % (1 << BITS_PER_LEVEL);
+        let index = self.entry_index(va);
         // SAFETY: We know that the pointer is properly aligned, dereferenced and initialised, and
         // nothing else can access the page table while we hold a mutable reference to the
         // PageTableWithLevel (assuming it is not currently active).

@@ -448,6 +448,10 @@ enum DescriptorEnum<'a, A: PagingAttributes> {
     /// taking an UpdatableDescriptor to be called for a dry run to observe their effect without
     /// the need to pass an actual descriptor.
     ActiveClone(DescriptorBits, PhantomData<A>),
+
+    /// Like `ActiveClone`, but for a dry run on a descriptor in a set of page tables that are
+    /// currently inactive, which means that BBM rules need not be checked.
+    InactiveClone(DescriptorBits, PhantomData<A>),
 }
 
 pub struct UpdatableDescriptor<'a, A: PagingAttributes> {
@@ -470,11 +474,16 @@ impl<'a, A: PagingAttributes> UpdatableDescriptor<'a, A> {
         }
     }
 
-    /// Creates a new wrapper around an ActiveClone descriptor, which is used to observe the
-    /// effect of user provided updater functions without applying them to actual descriptors
-    pub(crate) fn clone_from(d: &Descriptor<A>, level: usize) -> Self {
+    /// Creates a new wrapper around a clone of a descriptor that may or may not be live, which is
+    /// used to observe the effect of user provided updater functions without applying them to
+    /// actual descriptors
+    pub(crate) fn clone_from(d: &Descriptor<A>, level: usize, live: bool) -> Self {
         Self {
-            descriptor: DescriptorEnum::ActiveClone(d.bits(), PhantomData),
+            descriptor: if live {
+                DescriptorEnum::ActiveClone(d.bits(), PhantomData)
+            } else {
+                DescriptorEnum::InactiveClone(d.bits(), PhantomData)
+            },
             level,
             updated: false,
         }
@@ -500,7 +509,7 @@ impl<'a, A: PagingAttributes> UpdatableDescriptor<'a, A> {
     pub fn bits(&self) -> DescriptorBits {
         match &self.descriptor {
             DescriptorEnum::Active(d) | DescriptorEnum::Inactive(d) => d.bits(),
-            DescriptorEnum::ActiveClone(d, _) => *d,
+            DescriptorEnum::ActiveClone(d, _) | DescriptorEnum::InactiveClone(d, _) => *d,
         }
     }
 
@@ -515,7 +524,7 @@ impl<'a, A: PagingAttributes> UpdatableDescriptor<'a, A> {
             DescriptorEnum::Active(d) | DescriptorEnum::Inactive(d) => {
                 self.updated |= val != d.0.swap(val, Ordering::Release)
             }
-            DescriptorEnum::ActiveClone(d, _) => {
+            DescriptorEnum::ActiveClone(d, _) | DescriptorEnum::InactiveClone(d, _) => {
                 self.updated |= *d != val;
                 *d = val
             }
@@ -541,7 +550,7 @@ impl<'a, A: PagingAttributes> UpdatableDescriptor<'a, A> {
     /// rules, so they are considered live by this API
     fn is_live_and_valid(&self) -> bool {
         match &self.descriptor {
-            DescriptorEnum::Inactive(_) => false,
+            DescriptorEnum::Inactive(_) | DescriptorEnum::InactiveClone(..) => false,
             _ => self.flags().contains(A::VALID),
         }
     }

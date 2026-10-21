@@ -248,11 +248,13 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
             range,
             &mut |mr: &MemoryRegion, d: &Descriptor<R::Attributes>, level: usize| {
                 let err = MapError::BreakBeforeMakeViolation(mr.clone());
-                let mut desc = UpdatableDescriptor::clone_from(d, level);
+                let mut desc = UpdatableDescriptor::clone_from(d, level, true);
 
                 updater(mr, &mut desc)
                     .and_then(|_| {
-                        if d.is_valid() && !mr.is_block(level) && d.flags() != desc.flags() {
+                        // A block mapping that is only partially covered by the range is split if
+                        // it is modified.
+                        if d.is_valid() && !mr.is_block(level) && desc.updated() {
                             // Cannot split a live block mapping
                             Err(())
                         } else {
@@ -333,6 +335,7 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
                 };
                 d.set(PhysicalAddress(pa), flags)
             };
+            // map_range() only splits a block mapping if its output address or attributes change.
             self.check_range_bbm(range, &c)?;
         }
         self.root
@@ -344,9 +347,9 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
     /// Applies the provided updater function to a number of PTEs corresponding to a given memory range.
     ///
     /// This may involve splitting block entries if the provided range is not currently mapped
-    /// down to its precise boundaries. For visiting all the descriptors covering a memory range
-    /// without potential splitting (and no descriptor updates), use
-    /// [`walk_range`](Self::walk_range) instead.
+    /// down to its precise boundaries and the updater function modifies them. For visiting all the
+    /// descriptors covering a memory range without potential splitting (and no descriptor
+    /// updates), use [`walk_range`](Self::walk_range) instead.
     ///
     /// The updater function receives the following arguments:
     ///
@@ -360,6 +363,15 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
     ///
     /// - `Ok` to continue updating the remaining entries.
     /// - `Err` to signal an error and stop updating the remaining entries.
+    ///
+    /// The updater function may also be called with copies of descriptors, to find out what it
+    /// would do without applying the result. While the page table is active, this happens for all
+    /// descriptors covering the range, to check for break-before-make violations first. It also
+    /// happens for block entries that are only partially covered by the range, together with the
+    /// part of the range that they cover, as such a block entry is only split if the updater
+    /// function modifies its copy. So the updater function should modify such a copy if it would
+    /// modify any of the descriptors that the block entry would be split into. Returning `Err` for
+    /// such a copy stops the update, just like for any other descriptor.
     ///
     /// This should generally only be called while the page table is not active. In particular, any
     /// change that may require break-before-make per the architecture must be made while the page

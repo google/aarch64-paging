@@ -17,6 +17,12 @@
   without break-before-make.
 - Fixed `modify_range` not performing TLB maintenance for the live descriptors that it updated
   before the updater function returned an error, which could leave stale translations in the TLB.
+- Fixed `modify_range` splitting block mappings that are only partially covered by the range even
+  if the updater function leaves them unmodified, which violated break-before-make for live block
+  mappings. The updater function is now first called with a copy of such a block descriptor and the
+  part of the range that it covers, and the block mapping is only split if the updater function
+  modifies the copy. If it returns an error for the copy, `modify_range` fails with
+  `MapError::PteUpdateFault`.
 
 ## 0.12.3
 

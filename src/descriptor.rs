@@ -449,7 +449,12 @@ impl<A: PagingAttributes> Descriptor<A> {
         if level < LEAF_LEVEL && self.is_table_or_page() {
             let output_address = self.output_address();
             let table = translation.physical_to_virtual(output_address);
-            return Some(PageTableWithLevel::from_pointer(table, level + 1));
+            return Some(PageTableWithLevel::from_pointer(
+                table,
+                #[cfg(test)]
+                output_address,
+                level + 1,
+            ));
         }
         None
     }

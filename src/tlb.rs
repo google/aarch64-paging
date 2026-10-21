@@ -31,6 +31,8 @@
 //!   contiguous bit set is considered to cover the entire contiguous range, but as the contiguous
 //!   bit is only a hint, a TLBI by address only applies to TLB entries for descriptors that
 //!   actually map the address.
+//! - Freeing a translation table while the TLB may still hold an entry for a table descriptor that
+//!   points to it results in a panic, as the walker may still fetch descriptors from it.
 //!
 //! In addition, after updating a live mapping, [`Mapping::map_range`](crate::Mapping::map_range)
 //! and [`Mapping::modify_range`](crate::Mapping::modify_range) check that no stale TLB entries
@@ -40,7 +42,7 @@
 //! Each thread has its own TLB, and TLB entries are tagged with the translation table hierarchy
 //! they were created from, so that unrelated tests or mappings do not interfere with each other.
 
-use crate::descriptor::{DescriptorBits, VirtualAddress};
+use crate::descriptor::{DescriptorBits, PhysicalAddress, VirtualAddress};
 use crate::paging::{
     LEAF_LEVEL, MemoryRegion, PAGE_SIZE, Stage2, TranslationRegime, granularity_at_level,
 };
@@ -580,14 +582,32 @@ pub(crate) fn deactivate<R: TranslationRegime>(asid: R::Asid) {
     dsb(Dsb::Full);
 }
 
-/// Called before the translation table at address `table` is deallocated.
-pub(crate) fn table_freed(table: usize) {
-    with_tlb(|tlb| {
+/// Called before the translation table at address `table`, whose physical address is `pa`, is
+/// deallocated.
+pub(crate) fn table_freed(table: usize, pa: PhysicalAddress) {
+    let result = with_tlb(|tlb| {
         tlb.dirty
             .retain(|d| !(table..table + PAGE_SIZE).contains(&(d.desc as usize)));
         // Forget all entries of a translation table hierarchy once its root table is freed.
         tlb.entries.retain(|entry| entry.ctx != table);
+        // The walker may still fetch descriptors from the table via a cached table descriptor that
+        // points to it, so the table must not be freed before such entries have been invalidated.
+        // Don't report this while unwinding, e.g., from a panic raised by the TLB emulation while
+        // the table hierarchy was being updated, as panicking again would abort the test run.
+        match tlb
+            .entries
+            .iter()
+            .find(|entry| entry.is_table() && entry.bits & OUTPUT_ADDRESS == pa.0)
+        {
+            Some(entry) if !std::thread::panicking() => Err(format!(
+                "Translation table at {pa} freed while the TLB may still refer to it:\n  {entry}"
+            )),
+            _ => Ok(()),
+        }
     });
+    if let Some(Err(message)) = result {
+        panic!("{message}");
+    }
 }
 
 /// Panics if the TLB holds entries for the translation table hierarchy with root table `id` that
@@ -928,6 +948,42 @@ mod tests {
         invalidate(VA);
         wait_for_tlb_maintenance();
         assert_eq!(entry_count(), 0);
+    }
+
+    /// Unmaps a live table descriptor, and frees the table it pointed to after performing the given
+    /// TLB maintenance.
+    fn free_unmapped_table(maintenance: impl FnOnce()) {
+        let _ctx = enter(true);
+        let mut desc = Desc::EMPTY;
+        set(&mut desc, VA, 2, 0x1234_5000, TABLE);
+        wait_for_tlb_maintenance();
+        set(&mut desc, VA, 2, 0, INVALID);
+        maintenance();
+        table_freed(0x2_0000, PhysicalAddress(0x1234_5000));
+    }
+
+    #[test]
+    fn free_table_after_tlb_maintenance() {
+        free_unmapped_table(|| {
+            wait_for_store_completion();
+            invalidate(VA);
+            wait_for_tlb_maintenance();
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "freed while the TLB may still refer to it")]
+    fn free_table_without_tlbi() {
+        free_unmapped_table(wait_for_tlb_maintenance);
+    }
+
+    #[test]
+    #[should_panic(expected = "freed while the TLB may still refer to it")]
+    fn free_table_before_tlbi_completes() {
+        free_unmapped_table(|| {
+            wait_for_store_completion();
+            invalidate(VA);
+        });
     }
 
     #[test]

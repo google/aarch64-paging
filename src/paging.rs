@@ -924,6 +924,9 @@ impl EntryBitmap {
 #[derive(Debug)]
 pub(crate) struct PageTableWithLevel<T: Translation<A>, A: PagingAttributes> {
     table: NonNull<PageTable<A>>,
+    /// The physical address of the table, for the TLB emulation.
+    #[cfg(test)]
+    pa: PhysicalAddress,
     level: usize,
     _translation: PhantomData<T>,
 }
@@ -944,14 +947,27 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
         (
             // Safe because the pointer has been allocated with the appropriate layout, and the
             // memory is zeroed which is valid initialisation for a PageTable.
-            Self::from_pointer(table, level),
+            Self::from_pointer(
+                table,
+                #[cfg(test)]
+                pa,
+                level,
+            ),
             pa,
         )
     }
 
-    pub(crate) fn from_pointer(table: NonNull<PageTable<A>>, level: usize) -> Self {
+    /// Wraps the page table at `table`, which is at `level` in the page table hierarchy. In test
+    /// builds, `pa` is the physical address of the table.
+    pub(crate) fn from_pointer(
+        table: NonNull<PageTable<A>>,
+        #[cfg(test)] pa: PhysicalAddress,
+        level: usize,
+    ) -> Self {
         Self {
             table,
+            #[cfg(test)]
+            pa,
             level,
             _translation: PhantomData,
         }
@@ -1284,7 +1300,7 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
         // `translation`, which then allocated it by calling `allocate_table` on `translation`.
         unsafe {
             #[cfg(test)]
-            crate::tlb::table_freed(self.table.as_ptr() as usize);
+            crate::tlb::table_freed(self.table.as_ptr() as usize, self.pa);
             // Actually free the memory used by the `PageTable`.
             translation.deallocate_table(self.table);
         }

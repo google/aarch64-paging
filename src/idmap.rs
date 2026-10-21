@@ -382,7 +382,7 @@ impl<R: TranslationRegime> IdMap<R> {
 mod tests {
     use super::*;
     use crate::descriptor::El1Attributes;
-    use crate::paging::El1And0;
+    use crate::paging::{El1And0, El2And0};
     use crate::tlb::Emulated;
     use crate::{
         MapError, VirtualAddress,
@@ -809,6 +809,40 @@ mod tests {
     }
 
     #[test]
+    fn modify_part_of_live_block_mapping() {
+        const BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
+        let mut idmap = IdMap::with_asid(1, 1, Emulated(El1And0));
+        idmap
+            .map_range(
+                &MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE),
+                NORMAL_CACHEABLE | El1Attributes::VALID | El1Attributes::ACCESSED,
+            )
+            .unwrap();
+        // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
+        // active for the sake of BBM rules.
+        let ttbr = unsafe { idmap.activate() };
+
+        // Splitting the live block mapping would violate break-before-make, even if none of the
+        // resulting page mappings are modified. So this must either be refused, or leave the block
+        // mapping intact.
+        let result = idmap.modify_range(
+            &MemoryRegion::new(BLOCK_SIZE, BLOCK_SIZE + PAGE_SIZE),
+            &|_, _| Ok(()),
+        );
+        // SAFETY: This doesn't actually deactivate the page table in tests, it just treats it as
+        // inactive for the sake of BBM rules.
+        unsafe { idmap.deactivate(ttbr) };
+        assert!(
+            matches!(result, Ok(()) | Err(MapError::BreakBeforeMakeViolation(_))),
+            "{result:?}"
+        );
+        assert_eq!(
+            idmap.mapping.root.mapping_level(VirtualAddress(BLOCK_SIZE)),
+            Some(2)
+        );
+    }
+
+    #[test]
     fn modify_range_partially_covering_block() {
         const BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
         let mapped = MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE);
@@ -1086,6 +1120,34 @@ mod tests {
     }
 
     #[test]
+    fn unmap_populated_subtable() {
+        const BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
+        let mut idmap = IdMap::with_asid(1, 1, Emulated(El1And0));
+        // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
+        // active for the sake of BBM rules.
+        let ttbr = unsafe { idmap.activate() };
+
+        // Map some pages that are not at the start of a block, which will cause a subtable to be
+        // created for it.
+        idmap
+            .map_range(
+                &MemoryRegion::new(PAGE_SIZE, 3 * PAGE_SIZE),
+                NORMAL_CACHEABLE | El1Attributes::VALID | El1Attributes::ACCESSED,
+            )
+            .unwrap();
+        // Unmap the entire block, which removes the subtable. This requires TLB maintenance for all
+        // the pages it mapped, not just for the first page of the block, and the subtable must not
+        // be freed before that has completed.
+        idmap
+            .map_range(&MemoryRegion::new(0, BLOCK_SIZE), El1Attributes::empty())
+            .unwrap();
+
+        // SAFETY: This doesn't actually deactivate the page table in tests, it just treats it as
+        // inactive for the sake of BBM rules.
+        unsafe { idmap.deactivate(ttbr) };
+    }
+
+    #[test]
     fn compact() {
         let mut idmap = IdMap::with_asid(1, 1, Emulated(El1And0));
         assert_eq!(idmap.size(), PAGE_SIZE * 512 * 512 * 512);
@@ -1274,5 +1336,31 @@ mod tests {
         idmap.map_range(&range, El1Attributes::empty()).unwrap();
         idmap.compact_subtables();
         assert_eq!(idmap.mapping.root.mapping_level(range.start()), None);
+    }
+
+    #[test]
+    fn update_live_non_global_mapping_el2and0() {
+        const FLAGS: El1Attributes = NORMAL_CACHEABLE
+            .union(El1Attributes::VALID)
+            .union(El1Attributes::ACCESSED)
+            .union(El1Attributes::NON_GLOBAL);
+        let mut idmap = IdMap::with_asid(1, 1, Emulated(El2And0));
+        // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
+        // active for the sake of BBM rules.
+        let ttbr = unsafe { idmap.activate() };
+        idmap
+            .map_range(&MemoryRegion::new(0, PAGE_SIZE), FLAGS)
+            .unwrap();
+        // The TLB maintenance for this change must apply to the ASID of the mapping, as its entries
+        // are non-global.
+        idmap
+            .map_range(
+                &MemoryRegion::new(0, PAGE_SIZE),
+                FLAGS | El1Attributes::READ_ONLY,
+            )
+            .unwrap();
+        // SAFETY: This doesn't actually deactivate the page table in tests, it just treats it as
+        // inactive for the sake of BBM rules.
+        unsafe { idmap.deactivate(ttbr) };
     }
 }

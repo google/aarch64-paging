@@ -267,9 +267,9 @@ impl<R: TranslationRegime> LinearMap<R> {
     /// memory range.
     ///
     /// This may involve splitting block entries if the provided range is not currently mapped
-    /// down to its precise boundaries. For visiting all the descriptors covering a memory range
-    /// without potential splitting (and no descriptor updates), use
-    /// [`walk_range`](Self::walk_range) instead.
+    /// down to its precise boundaries and the updater function modifies them. For visiting all the
+    /// descriptors covering a memory range without potential splitting (and no descriptor
+    /// updates), use [`walk_range`](Self::walk_range) instead.
     ///
     /// The updater function receives the following arguments:
     ///
@@ -283,6 +283,15 @@ impl<R: TranslationRegime> LinearMap<R> {
     ///
     /// - `Ok` to continue updating the remaining entries.
     /// - `Err` to signal an error and stop updating the remaining entries.
+    ///
+    /// The updater function may also be called with copies of descriptors, to find out what it
+    /// would do without applying the result. While the page table is active, this happens for all
+    /// descriptors covering the range, to check for break-before-make violations first. It also
+    /// happens for block entries that are only partially covered by the range, together with the
+    /// part of the range that they cover, as such a block entry is only split if the updater
+    /// function modifies its copy. So the updater function should modify such a copy if it would
+    /// modify any of the descriptors that the block entry would be split into. Returning `Err` for
+    /// such a copy stops the update, just like for any other descriptor.
     ///
     /// This should generally only be called while the page table is not active. In particular, any
     /// change that may require break-before-make per the architecture must be made while the page

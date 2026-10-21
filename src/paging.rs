@@ -735,9 +735,9 @@ impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
     /// memory range.
     ///
     /// This may involve splitting block entries if the provided range is not currently mapped
-    /// down to its precise boundaries. For visiting all the descriptors covering a memory range
-    /// without potential splitting (and no descriptor updates), use
-    /// [`walk_range`](Self::walk_range) instead.
+    /// down to its precise boundaries and the updater function modifies them. For visiting all the
+    /// descriptors covering a memory range without potential splitting (and no descriptor
+    /// updates), use [`walk_range`](Self::walk_range) instead.
     ///
     /// The updater function receives the following arguments:
     ///
@@ -751,6 +751,15 @@ impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
     ///
     /// - `Ok` to continue updating the remaining entries.
     /// - `Err` to signal an error and stop updating the remaining entries.
+    ///
+    /// The updater function may also be called with copies of descriptors, to find out what it
+    /// would do without applying the result. While the page table is active, this happens for all
+    /// descriptors covering the range, to check for break-before-make violations first. It also
+    /// happens for block entries that are only partially covered by the range, together with the
+    /// part of the range that they cover, as such a block entry is only split if the updater
+    /// function modifies its copy. So the updater function should modify such a copy if it would
+    /// modify any of the descriptors that the block entry would be split into. Returning `Err` for
+    /// such a copy stops the update, just like for any other descriptor.
     ///
     /// This should generally only be called while the page table is not active. In particular, any
     /// change that may require break-before-make per the architecture must be made while the page
@@ -1289,7 +1298,8 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
     }
 
     /// Modifies a range of page table entries by applying a function to each page table entry.
-    /// If the range is not aligned to block boundaries, block descriptors will be split up.
+    /// Block descriptors that are only partially covered by the range are split up if the function
+    /// modifies them.
     fn modify_range<F, R: TranslationRegime<Attributes = A>>(
         &mut self,
         translation: &mut T,
@@ -1308,15 +1318,34 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
         for chunk in range.split(level) {
             let index = self.entry_index(chunk.start());
             let entry = self.get_entry_mut(chunk.start());
-            if let Some(mut subtable) = entry.subtable(translation, level).or_else(|| {
-                if !chunk.is_block(level) {
-                    // The current chunk is not aligned to the block size at this level
-                    // Split it before recursing to the next level
+            let subtable = match entry.subtable(translation, level) {
+                Some(subtable) => Some(subtable),
+                None if !chunk.is_block(level) => {
+                    // The current chunk is not aligned to the block size at this level, so the
+                    // entry needs to be split before recursing to the next level. However, this
+                    // is only needed if the updater function modifies the entry, so try it on a
+                    // copy first, and leave the entry alone if the updater function doesn't
+                    // modify the copy.
+                    let mut desc = UpdatableDescriptor::clone_from(entry, level, live);
+                    if f(&chunk, &mut desc).is_err() {
+                        result = Err(MapError::PteUpdateFault(entry.bits()));
+                        break;
+                    }
+                    if !desc.updated() {
+                        continue;
+                    }
+                    if live && entry.is_valid() {
+                        // Splitting a live block mapping violates break-before-make, which
+                        // check_range_bbm() should have caught unless the updater function
+                        // behaves differently this time.
+                        result = Err(MapError::BreakBeforeMakeViolation(chunk.clone()));
+                        break;
+                    }
                     Some(Self::split_entry::<R>(translation, &chunk, entry, level))
-                } else {
-                    None
                 }
-            }) {
+                None => None,
+            };
+            if let Some(mut subtable) = subtable {
                 match subtable.modify_range::<F, R>(translation, &chunk, f, live) {
                     Ok(true) => {
                         modified = true;

@@ -326,6 +326,39 @@ mod tests {
     }
 
     #[test]
+    fn update_live_mapping_at_top_of_upper_range() {
+        const FLAGS: El1Attributes = NORMAL_CACHEABLE
+            .union(El1Attributes::VALID)
+            .union(El1Attributes::ACCESSED);
+        let mut pagetable = tlb::mapping_with_asid(
+            LinearTranslation::new(GIB_512_S),
+            1,
+            0,
+            El1And0,
+            VaRange::Upper,
+        );
+        // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
+        // active for the sake of BBM rules.
+        let ttbr = unsafe { pagetable.activate() };
+        let region = MemoryRegion::new(0xffff_ffff_8000_0000, 0xffff_ffff_8000_1000);
+        pagetable
+            .map_fixed_range(&region, FLAGS, Constraints::empty())
+            .unwrap();
+        // The TLB maintenance for this change must only pass the bits of the virtual address that
+        // the TLBI instructions expect, even though the top bits are set for the upper VA range.
+        pagetable
+            .map_fixed_range(
+                &region,
+                FLAGS | El1Attributes::READ_ONLY,
+                Constraints::empty(),
+            )
+            .unwrap();
+        // SAFETY: This doesn't actually deactivate the page table in tests, it just treats it as
+        // inactive for the sake of BBM rules.
+        unsafe { pagetable.deactivate(ttbr) };
+    }
+
+    #[test]
     fn map_out_of_range() {
         let mut pagetable =
             tlb::mapping_with_asid(LinearTranslation::new(4096), 1, 1, El1And0, VaRange::Lower);

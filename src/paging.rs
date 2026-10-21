@@ -116,6 +116,10 @@ mod private {
 
 /// Issues the TLB invalidation instruction `TLBI <op>{, <Xt>}`, with `$operand` in register `<Xt>`
 /// if the instruction takes a register operand.
+///
+/// In test builds, the instruction is passed to the TLB emulation instead, along with the
+/// translation regime it applies to, which is taken to be `Self`. This means that the macro must
+/// only be used in implementations of [`TranslationRegime`].
 macro_rules! tlbi {
     ($op:ident) => {{
         #[cfg(all(not(test), target_arch = "aarch64"))]
@@ -126,6 +130,8 @@ macro_rules! tlbi {
                 options(preserves_flags, nostack),
             );
         }
+        #[cfg(test)]
+        crate::tlb::tlbi::<Self>(stringify!($op), None);
     }};
     ($op:ident, $operand:expr) => {{
         #[allow(unused)]
@@ -139,6 +145,8 @@ macro_rules! tlbi {
                 options(preserves_flags, nostack),
             );
         }
+        #[cfg(test)]
+        crate::tlb::tlbi::<Self>(stringify!($op), Some(operand));
     }};
 }
 
@@ -958,6 +966,8 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
     fn new(translation: &mut T, level: usize) -> (Self, PhysicalAddress) {
         assert!(level <= LEAF_LEVEL);
         let (table, pa) = translation.allocate_table();
+        #[cfg(test)]
+        crate::tlb::table_allocated(table.as_ptr() as usize, pa, level);
         (
             // Safe because the pointer has been allocated with the appropriate layout, and the
             // memory is zeroed which is valid initialisation for a PageTable.
@@ -1257,6 +1267,8 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
         // SAFETY: Our caller promised that the table was created by `PageTableWithLevel::new` with
         // `translation`, which then allocated it by calling `allocate_table` on `translation`.
         unsafe {
+            #[cfg(test)]
+            crate::tlb::table_freed(self.table.as_ptr() as usize);
             // Actually free the memory used by the `PageTable`.
             translation.deallocate_table(self.table);
         }

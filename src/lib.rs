@@ -57,6 +57,8 @@ pub mod mair;
 pub mod paging;
 #[cfg(feature = "alloc")]
 pub mod target;
+#[cfg(test)]
+mod tlb;
 
 #[cfg(any(test, feature = "alloc"))]
 extern crate alloc;
@@ -121,6 +123,8 @@ fn dsb_ish() {
     unsafe {
         asm!("dsb ish", options(preserves_flags, nostack));
     }
+    #[cfg(test)]
+    tlb::dsb(tlb::Dsb::Full);
 }
 
 /// Issues an inner-shareable data synchronization barrier (DSB) with store scope, which waits for
@@ -131,6 +135,8 @@ fn dsb_ishst() {
     unsafe {
         asm!("dsb ishst", options(preserves_flags, nostack));
     }
+    #[cfg(test)]
+    tlb::dsb(tlb::Dsb::Store);
 }
 
 /// Issues an instruction synchronization barrier (ISB), so that the effects of preceding context
@@ -249,8 +255,6 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
     /// the TLB for this page table's configured ASID. The provided TTBR value should be the value
     /// returned by the preceding [`activate`](Self::activate) call.
     ///
-    /// In test builds or builds that do not target aarch64, the `TTBRn_ELx` access is omitted.
-    ///
     /// # Safety
     ///
     /// The caller must ensure that the previous page table which this is switching back to doesn't
@@ -258,7 +262,6 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
     pub unsafe fn deactivate(&self, #[allow(unused)] previous_ttbr: usize) {
         assert!(self.active());
 
-        #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: This just restores the previously saved value of `TTBRn_ELx`, which must have
         // been valid.
         unsafe {

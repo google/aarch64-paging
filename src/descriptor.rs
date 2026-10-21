@@ -405,10 +405,14 @@ impl<A: PagingAttributes> Descriptor<A> {
     }
 
     pub(crate) fn set(&mut self, pa: PhysicalAddress, flags: A) {
+        #[cfg(test)]
+        let old = self.0.load(Ordering::Relaxed);
         self.0.store(
             (pa.0 & Self::PHYSICAL_ADDRESS_BITMASK) | flags.bits(),
             Ordering::Release,
         );
+        #[cfg(test)]
+        crate::tlb::store(&self.0, old, self.0.load(Ordering::Relaxed));
     }
 
     pub(crate) fn subtable<T: Translation<A>>(
@@ -522,7 +526,10 @@ impl<'a, A: PagingAttributes> UpdatableDescriptor<'a, A> {
         let val = (pa.0 & Descriptor::<A>::PHYSICAL_ADDRESS_BITMASK) | flags.bits();
         match &mut self.descriptor {
             DescriptorEnum::Active(d) | DescriptorEnum::Inactive(d) => {
-                self.updated |= val != d.0.swap(val, Ordering::Release)
+                let old = d.0.swap(val, Ordering::Release);
+                self.updated |= val != old;
+                #[cfg(test)]
+                crate::tlb::store(&d.0, old, val);
             }
             DescriptorEnum::ActiveClone(d, _) | DescriptorEnum::InactiveClone(d, _) => {
                 self.updated |= *d != val;

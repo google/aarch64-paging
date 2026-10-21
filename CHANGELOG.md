@@ -65,6 +65,13 @@
   - Replace calls to `map_range` and `map_range_with_constraints` on `IdMap` and `LinearMap` with
     `map_fixed_range`.
 
+### Other changes
+
+- Added a TLB emulation for testing, which panics when the TLB maintenance performed for live page
+  tables is insufficient to prevent TLB conflicts, e.g., because a live mapping is changed without
+  break-before-make, or because the required barriers or TLB invalidation instructions are missing
+  or issued in the wrong order.
+
 ## 0.12.3
 
 ### Bugfixes

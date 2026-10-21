@@ -1335,7 +1335,13 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
                 }
             } else {
                 let bits = entry.bits();
-                let mut desc = UpdatableDescriptor::new(entry, level, live);
+                let mut desc = UpdatableDescriptor::new(
+                    entry,
+                    #[cfg(test)]
+                    chunk.start(),
+                    level,
+                    live,
+                );
                 f(&chunk, &mut desc).map_err(|_| MapError::PteUpdateFault(bits))?;
 
                 if live && desc.updated() {
@@ -1646,7 +1652,7 @@ mod tests {
             PhysicalAddress(0x12340000),
             El1Attributes::TABLE_OR_PAGE | El1Attributes::USER | El1Attributes::SWFLAG_1,
         );
-        UpdatableDescriptor::new(&mut desc, 3, true)
+        UpdatableDescriptor::new(&mut desc, VirtualAddress(0), 3, true)
             .modify_flags(
                 El1Attributes::DBM | El1Attributes::SWFLAG_3,
                 El1Attributes::VALID | El1Attributes::SWFLAG_1,
@@ -1671,7 +1677,7 @@ mod tests {
             PhysicalAddress(0x12340000),
             El1Attributes::TABLE_OR_PAGE | El1Attributes::USER | El1Attributes::SWFLAG_1,
         );
-        UpdatableDescriptor::new(&mut desc, 3, false)
+        UpdatableDescriptor::new(&mut desc, VirtualAddress(0), 3, false)
             .modify_flags(El1Attributes::VALID, El1Attributes::TABLE_OR_PAGE)
             .unwrap();
     }

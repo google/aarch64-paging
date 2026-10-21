@@ -472,8 +472,16 @@ pub struct UpdatableDescriptor<'a, A: PagingAttributes> {
 }
 
 impl<'a, A: PagingAttributes> UpdatableDescriptor<'a, A> {
-    /// Creates a new wrapper around a real descriptor that may or may not be live
-    pub(crate) fn new(desc: &'a mut Descriptor<A>, level: usize, live: bool) -> Self {
+    /// Creates a new wrapper around a real descriptor that may or may not be live. In test builds,
+    /// `va` is the virtual address that the descriptor maps.
+    pub(crate) fn new(
+        desc: &'a mut Descriptor<A>,
+        #[cfg(test)] va: VirtualAddress,
+        level: usize,
+        live: bool,
+    ) -> Self {
+        #[cfg(test)]
+        let _ = va;
         Self {
             descriptor: if live {
                 DescriptorEnum::Active(desc)

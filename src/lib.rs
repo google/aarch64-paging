@@ -376,6 +376,8 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
         self.root
             .map_range_impl(range, pa, flags, constraints, live)?;
         self.invalidate_range(range);
+        #[cfg(test)]
+        self.check_tlb_coherency(range);
         Ok(())
     }
 
@@ -433,6 +435,8 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
         if self.root.modify_range(range, f, self.active())? && self.active() {
             wait_for_tlb_maintenance();
         }
+        #[cfg(test)]
+        self.check_tlb_coherency(range);
         Ok(())
     }
 
@@ -512,6 +516,16 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
     #[cfg(test)]
     fn enter_tlb_context(&self) -> tlb::ContextGuard {
         tlb::ContextGuard::enter::<R>(self.root.tlb_id(), self.asid, self.active())
+    }
+
+    /// Checks that the TLB emulation holds no stale entries for `range` if the mapping is active.
+    #[cfg(test)]
+    fn check_tlb_coherency(&self, range: &MemoryRegion) {
+        if self.active() {
+            tlb::check_coherency(self.root.tlb_id(), range, |va, level| {
+                self.root.tlb_lookup(va, level)
+            });
+        }
     }
 }
 

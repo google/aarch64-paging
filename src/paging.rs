@@ -795,6 +795,17 @@ impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
         self.table.table.as_ptr() as usize
     }
 
+    /// Returns the descriptor at `level` that the page table walker would use to translate `va`,
+    /// or `None` if the walk terminates at a higher level.
+    #[cfg(test)]
+    pub(crate) fn tlb_lookup(
+        &self,
+        va: VirtualAddress,
+        level: usize,
+    ) -> Option<crate::descriptor::DescriptorBits> {
+        self.table.tlb_lookup(&self.translation, va, level)
+    }
+
     // Private version of `walk_range` using a closure that returns MapError on error
     pub(crate) fn visit_range<F>(&self, range: &MemoryRegion, f: &mut F) -> Result<(), MapError>
     where
@@ -1426,6 +1437,25 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
             } else {
                 None
             }
+        }
+    }
+
+    /// Returns the descriptor at `level` that the page table walker would use to translate `va`,
+    /// or `None` if the walk terminates at a higher level.
+    #[cfg(test)]
+    fn tlb_lookup(
+        &self,
+        translation: &T,
+        va: VirtualAddress,
+        level: usize,
+    ) -> Option<crate::descriptor::DescriptorBits> {
+        let entry = self.get_entry(va);
+        if self.level == level {
+            Some(entry.bits())
+        } else {
+            entry
+                .subtable(translation, self.level)?
+                .tlb_lookup(translation, va, level)
         }
     }
 

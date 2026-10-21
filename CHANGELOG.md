@@ -24,6 +24,9 @@
   tables is insufficient to prevent TLB conflicts, e.g., because a live mapping is changed without
   break-before-make, or because the required barriers or TLB invalidation instructions are missing
   or issued in the wrong order.
+- The TLB emulation also checks that `map_range` and `modify_range` leave no stale TLB entries
+  behind for the range they update on a live page table, so that missing TLB maintenance is detected
+  even for changes that cannot cause TLB conflicts, such as permission changes.
 
 ## 0.12.2
 

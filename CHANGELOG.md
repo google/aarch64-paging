@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Bugfixes
+
+- Ensure page table updates have completed (`dsb ishst`) before activating a page table or
+  performing TLB invalidation on an active page table.
+
 ## 0.12.2
 
 ### Bugfixes

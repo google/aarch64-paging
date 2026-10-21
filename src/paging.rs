@@ -871,6 +871,29 @@ impl Iterator for ChunkedIterator<'_> {
     }
 }
 
+/// A set of entries of a single page table, with one bit per entry.
+#[derive(Default)]
+struct EntryBitmap([u64; Self::WORDS]);
+
+impl EntryBitmap {
+    const WORDS: usize = (1 << BITS_PER_LEVEL) / 64;
+
+    /// Adds the entry with the given index to the set.
+    fn set(&mut self, index: usize) {
+        self.0[index / 64] |= 1 << (index % 64);
+    }
+
+    /// Returns whether the entry with the given index is in the set.
+    fn contains(&self, index: usize) -> bool {
+        self.0[index / 64] & (1 << (index % 64)) != 0
+    }
+
+    /// Returns whether the set is empty.
+    fn is_empty(&self) -> bool {
+        self.0 == [0; Self::WORDS]
+    }
+}
+
 /// Smart pointer which owns a [`PageTable`] and knows what level it is at. This allows it to
 /// implement methods to walk the page table hierachy which require knowing the starting level.
 #[derive(Debug)]
@@ -909,10 +932,15 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
         }
     }
 
+    /// Returns the index within this table of the entry covering the given virtual address.
+    fn entry_index(&self, va: VirtualAddress) -> usize {
+        let shift = PAGE_SHIFT + (LEAF_LEVEL - self.level) * BITS_PER_LEVEL;
+        (va.0 >> shift) % (1 << BITS_PER_LEVEL)
+    }
+
     /// Returns a reference to the descriptor corresponding to a given virtual address.
     fn get_entry(&self, va: VirtualAddress) -> &Descriptor<A> {
-        let shift = PAGE_SHIFT + (LEAF_LEVEL - self.level) * BITS_PER_LEVEL;
-        let index = (va.0 >> shift) % (1 << BITS_PER_LEVEL);
+        let index = self.entry_index(va);
         // SAFETY: We know that the pointer is properly aligned, dereferenced and initialised, and
         // nothing else can access the page table while we hold a mutable reference to the
         // PageTableWithLevel (assuming it is not currently active).
@@ -922,8 +950,7 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
 
     /// Returns a mutable reference to the descriptor corresponding to a given virtual address.
     fn get_entry_mut(&mut self, va: VirtualAddress) -> &mut Descriptor<A> {
-        let shift = PAGE_SHIFT + (LEAF_LEVEL - self.level) * BITS_PER_LEVEL;
-        let index = (va.0 >> shift) % (1 << BITS_PER_LEVEL);
+        let index = self.entry_index(va);
         // SAFETY: We know that the pointer is properly aligned, dereferenced and initialised, and
         // nothing else can access the page table while we hold a mutable reference to the
         // PageTableWithLevel (assuming it is not currently active).
@@ -1136,9 +1163,12 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
         F: Fn(&MemoryRegion, &mut UpdatableDescriptor<A>) -> Result<(), ()> + ?Sized,
     {
         let mut modified = false;
+        let mut need_barrier = false;
         let level = self.level;
+        let mut updated = EntryBitmap::default();
         for chunk in range.split(level) {
-            let entry = self.get_entry_mut(chunk.0.start);
+            let index = self.entry_index(chunk.start());
+            let entry = self.get_entry_mut(chunk.start());
             if let Some(mut subtable) = entry.subtable(translation, level).or_else(|| {
                 if !chunk.is_block(level) {
                     // The current chunk is not aligned to the block size at this level
@@ -1148,7 +1178,10 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
                     None
                 }
             }) {
-                modified |= subtable.modify_range::<F, R>(translation, &chunk, f, live)?;
+                if subtable.modify_range::<F, R>(translation, &chunk, f, live)? {
+                    modified = true;
+                    need_barrier = false;
+                }
             } else {
                 let bits = entry.bits();
                 let mut desc = UpdatableDescriptor::new(entry, level, live);
@@ -1156,11 +1189,22 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
 
                 if live && desc.updated() {
                     // Live descriptor was updated so TLB maintenance is needed
-                    crate::wait_for_store_completion();
-                    R::invalidate_va(chunk.start());
-                    modified = true;
+                    updated.set(index);
+                    need_barrier = true;
                 }
             }
+        }
+        if !updated.is_empty() {
+            if need_barrier {
+                // Ensure all entry updates in this table have completed before invalidating the TLB.
+                crate::wait_for_store_completion();
+            }
+            for chunk in range.split(level) {
+                if updated.contains(self.entry_index(chunk.start())) {
+                    R::invalidate_va(chunk.start());
+                }
+            }
+            modified = true;
         }
         Ok(modified)
     }
@@ -1455,6 +1499,19 @@ mod tests {
         UpdatableDescriptor::new(&mut desc, 3, false)
             .modify_flags(El1Attributes::VALID, El1Attributes::TABLE_OR_PAGE)
             .unwrap();
+    }
+
+    #[test]
+    fn entry_bitmap() {
+        let mut bitmap = EntryBitmap::default();
+        assert!(bitmap.is_empty());
+        for index in [0, 63, 64, 511] {
+            bitmap.set(index);
+        }
+        assert!(!bitmap.is_empty());
+        for index in 0..(1 << BITS_PER_LEVEL) {
+            assert_eq!(bitmap.contains(index), [0, 63, 64, 511].contains(&index));
+        }
     }
 
     #[cfg(feature = "alloc")]

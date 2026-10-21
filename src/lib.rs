@@ -60,6 +60,8 @@ pub mod target;
 
 #[cfg(any(test, feature = "alloc"))]
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 use bitflags::Flags;
 #[cfg(target_arch = "aarch64")]
@@ -527,6 +529,12 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
 
 impl<T: Translation<R::Attributes>, R: TranslationRegime> Drop for Mapping<T, R> {
     fn drop(&mut self) {
+        // Panicking while unwinding aborts the process, so avoid turning a failing test into an
+        // abort of the entire test run if it unwinds while the mapping is active.
+        #[cfg(test)]
+        if std::thread::panicking() {
+            return;
+        }
         if self.active() {
             panic!("Dropping active page table mapping!");
         }

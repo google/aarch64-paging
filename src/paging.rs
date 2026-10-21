@@ -108,6 +108,23 @@ mod private {
     }
 }
 
+/// Issues the TLB invalidation instruction `TLBI <op>, <Xt>`, with `$operand` in register `<Xt>`.
+macro_rules! tlbi {
+    ($op:ident, $operand:expr) => {{
+        #[allow(unused)]
+        let operand: usize = $operand;
+        #[cfg(all(not(test), target_arch = "aarch64"))]
+        // SAFETY: TLBI maintenance has no side effects that are observeable by the program
+        unsafe {
+            core::arch::asm!(
+                concat!("tlbi ", stringify!($op), ", {operand}"),
+                operand = in(reg) operand,
+                options(preserves_flags, nostack),
+            );
+        }
+    }};
+}
+
 /// Non-secure EL1&0, stage 1 translation regime.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct El1And0;
@@ -119,18 +136,7 @@ impl TranslationRegime for El1And0 {
     type VaRange = VaRange;
 
     fn invalidate_va(va: VirtualAddress) {
-        #[allow(unused)]
-        let va = tlbi_address(va);
-        #[cfg(all(not(test), target_arch = "aarch64"))]
-        // SAFETY: TLBI maintenance has no side effects that are observeable by the
-        // program
-        unsafe {
-            asm!(
-                "tlbi vaae1is, {va}",
-                va = in(reg) va,
-                options(preserves_flags, nostack),
-            );
-        }
+        tlbi!(vaae1is, tlbi_address(va));
     }
 
     #[allow(
@@ -218,18 +224,7 @@ impl TranslationRegime for El2And0 {
     type VaRange = VaRange;
 
     fn invalidate_va(va: VirtualAddress) {
-        #[allow(unused)]
-        let va = tlbi_address(va);
-        #[cfg(all(not(test), target_arch = "aarch64"))]
-        // SAFETY: TLBI maintenance has no side effects that are observeable by the
-        // program
-        unsafe {
-            asm!(
-                "tlbi vaae1is, {va}",
-                va = in(reg) va,
-                options(preserves_flags, nostack),
-            );
-        }
+        tlbi!(vaae1is, tlbi_address(va));
     }
 
     #[allow(
@@ -314,18 +309,7 @@ impl TranslationRegime for El2 {
     type VaRange = ();
 
     fn invalidate_va(va: VirtualAddress) {
-        #[allow(unused)]
-        let va = tlbi_address(va);
-        #[cfg(all(not(test), target_arch = "aarch64"))]
-        // SAFETY: TLBI maintenance has no side effects that are observeable by the
-        // program
-        unsafe {
-            asm!(
-                "tlbi vae2is, {va}",
-                va = in(reg) va,
-                options(preserves_flags, nostack),
-            );
-        }
+        tlbi!(vae2is, tlbi_address(va));
     }
 
     #[allow(
@@ -368,18 +352,7 @@ impl TranslationRegime for El3 {
     type VaRange = ();
 
     fn invalidate_va(va: VirtualAddress) {
-        #[allow(unused)]
-        let va = tlbi_address(va);
-        #[cfg(all(not(test), target_arch = "aarch64"))]
-        // SAFETY: TLBI maintenance has no side effects that are observeable by the
-        // program
-        unsafe {
-            asm!(
-                "tlbi vae3is, {va}",
-                va = in(reg) va,
-                options(preserves_flags, nostack),
-            );
-        }
+        tlbi!(vae3is, tlbi_address(va));
     }
 
     #[allow(
@@ -422,18 +395,7 @@ impl TranslationRegime for Stage2 {
     type VaRange = ();
 
     fn invalidate_va(va: VirtualAddress) {
-        #[allow(unused)]
-        let va = tlbi_address(va);
-        #[cfg(all(not(test), target_arch = "aarch64"))]
-        // SAFETY: TLBI maintenance has no side effects that are observeable by the
-        // program
-        unsafe {
-            asm!(
-                "tlbi ipas2e1is, {va}",
-                va = in(reg) va,
-                options(preserves_flags, nostack),
-            );
-        }
+        tlbi!(ipas2e1is, tlbi_address(va));
     }
 
     #[allow(

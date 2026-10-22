@@ -390,8 +390,7 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
             // map_range() only splits a block mapping if its output address or attributes change.
             self.check_range_bbm(range, &c)?;
         }
-        self.root
-            .map_range_impl(range, pa, flags, constraints, live)?;
+        self.root.map_range(range, pa, flags, constraints, live)?;
         self.invalidate_range(range);
         #[cfg(test)]
         tlb::check_coherency(self.root_address(), range);
@@ -490,7 +489,7 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
     /// every time a region is unmapped. You could instead call it when the system is under memory
     /// pressure.
     pub fn compact_subtables(&mut self) {
-        self.root.compact_subtables_impl(self.active());
+        self.root.compact_subtables(self.active());
     }
 
     /// Returns the physical address of the root table.

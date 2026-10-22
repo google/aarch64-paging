@@ -573,7 +573,7 @@ bitflags! {
 }
 
 /// A complete hierarchy of page tables including all levels.
-pub struct RootTable<R: TranslationRegime, T: Translation<R::Attributes>> {
+pub(crate) struct RootTable<R: TranslationRegime, T: Translation<R::Attributes>> {
     table: PageTableWithLevel<T, R::Attributes>,
     translation: T,
     pa: PhysicalAddress,
@@ -587,7 +587,7 @@ impl<R: TranslationRegime<VaRange = ()>, T: Translation<R::Attributes>> RootTabl
     /// The level must be between 0 and 3; level -1 (for 52-bit addresses with LPA2) is not
     /// currently supported by this library. The value of `TCR_EL1.T0SZ` must be set appropriately
     /// to match.
-    pub fn new(translation: T, level: usize, regime: R) -> Self {
+    pub(crate) fn new(translation: T, level: usize, regime: R) -> Self {
         Self::new_impl(translation, level, regime, ())
     }
 }
@@ -598,15 +598,13 @@ impl<R: TranslationRegime<VaRange = VaRange>, T: Translation<R::Attributes>> Roo
     /// The level must be between 0 and 3; level -1 (for 52-bit addresses with LPA2) is not
     /// currently supported by this library. The value of `TCR_EL1.T0SZ` must be set appropriately
     /// to match.
-    pub fn with_va_range(translation: T, level: usize, regime: R, va_range: VaRange) -> Self {
+    pub(crate) fn with_va_range(
+        translation: T,
+        level: usize,
+        regime: R,
+        va_range: VaRange,
+    ) -> Self {
         Self::new_impl(translation, level, regime, va_range)
-    }
-
-    /// Returns the virtual address range for which this table is intended.
-    ///
-    /// This affects which TTBR register is used.
-    pub fn va_range(&self) -> VaRange {
-        self.va_range
     }
 }
 
@@ -629,7 +627,7 @@ impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
     /// table.
     ///
     /// This is a function of the chosen root level.
-    pub fn size(&self) -> usize {
+    pub(crate) fn size(&self) -> usize {
         granularity_at_level(self.table.level) << BITS_PER_LEVEL
     }
 
@@ -640,24 +638,12 @@ impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
     /// To unmap a range, pass `flags` which don't contain the [`PagingAttributes::VALID`] bit. In this case
     /// the `pa` is ignored.
     ///
-    /// This performs no TLB maintenance, so it is only suitable for page tables which are not
-    /// live. Use [`Mapping`](crate::Mapping) for page tables which may be in use.
+    /// If `live` is true, the TLB maintenance required before freeing any subtable which is removed
+    /// is performed as well.
     ///
     /// Returns an error if the virtual address range is out of the range covered by the pagetable,
     /// or if the `flags` argument has unsupported attributes set.
-    pub fn map_range(
-        &mut self,
-        range: &MemoryRegion,
-        pa: PhysicalAddress,
-        flags: R::Attributes,
-        constraints: Constraints,
-    ) -> Result<(), MapError> {
-        self.map_range_impl(range, pa, flags, constraints, false)
-    }
-
-    /// Maps a range as [`map_range`](Self::map_range), additionally performing the TLB maintenance
-    /// required before freeing any subtable which is removed if `live` is true.
-    pub(crate) fn map_range_impl(
+    pub(crate) fn map_range(
         &mut self,
         range: &MemoryRegion,
         pa: PhysicalAddress,
@@ -675,12 +661,12 @@ impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
     }
 
     /// Returns the physical address of the root table in memory.
-    pub fn to_physical(&self) -> PhysicalAddress {
+    pub(crate) fn to_physical(&self) -> PhysicalAddress {
         self.pa
     }
 
     /// Returns a reference to the translation used for this page table.
-    pub fn translation(&self) -> &T {
+    pub(crate) fn translation(&self) -> &T {
         &self.translation
     }
 
@@ -763,7 +749,7 @@ impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
     ///
     /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
     /// largest virtual address covered by the page table given its root level.
-    pub fn walk_range<F>(&self, range: &MemoryRegion, f: &mut F) -> Result<(), MapError>
+    pub(crate) fn walk_range<F>(&self, range: &MemoryRegion, f: &mut F) -> Result<(), MapError>
     where
         F: FnMut(&MemoryRegion, &Descriptor<R::Attributes>, usize) -> Result<(), ()>,
     {
@@ -779,15 +765,9 @@ impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
     /// every time a region is unmapped. You could instead call it when the system is under memory
     /// pressure.
     ///
-    /// This performs no TLB maintenance, so it is only suitable for page tables which are not
-    /// live. Use [`Mapping`](crate::Mapping) for page tables which may be in use.
-    pub fn compact_subtables(&mut self) {
-        self.compact_subtables_impl(false);
-    }
-
-    /// Compacts subtables as [`compact_subtables`](Self::compact_subtables), additionally
-    /// performing the TLB maintenance required before freeing each subtable if `live` is true.
-    pub(crate) fn compact_subtables_impl(&mut self, live: bool) {
+    /// If `live` is true, the TLB maintenance required before freeing each subtable is performed as
+    /// well.
+    pub(crate) fn compact_subtables(&mut self, live: bool) {
         let base = self.base_va();
         self.table
             .compact_subtables::<R>(&mut self.translation, base, live);
@@ -1847,6 +1827,7 @@ mod tests {
                 PhysicalAddress(PAGE_SIZE * 3),
                 El1Attributes::VALID | El1Attributes::NON_GLOBAL,
                 Constraints::empty(),
+                false,
             )
             .unwrap();
         table
@@ -1855,6 +1836,7 @@ mod tests {
                 PhysicalAddress(PAGE_SIZE * 6),
                 El1Attributes::VALID | El1Attributes::READ_ONLY,
                 Constraints::empty(),
+                false,
             )
             .unwrap();
         table
@@ -1863,6 +1845,7 @@ mod tests {
                 PhysicalAddress(PAGE_SIZE * 8),
                 El1Attributes::VALID | El1Attributes::READ_ONLY,
                 Constraints::empty(),
+                false,
             )
             .unwrap();
         assert_eq!(
@@ -1893,6 +1876,7 @@ mod tests {
                 PhysicalAddress(BLOCK_SIZE * 3),
                 El1Attributes::VALID | El1Attributes::NON_GLOBAL,
                 Constraints::empty(),
+                false,
             )
             .unwrap();
         table
@@ -1901,6 +1885,7 @@ mod tests {
                 PhysicalAddress(BLOCK_SIZE * 6),
                 El1Attributes::VALID | El1Attributes::READ_ONLY,
                 Constraints::empty(),
+                false,
             )
             .unwrap();
         table
@@ -1909,6 +1894,7 @@ mod tests {
                 PhysicalAddress(BLOCK_SIZE * 8),
                 El1Attributes::VALID | El1Attributes::READ_ONLY,
                 Constraints::empty(),
+                false,
             )
             .unwrap();
         assert_eq!(

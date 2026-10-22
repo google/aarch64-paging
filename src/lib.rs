@@ -384,8 +384,7 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
         }
         #[cfg(test)]
         let _tlb = self.enter_tlb_context();
-        self.root
-            .map_range_impl(range, pa, flags, constraints, live)?;
+        self.root.map_range(range, pa, flags, constraints, live)?;
         self.invalidate_range(range);
         #[cfg(test)]
         self.check_tlb_coherency(range);
@@ -482,7 +481,7 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
     pub fn compact_subtables(&mut self) {
         #[cfg(test)]
         let _tlb = self.enter_tlb_context();
-        self.root.compact_subtables_impl(self.active());
+        self.root.compact_subtables(self.active());
     }
 
     /// Returns the physical address of the root table.

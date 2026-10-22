@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- `RootTable` is no longer public. It has no way of knowing whether the page table it manages is
+  live, and so it cannot perform the TLB maintenance that updating a live page table requires. Use
+  `Mapping` instead, which only performs TLB maintenance while the page table is active, e.g.,
+  together with `TargetAllocator` to build a page table for a separate target device.
+
 ### Bugfixes
 
 - Ensure page table updates have completed (`dsb ishst`) before activating a page table or

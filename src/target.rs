@@ -18,15 +18,19 @@ use core::{mem::size_of, ptr::NonNull};
 ///
 /// ```
 /// use aarch64_paging::{
+///     Mapping,
 ///     descriptor::{PhysicalAddress, El1Attributes},
-///     paging::{Constraints, MemoryRegion, RootTable, El1And0, VaRange},
+///     paging::{Constraints, MemoryRegion, El1And0, VaRange},
 ///     target::TargetAllocator,
 /// };
 ///
+/// const ASID: usize = 1;
 /// const ROOT_LEVEL: usize = 1;
 ///
-/// let mut map = RootTable::with_va_range(
+/// // As long as the mapping is not activated, it does not perform any TLB maintenance.
+/// let mut map = Mapping::with_asid_and_va_range(
 ///     TargetAllocator::new(0x1_0000),
+///     ASID,
 ///     ROOT_LEVEL,
 ///     El1And0,
 ///     VaRange::Lower,
@@ -137,15 +141,18 @@ impl<A: PagingAttributes> Translation<A> for TargetAllocator<A> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Mapping;
     use crate::descriptor::El1Attributes;
-    use crate::paging::{Constraints, El1And0, MemoryRegion, RootTable, VaRange};
+    use crate::paging::{Constraints, El1And0, MemoryRegion, VaRange};
 
+    const ASID: usize = 1;
     const ROOT_LEVEL: usize = 1;
 
     #[test]
     fn map_one_page() {
-        let mut map = RootTable::with_va_range(
+        let mut map = Mapping::with_asid_and_va_range(
             TargetAllocator::new(0x1_0000),
+            ASID,
             ROOT_LEVEL,
             El1And0,
             VaRange::Lower,

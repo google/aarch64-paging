@@ -5,8 +5,8 @@
 //! A model of the TLB, used by the tests to check that live translation tables are only ever
 //! updated in ways that cannot give rise to TLB conflicts or stale TLB entries.
 //!
-//! Tests opt in by building their page tables with [`mapping_with_asid`]. This wraps the
-//! translation regime in [`Emulated`], which makes the emulation aware of the translation table
+//! Tests opt in by building their page tables with [`mapping`] or [`mapping_with_asid`]. These wrap
+//! the translation regime in [`Emulated`], which makes the emulation aware of the translation table
 //! hierarchies that are activated with it. The library itself only reports the translation tables
 //! it allocates and frees, the stores to their descriptors, and the barriers and TLB invalidation
 //! instructions it issues. While a hierarchy is live, the emulation keeps track of the translation
@@ -55,10 +55,10 @@
 //!   TLB, as the walker may form it again right away: the TLBI by IPA must be completed by a DSB
 //!   before TLBI VMALLE1IS is issued.
 //!
-//! In addition, after each update of a live page table built with [`mapping_with_asid`], the
-//! emulation checks that no stale TLB entries remain for the updated range, as
-//! [`Mapping::map_range`] and [`Mapping::modify_range`] guarantee that the updates have taken
-//! effect by the time they return. See [`EmulatedMapping`].
+//! In addition, after each update of a live page table built with [`mapping`] or
+//! [`mapping_with_asid`], the emulation checks that no stale TLB entries remain for the updated
+//! range, as [`Mapping::map_range`] and [`Mapping::modify_range`] guarantee that the updates have
+//! taken effect by the time they return. See [`EmulatedMapping`].
 //!
 //! Each thread has its own TLB, and TLB entries are tagged with the translation table hierarchy
 //! they were created from, so that unrelated tests or mappings do not interfere with each other.
@@ -879,8 +879,8 @@ fn invalidate_asid<R: TranslationRegime>(asid: R::Asid) {
 
 /// A translation regime that behaves like `R`, but that also makes the TLB emulation aware of the
 /// translation table hierarchies that are activated with it, so that their descriptors are subject
-/// to its checks while they are live. Tests build such hierarchies with [`mapping_with_asid`], and
-/// all such tests depend on the `alloc` feature.
+/// to its checks while they are live. Tests build such hierarchies with [`mapping`] or
+/// [`mapping_with_asid`], and all such tests depend on the `alloc` feature.
 #[cfg(feature = "alloc")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Emulated<R>(R);
@@ -951,7 +951,8 @@ impl<R: TranslationRegime> TranslationRegime for Emulated<R> {
     }
 }
 
-/// A page table to which the TLB emulation applies, as built by [`mapping_with_asid`].
+/// A page table to which the TLB emulation applies, as built by [`mapping`] or
+/// [`mapping_with_asid`].
 ///
 /// It dereferences to the underlying [`Mapping`], but only immutably, so that the page table can
 /// only be updated via its own versions of the functions that do so. After each update of the live
@@ -1050,21 +1051,37 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Drop for EmulatedMappi
     }
 }
 
-/// A page table with identity mapping to which the TLB emulation applies, as built by
-/// [`mapping_with_asid`] with an [`IdTranslation`].
+/// A page table with identity mapping to which the TLB emulation applies, as built by [`mapping`]
+/// or [`mapping_with_asid`] with an [`IdTranslation`].
 #[cfg(feature = "alloc")]
 pub(crate) type EmulatedIdMap<R> =
     EmulatedMapping<IdTranslation<<R as TranslationRegime>::Attributes>, R>;
 
-/// A page table with linear mapping to which the TLB emulation applies, as built by
-/// [`mapping_with_asid`] with a [`LinearTranslation`].
+/// A page table with linear mapping to which the TLB emulation applies, as built by [`mapping`]
+/// or [`mapping_with_asid`] with a [`LinearTranslation`].
 #[cfg(feature = "alloc")]
 pub(crate) type EmulatedLinearMap<R> =
     EmulatedMapping<LinearTranslation<<R as TranslationRegime>::Attributes>, R>;
 
+/// Builds a page table for `regime`, a translation regime without ASIDs, like [`Mapping::new`], but
+/// to which the TLB emulation applies: `regime` is wrapped in [`Emulated`], so that the emulation
+/// models the TLB while the page table is live.
+#[cfg(feature = "alloc")]
+pub(crate) fn mapping<T, R>(translation: T, root_level: usize, regime: R) -> EmulatedMapping<T, R>
+where
+    T: Translation<R::Attributes>,
+    R: TranslationRegime<Asid = (), VaRange = ()>,
+{
+    EmulatedMapping(Some(Mapping::new(
+        translation,
+        root_level,
+        Emulated(regime),
+    )))
+}
+
 /// Builds a page table for `regime`, a translation regime with ASIDs, like
-/// [`Mapping::with_asid_and_va_range`], but to which the TLB emulation applies: `regime` is wrapped
-/// in [`Emulated`], so that the emulation models the TLB while the page table is live.
+/// [`Mapping::with_asid_and_va_range`], but to which the TLB emulation applies, as described for
+/// [`mapping`].
 #[cfg(feature = "alloc")]
 pub(crate) fn mapping_with_asid<T, R>(
     translation: T,

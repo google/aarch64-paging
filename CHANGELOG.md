@@ -64,6 +64,10 @@
     `Mapping::with_asid_and_va_range(LinearTranslation::new(OFFSET), ASID, ROOT_LEVEL, REGIME, VA_RANGE)`.
   - Replace calls to `map_range` and `map_range_with_constraints` on `IdMap` and `LinearMap` with
     `map_fixed_range`.
+- `RootTable` is no longer public. It has no way of knowing whether the page table it manages is
+  live, and so it cannot perform the TLB maintenance that updating a live page table requires. Use
+  `Mapping` instead, which only performs TLB maintenance while the page table is active, e.g.,
+  together with `TargetAllocator` to build a page table for a separate target device.
 
 ### Other changes
 

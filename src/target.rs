@@ -18,15 +18,19 @@ use core::{mem::size_of, ptr::NonNull};
 ///
 /// ```
 /// use aarch64_paging::{
+///     Mapping,
 ///     descriptor::{PhysicalAddress, El1Attributes},
-///     paging::{Constraints, MemoryRegion, RootTable, El1And0, VaRange},
+///     paging::{Constraints, MemoryRegion, El1And0, VaRange},
 ///     target::TargetAllocator,
 /// };
 ///
+/// const ASID: usize = 1;
 /// const ROOT_LEVEL: usize = 1;
 ///
-/// let mut map = RootTable::with_va_range(
+/// // As long as the mapping is not activated, it does not perform any TLB maintenance.
+/// let mut map = Mapping::with_asid_and_va_range(
 ///     TargetAllocator::new(0x1_0000),
+///     ASID,
 ///     ROOT_LEVEL,
 ///     El1And0,
 ///     VaRange::Lower,
@@ -158,6 +162,7 @@ mod tests {
                 | El1Attributes::INNER_SHAREABLE
                 | El1Attributes::UXN,
             Constraints::empty(),
+            false,
         )
         .unwrap();
 

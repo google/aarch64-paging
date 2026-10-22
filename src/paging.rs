@@ -108,12 +108,25 @@ mod private {
     }
 }
 
-/// Issues the TLB invalidation instruction `TLBI <op>, <Xt>`, with `$operand` in register `<Xt>`.
+/// Issues the TLB invalidation instruction `TLBI <op>{, <Xt>}`, with `$operand` in register `<Xt>`
+/// if the instruction takes a register operand.
 ///
 /// In test builds, the instruction is passed to the TLB emulation instead, along with the
 /// translation regime it applies to, which is taken to be `Self`. This means that the macro must
 /// only be used in implementations of [`TranslationRegime`].
 macro_rules! tlbi {
+    ($op:ident) => {{
+        #[cfg(all(not(test), target_arch = "aarch64"))]
+        // SAFETY: TLBI maintenance has no side effects that are observeable by the program
+        unsafe {
+            core::arch::asm!(
+                concat!("tlbi ", stringify!($op)),
+                options(preserves_flags, nostack),
+            );
+        }
+        #[cfg(test)]
+        crate::tlb::tlbi::<Self>(stringify!($op), None);
+    }};
     ($op:ident, $operand:expr) => {{
         #[allow(unused)]
         let operand: usize = $operand;
@@ -127,7 +140,7 @@ macro_rules! tlbi {
             );
         }
         #[cfg(test)]
-        crate::tlb::tlbi::<Self>(stringify!($op), operand);
+        crate::tlb::tlbi::<Self>(stringify!($op), Some(operand));
     }};
 }
 

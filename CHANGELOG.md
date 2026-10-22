@@ -6,6 +6,9 @@
 
 - Ensure page table updates have completed (`dsb ishst`) before activating a page table or
   performing TLB invalidation on an active page table.
+- Fixed TLB invalidation operand masking. The shifted address was not masked, so the sign extension
+  of an upper range address could spill into the TTL field at bits [47:44] and cause invalidations
+  with a mismatched TTL to be discarded. The operand is now masked to bits [43:0].
 
 ## 0.12.2
 

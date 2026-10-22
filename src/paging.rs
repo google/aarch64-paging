@@ -659,6 +659,9 @@ impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
     /// To unmap a range, pass `flags` which don't contain the [`PagingAttributes::VALID`] bit. In this case
     /// the `pa` is ignored.
     ///
+    /// This performs no TLB maintenance, so it is only suitable for page tables which are not
+    /// live. Use [`Mapping`](crate::Mapping) for page tables which may be in use.
+    ///
     /// Returns an error if the virtual address range is out of the range covered by the pagetable,
     /// or if the `flags` argument has unsupported attributes set.
     pub fn map_range(
@@ -668,12 +671,25 @@ impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
         flags: R::Attributes,
         constraints: Constraints,
     ) -> Result<(), MapError> {
+        self.map_range_impl(range, pa, flags, constraints, false)
+    }
+
+    /// Maps a range as [`map_range`](Self::map_range), additionally performing the TLB maintenance
+    /// required before freeing any subtable which is removed if `live` is true.
+    pub(crate) fn map_range_impl(
+        &mut self,
+        range: &MemoryRegion,
+        pa: PhysicalAddress,
+        flags: R::Attributes,
+        constraints: Constraints,
+        live: bool,
+    ) -> Result<(), MapError> {
         if flags.contains(R::Attributes::TABLE_OR_PAGE) {
             return Err(MapError::InvalidFlags(flags.bits()));
         }
         self.verify_region(range)?;
         self.table
-            .map_range(&mut self.translation, range, pa, flags, constraints);
+            .map_range::<R>(&mut self.translation, range, pa, flags, constraints, live);
         Ok(())
     }
 
@@ -781,8 +797,28 @@ impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
     /// This requires walking the whole hierarchy of pagetables, so you may not want to call it
     /// every time a region is unmapped. You could instead call it when the system is under memory
     /// pressure.
+    ///
+    /// This performs no TLB maintenance, so it is only suitable for page tables which are not
+    /// live. Use [`Mapping`](crate::Mapping) for page tables which may be in use.
     pub fn compact_subtables(&mut self) {
-        self.table.compact_subtables(&mut self.translation);
+        self.compact_subtables_impl(false);
+    }
+
+    /// Compacts subtables as [`compact_subtables`](Self::compact_subtables), additionally
+    /// performing the TLB maintenance required before freeing each subtable if `live` is true.
+    pub(crate) fn compact_subtables_impl(&mut self, live: bool) {
+        let base = self.base_va();
+        self.table
+            .compact_subtables::<R>(&mut self.translation, base, live);
+    }
+
+    /// Returns the first virtual address covered by this page table.
+    fn base_va(&self) -> VirtualAddress {
+        match self.va_range.into_va_range() {
+            VaRange::Lower => VirtualAddress(0),
+            // The upper range ends at the top of the address space, i.e. at 2^64.
+            VaRange::Upper => VirtualAddress(0usize.wrapping_sub(self.size())),
+        }
     }
 
     // Private version of `walk_range` using a closure that returns MapError on error
@@ -964,7 +1000,7 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
 
     /// Convert the descriptor in `entry` from a block mapping to a table mapping of
     /// the same range with the same attributes
-    fn split_entry(
+    fn split_entry<R: TranslationRegime<Attributes = A>>(
         translation: &mut T,
         chunk: &MemoryRegion,
         entry: &mut Descriptor<A>,
@@ -979,12 +1015,13 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
             // Recreate the entire block in the newly added table.
             let a = align_down(chunk.0.start.0, granularity);
             let b = align_up(chunk.0.end.0, granularity);
-            subtable.map_range(
+            subtable.map_range::<R>(
                 translation,
                 &MemoryRegion::new(a, b),
                 old_pa,
                 old_flags,
                 Constraints::empty(),
+                false,
             );
         }
         // If `old` was not a block entry, a newly zeroed page will be added to the hierarchy,
@@ -1005,13 +1042,14 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
     /// Panics if the `translation` doesn't provide a corresponding physical address for some
     /// virtual address within the range, as there is no way to roll back to a safe state so this
     /// should be checked by the caller beforehand.
-    fn map_range(
+    fn map_range<R: TranslationRegime<Attributes = A>>(
         &mut self,
         translation: &mut T,
         range: &MemoryRegion,
         mut pa: PhysicalAddress,
         flags: A,
         constraints: Constraints,
+        live: bool,
     ) {
         let level = self.level;
         let granularity = granularity_at_level(level);
@@ -1057,18 +1095,85 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
                 entry.set(PhysicalAddress(0), flags);
 
                 // SAFETY: The subtable was created with the same translation by
-                // `PageTableWithLevel::new`, and is no longer referenced by this table. We don't
-                // reuse subtables so there must not be any other references to it.
+                // `PageTableWithLevel::new`, and the entry which referenced it was replaced with an
+                // invalid entry just above. We don't reuse subtables so there must not be any other
+                // references to it. `chunk` is the entire range covered by the entry, so it starts
+                // at the base of the subtable. `live` is true whenever the page table may be in use
+                // by a page table walker, as required of our caller.
                 unsafe {
-                    subtable.free(translation);
+                    subtable.free_detached::<R>(translation, chunk.start(), live);
                 }
             } else {
                 let mut subtable = entry
                     .subtable(translation, level)
-                    .unwrap_or_else(|| Self::split_entry(translation, &chunk, entry, level));
-                subtable.map_range(translation, &chunk, pa, flags, constraints);
+                    .unwrap_or_else(|| Self::split_entry::<R>(translation, &chunk, entry, level));
+                subtable.map_range::<R>(translation, &chunk, pa, flags, constraints, live);
             }
             pa.0 += chunk.len();
+        }
+    }
+
+    /// Invalidates the TLB entries for this detached subtable hierarchy.
+    fn invalidate_detached<R: TranslationRegime<Attributes = A>>(
+        &self,
+        translation: &T,
+        base: VirtualAddress,
+    ) {
+        let granularity = granularity_at_level(self.level);
+        // SAFETY: We know that the pointer is aligned, initialised and dereferencable, and the
+        // PageTable won't be mutated while we are using it.
+        let table = unsafe { self.table.as_ref() };
+        let mut invalidated_any = false;
+        for (i, entry) in table.entries.iter().enumerate() {
+            // This cannot overflow: `base` is the start of the range covered by one entry at the
+            // level above and `i < 512`, so `va` stays within that range.
+            let va = VirtualAddress(base.0 + i * granularity);
+            if let Some(subtable) = entry.subtable(translation, self.level) {
+                subtable.invalidate_detached::<R>(translation, va);
+                invalidated_any = true;
+            } else if entry.is_valid() {
+                R::invalidate_va(va);
+                invalidated_any = true;
+            }
+        }
+        if !invalidated_any {
+            // Even if all entries were invalid, the table descriptor itself may be cached in a
+            // walk cache.
+            R::invalidate_va(base);
+        }
+    }
+
+    /// Frees a detached subtable hierarchy, performing the required TLB maintenance first if
+    /// `live` is true.
+    ///
+    /// # Safety
+    ///
+    /// - The table and all its subtables must have been created by `PageTableWithLevel::new` with
+    ///   the same `translation`, and not yet freed.
+    /// - The entry which referenced the table must have been replaced with an invalid entry, by a
+    ///   store which precedes this call in program order, so that no page table references the
+    ///   hierarchy any more.
+    /// - `base` must be the first virtual address translated by the table, i.e. the start of the
+    ///   range covered by the entry which referenced it.
+    /// - `live` must be true unless no page table walker on any CPU can be using the page table
+    ///   from which the hierarchy was detached.
+    unsafe fn free_detached<R: TranslationRegime<Attributes = A>>(
+        &mut self,
+        translation: &mut T,
+        base: VirtualAddress,
+        live: bool,
+    ) {
+        if live {
+            crate::wait_for_store_completion();
+            self.invalidate_detached::<R>(translation, base);
+            crate::wait_for_tlb_maintenance();
+        }
+        // SAFETY: Our caller promised that the table and all its subtables were created with
+        // `translation`, not yet freed, and are no longer referenced by any page table. If the
+        // page table is live, the TLB maintenance above has completed, so no page table walker can
+        // still be using them either.
+        unsafe {
+            self.free(translation);
         }
     }
 
@@ -1177,7 +1282,7 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
                 if !chunk.is_block(level) {
                     // The current chunk is not aligned to the block size at this level
                     // Split it before recursing to the next level
-                    Some(Self::split_entry(translation, &chunk, entry, level))
+                    Some(Self::split_entry::<R>(translation, &chunk, entry, level))
                 } else {
                     None
                 }
@@ -1235,23 +1340,35 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
     /// freeing the subtable.
     ///
     /// Returns true if this table is now entirely empty.
-    pub fn compact_subtables(&mut self, translation: &mut T) -> bool {
+    fn compact_subtables<R: TranslationRegime<Attributes = A>>(
+        &mut self,
+        translation: &mut T,
+        base: VirtualAddress,
+        live: bool,
+    ) -> bool {
         // SAFETY: We know that the pointer is aligned, initialised and dereferencable, and the
         // PageTable won't be mutated while we are using it.
         let table = unsafe { self.table.as_mut() };
+        let granularity = granularity_at_level(self.level);
 
         let mut all_empty = true;
-        for entry in &mut table.entries {
+        for (i, entry) in table.entries.iter_mut().enumerate() {
+            // This cannot overflow: `base` is the start of the range covered by one entry at the
+            // level above and `i < 512`, so `va` stays within that range.
+            let va = VirtualAddress(base.0 + i * granularity);
             if let Some(mut subtable) = entry.subtable(translation, self.level)
-                && subtable.compact_subtables(translation)
+                && subtable.compact_subtables::<R>(translation, va, live)
             {
                 entry.set(PhysicalAddress(0), A::default());
 
                 // SAFETY: The subtable was created with the same translation by
-                // `PageTableWithLevel::new`, and is no longer referenced by this table. We don't
-                // reuse subtables so there must not be any other references to it.
+                // `PageTableWithLevel::new`, and the entry which referenced it was replaced with an
+                // invalid entry just above. We don't reuse subtables so there must not be any other
+                // references to it. `va` is the start of the range covered by entry `i`, so it is
+                // the base of the subtable. `live` is true whenever the page table may be in use by
+                // a page table walker, as required of our caller.
                 unsafe {
-                    subtable.free(translation);
+                    subtable.free_detached::<R>(translation, va, live);
                 }
             }
             if entry.bits() != 0 {

@@ -372,8 +372,8 @@ impl<R: TranslationRegime> IdMap<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::descriptor::El1Attributes;
-    use crate::paging::{El1And0, El2And0};
+    use crate::descriptor::{El1Attributes, Stage2Attributes};
+    use crate::paging::{El1And0, El2And0, Stage2};
     use crate::{
         MapError, VirtualAddress,
         paging::{BITS_PER_LEVEL, MemoryRegion, PAGE_SIZE},
@@ -383,6 +383,11 @@ mod tests {
     const DEVICE_NGNRE: El1Attributes = El1Attributes::ATTRIBUTE_INDEX_0;
     const NORMAL_CACHEABLE: El1Attributes =
         El1Attributes::ATTRIBUTE_INDEX_1.union(El1Attributes::INNER_SHAREABLE);
+    const S2_NORMAL_CACHEABLE: Stage2Attributes = Stage2Attributes::MEMATTR_NORMAL_INNER_WB
+        .union(Stage2Attributes::MEMATTR_NORMAL_OUTER_WB)
+        .union(Stage2Attributes::SH_INNER)
+        .union(Stage2Attributes::ACCESS_FLAG)
+        .union(Stage2Attributes::VALID);
 
     #[test]
     fn map_valid() {
@@ -1178,5 +1183,62 @@ mod tests {
         // SAFETY: This doesn't actually deactivate the page table in tests, it just treats it as
         // inactive for the sake of BBM rules.
         unsafe { idmap.deactivate(ttbr) };
+    }
+
+    /// Maps `range` read-write in a live stage 2 identity mapping, and then updates the mapping
+    /// using `update`. Unlike a stage 1 mapping, this requires TLB maintenance for the TLB entries
+    /// that combine the stage 2 translation with a stage 1 translation of the guest.
+    fn update_live_stage2_mapping(range: &MemoryRegion, update: impl FnOnce(&mut IdMap<Stage2>)) {
+        let mut idmap = IdMap::new(1, Stage2);
+        // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
+        // active for the sake of BBM rules and the TLB emulation.
+        let ttbr = unsafe { idmap.activate() };
+        idmap
+            .map_range(
+                range,
+                S2_NORMAL_CACHEABLE | Stage2Attributes::S2AP_ACCESS_RW,
+            )
+            .unwrap();
+        update(&mut idmap);
+        // SAFETY: This doesn't actually deactivate the page table in tests, it just treats it as
+        // inactive for the sake of BBM rules and the TLB emulation.
+        unsafe { idmap.deactivate(ttbr) };
+    }
+
+    #[test]
+    fn map_live_stage2_mapping_read_only() {
+        let page = MemoryRegion::new(0, PAGE_SIZE);
+        update_live_stage2_mapping(&page, |idmap| {
+            idmap
+                .map_range(
+                    &page,
+                    S2_NORMAL_CACHEABLE | Stage2Attributes::S2AP_ACCESS_RO,
+                )
+                .unwrap();
+        });
+    }
+
+    #[test]
+    fn modify_live_stage2_mapping() {
+        let page = MemoryRegion::new(0, PAGE_SIZE);
+        update_live_stage2_mapping(&page, |idmap| {
+            idmap
+                .modify_range(&page, &|_, d| {
+                    d.modify_flags(Stage2Attributes::XN, Stage2Attributes::empty())
+                })
+                .unwrap();
+        });
+    }
+
+    #[test]
+    fn unmap_live_stage2_subtable() {
+        const BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
+        // Mapping some pages that are not at the start of a block causes a subtable to be created.
+        update_live_stage2_mapping(&MemoryRegion::new(PAGE_SIZE, 3 * PAGE_SIZE), |idmap| {
+            // Unmap the entire block, which removes the subtable.
+            idmap
+                .map_range(&MemoryRegion::new(0, BLOCK_SIZE), Stage2Attributes::empty())
+                .unwrap();
+        });
     }
 }

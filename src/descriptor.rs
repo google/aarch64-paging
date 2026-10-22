@@ -411,6 +411,21 @@ impl<A: PagingAttributes> Descriptor<A> {
         );
     }
 
+    /// Assigns the descriptor, which is part of a page table, according to `pa` and `flags`. In test
+    /// builds, `va` is the virtual address that the descriptor maps, and `level` is its level in the
+    /// page table hierarchy.
+    pub(crate) fn set_at(
+        &mut self,
+        pa: PhysicalAddress,
+        flags: A,
+        #[cfg(test)] va: VirtualAddress,
+        #[cfg(test)] level: usize,
+    ) {
+        #[cfg(test)]
+        let _ = (va, level);
+        self.set(pa, flags);
+    }
+
     pub(crate) fn subtable<T: Translation<A>>(
         &self,
         translation: &T,

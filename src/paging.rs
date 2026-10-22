@@ -1027,7 +1027,14 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
         // If `old` was not a block entry, a newly zeroed page will be added to the hierarchy,
         // which might be live in this case. We rely on the release semantics of the set() below to
         // ensure that all observers that see the new entry will also see the zeroed contents.
-        entry.set(subtable_pa, A::TABLE_OR_PAGE | A::VALID);
+        entry.set_at(
+            subtable_pa,
+            A::TABLE_OR_PAGE | A::VALID,
+            #[cfg(test)]
+            chunk.start(),
+            #[cfg(test)]
+            level,
+        );
         subtable
     }
 
@@ -1060,10 +1067,24 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
             if level == LEAF_LEVEL {
                 if flags.contains(A::VALID) {
                     // Put down a page mapping.
-                    entry.set(pa, flags | A::TABLE_OR_PAGE);
+                    entry.set_at(
+                        pa,
+                        flags | A::TABLE_OR_PAGE,
+                        #[cfg(test)]
+                        chunk.start(),
+                        #[cfg(test)]
+                        level,
+                    );
                 } else {
                     // Put down an invalid entry.
-                    entry.set(PhysicalAddress(0), flags);
+                    entry.set_at(
+                        PhysicalAddress(0),
+                        flags,
+                        #[cfg(test)]
+                        chunk.start(),
+                        #[cfg(test)]
+                        level,
+                    );
                 }
             } else if !entry.is_table_or_page()
                 && entry.flags() == flags
@@ -1081,9 +1102,23 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
                 // a block mapping if the region is not already covered by
                 // a table mapping.
                 if flags.contains(A::VALID) {
-                    entry.set(pa, flags);
+                    entry.set_at(
+                        pa,
+                        flags,
+                        #[cfg(test)]
+                        chunk.start(),
+                        #[cfg(test)]
+                        level,
+                    );
                 } else {
-                    entry.set(PhysicalAddress(0), flags);
+                    entry.set_at(
+                        PhysicalAddress(0),
+                        flags,
+                        #[cfg(test)]
+                        chunk.start(),
+                        #[cfg(test)]
+                        level,
+                    );
                 }
             } else if chunk.is_block(level)
                 && let Some(mut subtable) = entry.subtable(translation, level)
@@ -1092,7 +1127,14 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
                 // There is a subtable but we can remove it. To avoid break-before-make violations
                 // this is only allowed if the new mapping is not valid, i.e. we are unmapping the
                 // memory.
-                entry.set(PhysicalAddress(0), flags);
+                entry.set_at(
+                    PhysicalAddress(0),
+                    flags,
+                    #[cfg(test)]
+                    chunk.start(),
+                    #[cfg(test)]
+                    level,
+                );
 
                 // SAFETY: The subtable was created with the same translation by
                 // `PageTableWithLevel::new`, and the entry which referenced it was replaced with an
@@ -1359,7 +1401,14 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
             if let Some(mut subtable) = entry.subtable(translation, self.level)
                 && subtable.compact_subtables::<R>(translation, va, live)
             {
-                entry.set(PhysicalAddress(0), A::default());
+                entry.set_at(
+                    PhysicalAddress(0),
+                    A::default(),
+                    #[cfg(test)]
+                    va,
+                    #[cfg(test)]
+                    self.level,
+                );
 
                 // SAFETY: The subtable was created with the same translation by
                 // `PageTableWithLevel::new`, and the entry which referenced it was replaced with an

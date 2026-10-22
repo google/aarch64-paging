@@ -45,6 +45,9 @@
 - The TLB emulation also detects translation tables being freed while they are still part of a live
   page table, or while the TLB may still hold a table descriptor that points to them, either of
   which would allow the page table walker to fetch descriptors from memory that has been reused.
+- For stage 2 page tables, the TLB emulation models TLB entries that combine a stage 1 translation
+  with the stage 2 translation. These are not invalidated by `TLBI IPAS2E1IS`, but only by a
+  `TLBI VMALLE1IS` that is issued after the `TLBI IPAS2E1IS` has been completed by a DSB.
 
 ## 0.12.3
 

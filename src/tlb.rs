@@ -45,6 +45,14 @@
 //! - Freeing a translation table while it is still part of a live hierarchy, or while the TLB may
 //!   still hold an entry for a table descriptor that points to it, results in a panic, as the
 //!   walker may still fetch descriptors from it.
+//! - For stage 2 translation tables, the TLB may also hold entries that combine a stage 1
+//!   translation of the guest with the stage 2 translation of the resulting IPA. As the guest's
+//!   stage 1 translation tables are not known, each TLB entry for a stage 2 block or page
+//!   descriptor is accompanied by a combined entry for the same IPA range, which is not affected
+//!   by TLBI IPAS2E1IS, but only by TLBI VMALLE1IS or VMALLS12E1. However, TLBI VMALLE1IS does not
+//!   affect a combined entry while the stage 2 entry it was formed from is still present in the
+//!   TLB, as the walker may form it again right away: the TLBI by IPA must be completed by a DSB
+//!   before TLBI VMALLE1IS is issued.
 //!
 //! In addition, after updating a live mapping, [`Mapping::map_range`](crate::Mapping::map_range)
 //! and [`Mapping::modify_range`](crate::Mapping::modify_range) check that no stale TLB entries
@@ -106,12 +114,14 @@ enum Tlbi {
     /// `TLBI VAE2IS` or `TLBI VAE3IS`: invalidates entries by VA. If the translation regime has
     /// ASIDs, non-global entries are only invalidated if they match the ASID in the operand.
     Vae(usize),
-    /// `TLBI IPAS2E1IS`: invalidates stage 2 entries by IPA.
+    /// `TLBI IPAS2E1IS`: invalidates stage 2 entries by IPA, but not entries that combine stage 1
+    /// and stage 2 translations.
     Ipas2e1is(usize),
     /// `TLBI ASIDE1`: invalidates the non-global entries for the ASID in the operand.
     Aside1(usize),
     /// `TLBI VMALLE1IS`: invalidates all stage 1 entries of the EL1&0 translation regime (or of the
-    /// EL2&0 translation regime if `HCR_EL2.{E2H, TGE}` is `{1, 1}`), but not stage 2 entries.
+    /// EL2&0 translation regime if `HCR_EL2.{E2H, TGE}` is `{1, 1}`), including entries that
+    /// combine stage 1 and stage 2 translations, but not stage 2 entries.
     Vmalle1is,
     /// `TLBI VMALLS12E1`: invalidates all stage 1 and stage 2 entries.
     Vmalls12e1,
@@ -133,7 +143,8 @@ impl Tlbi {
     fn applies_to(self, entry: &Entry) -> bool {
         let maps_address = || self.address().is_some_and(|address| entry.maps(address));
         match self {
-            Self::Vaae1is(xt) | Self::Ipas2e1is(xt) => maps_address() && ttl_matches(xt, entry),
+            Self::Vaae1is(xt) => maps_address() && ttl_matches(xt, entry),
+            Self::Ipas2e1is(xt) => !entry.combined && maps_address() && ttl_matches(xt, entry),
             Self::Vae(xt) => {
                 maps_address()
                     && ttl_matches(xt, entry)
@@ -141,7 +152,9 @@ impl Tlbi {
             }
             Self::Aside1(xt) => !entry.is_global() && entry.asid == Some(xt >> 48),
             Self::Vmalle1is => {
-                entry.regime == TypeId::of::<El1And0>() || entry.regime == TypeId::of::<El2And0>()
+                entry.combined
+                    || entry.regime == TypeId::of::<El1And0>()
+                    || entry.regime == TypeId::of::<El2And0>()
             }
             Self::Vmalls12e1 => true,
         }
@@ -206,6 +219,9 @@ struct Entry {
     regime: TypeId,
     regime_name: &'static str,
     asid: Option<usize>,
+    /// Whether the entry combines the stage 2 descriptor it was created from with a stage 1
+    /// translation of the guest, rather than caching the descriptor itself.
+    combined: bool,
     /// The start of the VA range mapped by the descriptor the entry was created from.
     va: usize,
     /// The first and last VA covered by the entry, which differ from the VA range mapped by the
@@ -252,6 +268,7 @@ impl Entry {
     fn same_as(&self, other: &Self) -> bool {
         self.ctx == other.ctx
             && self.regime == other.regime
+            && self.combined == other.combined
             && self.va == other.va
             && self.level == other.level
             && self.bits == other.bits
@@ -259,8 +276,12 @@ impl Entry {
 
     /// Returns why `self` cannot coexist in the TLB with `newer`, an entry allocated after it.
     fn conflict(&self, newer: &Self) -> Option<&'static str> {
+        // Combined entries are tagged with the IPA range of the stage 2 descriptor they were
+        // created from, but they translate VAs rather than IPAs, and so they only conflict with
+        // each other.
         if self.ctx != newer.ctx
             || self.regime != newer.regime
+            || self.combined != newer.combined
             || !self.overlaps(newer.first, newer.last)
         {
             return None;
@@ -319,7 +340,7 @@ impl Display for Entry {
         write!(
             f,
             "{:#018x}..={:#018x}: level {} {} descriptor {:#018x} ({:?} value of the descriptor \
-             at {:#x}, {}{})",
+             at {:#x}, {}{}{})",
             self.first,
             self.last,
             self.level,
@@ -328,6 +349,11 @@ impl Display for Entry {
             self.origin,
             self.desc,
             self.regime_name,
+            if self.combined {
+                ", combined with a stage 1 translation"
+            } else {
+                ""
+            },
             if self.purge {
                 ", invalidation pending"
             } else {
@@ -577,6 +603,7 @@ impl Tlb {
             regime: ctx.regime,
             regime_name: ctx.regime_name,
             asid: ctx.asid,
+            combined: false,
             va: va & !(size - 1),
             first,
             last: first + (span - 1),
@@ -586,7 +613,16 @@ impl Tlb {
             origin,
             purge: false,
         };
-        self.insert(entry)
+        self.insert(entry.clone())?;
+        if ctx.regime == TypeId::of::<Stage2>() && !entry.is_table() {
+            // The TLB may also cache the stage 2 translation combined with any stage 1 translation
+            // of the guest that maps a VA to this IPA range.
+            self.insert(Entry {
+                combined: true,
+                ..entry
+            })?;
+        }
+        Ok(())
     }
 
     fn insert(&mut self, entry: Entry) -> Result<(), String> {
@@ -635,8 +671,16 @@ impl Tlb {
             })
         };
         match op {
-            // TLBI VMALLE1IS invalidates all addresses, including the one mapped by the entry.
-            Tlbi::Vmalle1is => update_pending(entry.va),
+            Tlbi::Vmalle1is => {
+                // The walker may also form a combined entry again from the stage 2 entry it was
+                // formed from, until the invalidation of the latter has been completed by a DSB.
+                let stage2 = Entry {
+                    combined: false,
+                    ..entry.clone()
+                };
+                update_pending(entry.va)
+                    || (entry.combined && self.entries.iter().any(|e| e.same_as(&stage2)))
+            }
             _ => op.address().is_some_and(update_pending),
         }
     }
@@ -896,7 +940,7 @@ impl<R: TranslationRegime> TranslationRegime for Emulated<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::descriptor::{Descriptor, El1Attributes, PagingAttributes};
+    use crate::descriptor::{Descriptor, El1Attributes, PagingAttributes, Stage2Attributes};
     #[cfg(feature = "alloc")]
     use crate::idmap::IdMap;
     use crate::{wait_for_store_completion, wait_for_tlb_maintenance};
@@ -918,8 +962,19 @@ mod tests {
     const PAGE: El1Attributes = NORMAL.union(El1Attributes::TABLE_OR_PAGE);
     const TABLE: El1Attributes = El1Attributes::VALID.union(El1Attributes::TABLE_OR_PAGE);
     const INVALID: El1Attributes = El1Attributes::empty();
+    const S2_NORMAL: Stage2Attributes = Stage2Attributes::VALID
+        .union(Stage2Attributes::MEMATTR_NORMAL_INNER_WB)
+        .union(Stage2Attributes::MEMATTR_NORMAL_OUTER_WB)
+        .union(Stage2Attributes::SH_INNER)
+        .union(Stage2Attributes::S2AP_ACCESS_RW)
+        .union(Stage2Attributes::ACCESS_FLAG);
+    const S2_PAGE: Stage2Attributes = S2_NORMAL.union(Stage2Attributes::TABLE_OR_PAGE);
+    const S2_TABLE: Stage2Attributes =
+        Stage2Attributes::VALID.union(Stage2Attributes::TABLE_OR_PAGE);
+    const S2_INVALID: Stage2Attributes = Stage2Attributes::empty();
 
     type Desc = Descriptor<El1Attributes>;
+    type S2Desc = Descriptor<Stage2Attributes>;
 
     thread_local! {
         /// The test translation table hierarchy, while it is live.
@@ -1432,6 +1487,130 @@ mod tests {
         wait_for_tlb_maintenance();
         assert_eq!(entry_count(), 2);
         invalidate_asid::<El1And0>(ASID);
+        assert_eq!(entry_count(), 1);
+    }
+
+    /// Starts accessing the test translation table hierarchy, as a live stage 2 translation table.
+    fn enter_stage2() -> TestHierarchy {
+        enter_regime::<Stage2>((), true)
+    }
+
+    /// Issues `TLBI IPAS2E1IS` for `ipa`.
+    fn tlbi_ipa(ipa: usize) {
+        tlbi::<Stage2>("ipas2e1is", Some(ipa >> 12));
+    }
+
+    /// Issues `TLBI VMALLE1IS` for the stage 2 test translation table hierarchy.
+    fn tlbi_vmalle1is() {
+        tlbi::<Stage2>("vmalle1is", None);
+    }
+
+    #[test]
+    fn deactivate_stage2_purges_combined_entries() {
+        let _ctx = enter_stage2();
+        let mut desc = S2Desc::EMPTY;
+        set(&mut desc, VA, 3, PA, S2_PAGE);
+        wait_for_tlb_maintenance();
+        // The stage 2 entry is accompanied by an entry that combines it with a stage 1 translation.
+        assert_eq!(entry_count(), 2);
+        invalidate_asid::<Stage2>(());
+        assert_eq!(entry_count(), 0);
+    }
+
+    /// Changes the permissions of a live stage 2 page mapping, and checks that no stale TLB entries
+    /// remain after performing the given TLB maintenance.
+    fn stage2_permission_change(maintenance: impl FnOnce()) {
+        let _ctx = enter_stage2();
+        let mut desc = S2Desc::EMPTY;
+        set(&mut desc, VA, 3, PA, S2_PAGE);
+        wait_for_tlb_maintenance();
+        set(&mut desc, VA, 3, PA, S2_PAGE | Stage2Attributes::XN);
+        wait_for_store_completion();
+        maintenance();
+        check(&desc, VA, 3);
+    }
+
+    #[test]
+    fn stage2_permission_change_with_vmalle1is() {
+        stage2_permission_change(|| {
+            tlbi_ipa(VA);
+            wait_for_tlb_maintenance();
+            tlbi_vmalle1is();
+            wait_for_tlb_maintenance();
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Stale TLB entry")]
+    fn stage2_permission_change_without_vmalle1is() {
+        stage2_permission_change(|| {
+            tlbi_ipa(VA);
+            wait_for_tlb_maintenance();
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Stale TLB entry")]
+    fn stage2_permission_change_without_dsb_before_vmalle1is() {
+        stage2_permission_change(|| {
+            tlbi_ipa(VA);
+            // The walker may form combined entries again from the stage 2 entries until the TLBI
+            // by IPA has completed.
+            tlbi_vmalle1is();
+            wait_for_tlb_maintenance();
+        });
+    }
+
+    /// Remaps a live stage 2 block mapping to a different output address using break-before-make,
+    /// optionally invalidating the TLB entries that combine stage 1 and stage 2 translations.
+    fn stage2_break_before_make(vmalle1is: bool) {
+        let _ctx = enter_stage2();
+        let mut desc = S2Desc::EMPTY;
+        set(&mut desc, VA, 2, PA, S2_NORMAL);
+        wait_for_tlb_maintenance();
+        set(&mut desc, VA, 2, 0, S2_INVALID);
+        wait_for_store_completion();
+        tlbi_ipa(VA);
+        wait_for_tlb_maintenance();
+        if vmalle1is {
+            tlbi_vmalle1is();
+            wait_for_tlb_maintenance();
+        }
+        set(&mut desc, VA, 2, PA + BLOCK_SIZE, S2_NORMAL);
+    }
+
+    #[test]
+    fn stage2_break_before_make_with_vmalle1is() {
+        stage2_break_before_make(true);
+    }
+
+    #[test]
+    #[should_panic(expected = "TLB conflict (different output addresses)")]
+    fn stage2_break_before_make_without_vmalle1is() {
+        stage2_break_before_make(false);
+    }
+
+    #[test]
+    fn vmalle1is_does_not_affect_entries_below_pending_update() {
+        let _ctx = enter_stage2();
+        let mut table = S2Desc::EMPTY;
+        let mut page = S2Desc::EMPTY;
+        set(&mut page, VA, 3, PA, S2_PAGE);
+        set(&mut table, VA, 2, 0x1234_5000, S2_TABLE);
+        wait_for_store_completion();
+        tlbi_ipa(VA);
+        wait_for_tlb_maintenance();
+        // Only the combined entry for the page remains.
+        assert_eq!(entry_count(), 1);
+        set(&mut table, VA, 2, 0, S2_INVALID);
+        // The walker may fetch the stale table descriptor again, and form the combined entry again
+        // from the page descriptor.
+        tlbi_vmalle1is();
+        wait_for_tlb_maintenance();
+        assert_eq!(entry_count(), 2);
+        // The invalidation takes effect once the update is visible to the walker.
+        tlbi_vmalle1is();
+        wait_for_tlb_maintenance();
         assert_eq!(entry_count(), 1);
     }
 

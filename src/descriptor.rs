@@ -346,6 +346,14 @@ impl PagingAttributes for Stage2Attributes {
 
 pub(crate) type DescriptorBits = usize;
 
+/// Descriptor bits that are hidden from users of descriptors. In test builds, the TLB emulation
+/// borrows a software bit to track descriptor updates that the page table walker may not have
+/// observed yet.
+#[cfg(test)]
+const HIDDEN_BITS: DescriptorBits = crate::tlb::NEEDS_DSB;
+#[cfg(not(test))]
+const HIDDEN_BITS: DescriptorBits = 0;
+
 /// An entry in a page table.
 ///
 /// A descriptor may be:
@@ -369,7 +377,7 @@ impl<A: PagingAttributes> Descriptor<A> {
     /// Returns the contents of a descriptor which may be potentially live
     /// Use acquire semantics so that the load is not reordered with subsequent loads
     pub(crate) fn bits(&self) -> DescriptorBits {
-        self.0.load(Ordering::Acquire)
+        self.0.load(Ordering::Acquire) & !HIDDEN_BITS
     }
 
     /// Returns the physical address that this descriptor refers to if it is valid.
@@ -405,10 +413,32 @@ impl<A: PagingAttributes> Descriptor<A> {
     }
 
     pub(crate) fn set(&mut self, pa: PhysicalAddress, flags: A) {
+        #[cfg(test)]
+        crate::tlb::check_reserved_bits(flags.bits());
         self.0.store(
             (pa.0 & Self::PHYSICAL_ADDRESS_BITMASK) | flags.bits(),
             Ordering::Release,
         );
+    }
+
+    /// Assigns the descriptor, which is part of a page table, according to `pa` and `flags`. In test
+    /// builds, `va` is the virtual address that the descriptor maps, and `level` is its level in the
+    /// page table hierarchy.
+    pub(crate) fn set_at(
+        &mut self,
+        pa: PhysicalAddress,
+        flags: A,
+        #[cfg(test)] va: VirtualAddress,
+        #[cfg(test)] level: usize,
+    ) {
+        #[cfg(not(test))]
+        self.set(pa, flags);
+        #[cfg(test)]
+        {
+            let new = (pa.0 & Self::PHYSICAL_ADDRESS_BITMASK) | flags.bits();
+            let old = self.0.swap(new, Ordering::Release);
+            crate::tlb::store(&self.0, old, new, va, level);
+        }
     }
 
     pub(crate) fn subtable<T: Translation<A>>(
@@ -419,7 +449,12 @@ impl<A: PagingAttributes> Descriptor<A> {
         if level < LEAF_LEVEL && self.is_table_or_page() {
             let output_address = self.output_address();
             let table = translation.physical_to_virtual(output_address);
-            return Some(PageTableWithLevel::from_pointer(table, level + 1));
+            return Some(PageTableWithLevel::from_pointer(
+                table,
+                #[cfg(test)]
+                output_address,
+                level + 1,
+            ));
         }
         None
     }
@@ -454,11 +489,20 @@ pub struct UpdatableDescriptor<'a, A: PagingAttributes> {
     descriptor: DescriptorEnum<'a, A>,
     level: usize,
     updated: bool,
+    /// The virtual address mapped by the descriptor, for the TLB emulation.
+    #[cfg(test)]
+    va: VirtualAddress,
 }
 
 impl<'a, A: PagingAttributes> UpdatableDescriptor<'a, A> {
-    /// Creates a new wrapper around a real descriptor that may or may not be live
-    pub(crate) fn new(desc: &'a mut Descriptor<A>, level: usize, live: bool) -> Self {
+    /// Creates a new wrapper around a real descriptor that may or may not be live. In test builds,
+    /// `va` is the virtual address that the descriptor maps.
+    pub(crate) fn new(
+        desc: &'a mut Descriptor<A>,
+        #[cfg(test)] va: VirtualAddress,
+        level: usize,
+        live: bool,
+    ) -> Self {
         Self {
             descriptor: if live {
                 DescriptorEnum::Active(desc)
@@ -467,6 +511,8 @@ impl<'a, A: PagingAttributes> UpdatableDescriptor<'a, A> {
             },
             level,
             updated: false,
+            #[cfg(test)]
+            va,
         }
     }
 
@@ -477,6 +523,8 @@ impl<'a, A: PagingAttributes> UpdatableDescriptor<'a, A> {
             descriptor: DescriptorEnum::ActiveClone(d.bits(), PhantomData),
             level,
             updated: false,
+            #[cfg(test)]
+            va: VirtualAddress(0),
         }
     }
 
@@ -513,7 +561,10 @@ impl<'a, A: PagingAttributes> UpdatableDescriptor<'a, A> {
         let val = (pa.0 & Descriptor::<A>::PHYSICAL_ADDRESS_BITMASK) | flags.bits();
         match &mut self.descriptor {
             DescriptorEnum::Active(d) | DescriptorEnum::Inactive(d) => {
-                self.updated |= val != d.0.swap(val, Ordering::Release)
+                let old = d.0.swap(val, Ordering::Release);
+                #[cfg(test)]
+                crate::tlb::store(&d.0, old, val, self.va, self.level);
+                self.updated |= val != (old & !HIDDEN_BITS)
             }
             DescriptorEnum::ActiveClone(d, _) => {
                 self.updated |= *d != val;

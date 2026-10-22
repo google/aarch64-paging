@@ -57,9 +57,13 @@ pub mod mair;
 pub mod paging;
 #[cfg(feature = "alloc")]
 pub mod target;
+#[cfg(test)]
+mod tlb;
 
 #[cfg(any(test, feature = "alloc"))]
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 #[cfg(target_arch = "aarch64")]
 use core::arch::asm;
@@ -109,26 +113,55 @@ pub struct Mapping<T: Translation<R::Attributes>, R: TranslationRegime> {
     active_count: AtomicUsize,
 }
 
+/// Issues an inner-shareable data synchronization barrier (DSB), which waits for all memory
+/// accesses and maintenance instructions, including TLB maintenance, that precede it in program
+/// order to complete.
+fn dsb_ish() {
+    // SAFETY: Barriers have no side effects that are observeable by the program
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        asm!("dsb ish", options(preserves_flags, nostack));
+    }
+    #[cfg(test)]
+    tlb::dsb(tlb::Dsb::Full);
+}
+
+/// Issues an inner-shareable data synchronization barrier (DSB) with store scope, which waits for
+/// all stores that precede it in program order to complete, but not for TLB maintenance.
+fn dsb_ishst() {
+    // SAFETY: Barriers have no side effects that are observeable by the program
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        asm!("dsb ishst", options(preserves_flags, nostack));
+    }
+    #[cfg(test)]
+    tlb::dsb(tlb::Dsb::Store);
+}
+
+/// Issues an instruction synchronization barrier (ISB), so that the effects of preceding context
+/// synchronization events, such as completed TLB maintenance, are visible to subsequent
+/// instructions.
+fn isb() {
+    // SAFETY: Barriers have no side effects that are observeable by the program
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        asm!("isb", options(preserves_flags, nostack));
+    }
+}
+
 /// Issues an inner-shareable data synchronization barrier (DSB) followed by an instruction
 /// synchronization barrier (ISB) so that execution does not proceed until all TLB maintenance is
 /// completed.
 fn wait_for_tlb_maintenance() {
-    // SAFETY: Barriers have no side effects that are observeable by the program
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        asm!("dsb ish", "isb", options(preserves_flags, nostack));
-    }
+    dsb_ish();
+    isb();
 }
 
 /// Issues an inner-shareable data synchronization barrier (DSB) with store scope so that subsequent
 /// TLB invalidation is guaranteed to purge all TLB entries that were derived from the old values of
 /// descriptors that were recently modified. No ISB is needed in this case.
 fn wait_for_store_completion() {
-    // SAFETY: Barriers have no side effects that are observeable by the program
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        asm!("dsb ishst", options(preserves_flags, nostack));
-    }
+    dsb_ishst();
 }
 
 impl<T: Translation<R::Attributes>, R: TranslationRegime<Asid = (), VaRange = ()>> Mapping<T, R> {
@@ -203,13 +236,14 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
         // are not active yet, while they have already been loaded into the TTBR of another CPU.
         self.mark_active();
 
-        #[cfg(all(not(test), target_arch = "aarch64"))]
+        // Ensure that all page table updates, as well as the increment of the active counter,
+        // are visible to all observers before proceeding
+        dsb_ishst();
+        isb();
+
         // SAFETY: We trust that self.root_address() returns a valid physical address of a page
         // table, and the `Drop` implementation will reset `TTBRn_ELx` before it becomes invalid.
         unsafe {
-            // Ensure that all page table updates, as well as the increment of the active counter,
-            // are visible to all observers before proceeding
-            asm!("dsb ishst", "isb", options(preserves_flags, nostack),);
             previous_ttbr =
                 R::activate(self.root_address(), self.asid, self.root.va_range_or_unit());
         }
@@ -235,12 +269,21 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
         unsafe {
             R::deactivate(previous_ttbr, self.asid, self.root.va_range_or_unit());
         }
+        #[cfg(test)]
+        tlb::deactivate::<R>(self.asid);
         self.mark_inactive();
     }
 
     /// Checks whether the given range can be mapped or updated while the translation is live,
-    /// without violating architectural break-before-make (BBM) requirements.
-    fn check_range_bbm<F>(&self, range: &MemoryRegion, updater: &F) -> Result<(), MapError>
+    /// without violating architectural break-before-make (BBM) requirements. `splits_blocks`
+    /// indicates whether block mappings that are only partially covered by the range will be split
+    /// even if `updater` leaves them unmodified.
+    fn check_range_bbm<F>(
+        &self,
+        range: &MemoryRegion,
+        updater: &F,
+        splits_blocks: bool,
+    ) -> Result<(), MapError>
     where
         F: Fn(&MemoryRegion, &mut UpdatableDescriptor<R::Attributes>) -> Result<(), ()> + ?Sized,
     {
@@ -252,7 +295,10 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
 
                 updater(mr, &mut desc)
                     .and_then(|_| {
-                        if d.is_valid() && !mr.is_block(level) && d.flags() != desc.flags() {
+                        if d.is_valid()
+                            && !mr.is_block(level)
+                            && (splits_blocks || d.flags() != desc.flags())
+                        {
                             // Cannot split a live block mapping
                             Err(())
                         } else {
@@ -333,11 +379,15 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
                 };
                 d.set(PhysicalAddress(pa), flags)
             };
-            self.check_range_bbm(range, &c)?;
+            // map_range() only splits a block mapping if its output address or attributes change.
+            self.check_range_bbm(range, &c, false)?;
         }
-        self.root
-            .map_range_impl(range, pa, flags, constraints, live)?;
+        #[cfg(test)]
+        let _tlb = self.enter_tlb_context();
+        self.root.map_range(range, pa, flags, constraints, live)?;
         self.invalidate_range(range);
+        #[cfg(test)]
+        self.check_tlb_coherency(range);
         Ok(())
     }
 
@@ -382,9 +432,13 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
         F: Fn(&MemoryRegion, &mut UpdatableDescriptor<R::Attributes>) -> Result<(), ()> + ?Sized,
     {
         if self.active() {
-            self.check_range_bbm(range, f)?;
+            // modify_range() splits all block mappings that are only partially covered by the
+            // range, regardless of whether they are modified.
+            self.check_range_bbm(range, f, true)?;
         }
 
+        #[cfg(test)]
+        let _tlb = self.enter_tlb_context();
         // modify_range() might fail halfway, in which case its Err() result will be returned
         // directly, and no barrier will be issued. The purpose of the barrier is to ensure that
         // the new state is visible to all observers before proceeding, but in case of a failure,
@@ -393,6 +447,8 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
         if self.root.modify_range(range, f, self.active())? && self.active() {
             wait_for_tlb_maintenance();
         }
+        #[cfg(test)]
+        self.check_tlb_coherency(range);
         Ok(())
     }
 
@@ -423,7 +479,9 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
     /// every time a region is unmapped. You could instead call it when the system is under memory
     /// pressure.
     pub fn compact_subtables(&mut self) {
-        self.root.compact_subtables_impl(self.active());
+        #[cfg(test)]
+        let _tlb = self.enter_tlb_context();
+        self.root.compact_subtables(self.active());
     }
 
     /// Returns the physical address of the root table.
@@ -465,10 +523,32 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
             panic!("Underflow in active count.");
         }
     }
+
+    /// Informs the TLB emulation about the page table hierarchy that is about to be accessed.
+    #[cfg(test)]
+    fn enter_tlb_context(&self) -> tlb::ContextGuard {
+        tlb::ContextGuard::enter::<R>(self.root.tlb_id(), self.asid, self.active())
+    }
+
+    /// Checks that the TLB emulation holds no stale entries for `range` if the mapping is active.
+    #[cfg(test)]
+    fn check_tlb_coherency(&self, range: &MemoryRegion) {
+        if self.active() {
+            tlb::check_coherency(self.root.tlb_id(), range, |va, level| {
+                self.root.tlb_lookup(va, level)
+            });
+        }
+    }
 }
 
 impl<T: Translation<R::Attributes>, R: TranslationRegime> Drop for Mapping<T, R> {
     fn drop(&mut self) {
+        // Panicking while unwinding aborts the process, so avoid turning a failing test into an
+        // abort of the entire test run if it unwinds while the mapping is active.
+        #[cfg(test)]
+        if std::thread::panicking() {
+            return;
+        }
         if self.active() {
             panic!("Dropping active page table mapping!");
         }

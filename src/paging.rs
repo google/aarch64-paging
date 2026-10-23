@@ -66,8 +66,14 @@ pub trait TranslationRegime: Copy + Clone + Debug + Eq + PartialEq + Send + Sync
         + Sync
         + 'static;
 
-    /// Invalidates the translation for the given virtual address from the Translation Lookaside Buffer (TLB).
+    /// Invalidates the translation for the given virtual address from the Translation Lookaside
+    /// Buffer (TLB), to be completed by [`complete_invalidation`](Self::complete_invalidation).
     fn invalidate_va(va: VirtualAddress);
+
+    /// Completes the invalidations issued by [`invalidate_va`](Self::invalidate_va).
+    fn complete_invalidation() {
+        crate::wait_for_tlb_maintenance();
+    }
 
     /// Activates the page table.
     ///
@@ -434,6 +440,22 @@ impl TranslationRegime for Stage2 {
                 options(preserves_flags, nostack),
             );
         }
+    }
+
+    /// A stage 2 only invalidation is not required to invalidate entries which combine stage 1 and
+    /// stage 2 translations, so stage 1 is invalidated once those have completed.
+    fn complete_invalidation() {
+        #[cfg(all(not(test), target_arch = "aarch64"))]
+        // SAFETY: TLBI maintenance and barriers have no side effects that are observeable by the
+        // program
+        unsafe {
+            asm!(
+                "dsb  ish",
+                "tlbi vmalle1is",
+                options(preserves_flags, nostack),
+            );
+        }
+        crate::wait_for_tlb_maintenance();
     }
 
     #[allow(
@@ -1166,7 +1188,7 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
         if live {
             crate::wait_for_store_completion();
             self.invalidate_detached::<R>(translation, base);
-            crate::wait_for_tlb_maintenance();
+            R::complete_invalidation();
         }
         // SAFETY: Our caller promised that the table and all its subtables were created with
         // `translation`, not yet freed, and are no longer referenced by any page table. If the

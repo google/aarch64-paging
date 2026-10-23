@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Bugfixes
+
+- Fixed TLB invalidation for live stage 2 mappings. `TLBI IPAS2E1IS` alone doesn't have to remove
+  TLB entries that combine stage 1 and stage 2 translations, so a guest could keep using an old
+  translation after its mapping changed. Stage 1 is now invalidated with `TLBI VMALLE1IS` once the
+  invalidations by IPA have completed.
+
 ## 0.12.3
 
 ### Bugfixes

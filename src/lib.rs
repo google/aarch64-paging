@@ -287,7 +287,7 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
                 )
                 .unwrap();
 
-            wait_for_tlb_maintenance();
+            R::complete_invalidation();
         }
     }
 
@@ -391,7 +391,7 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
         // what that new state entails is uncertain anyway, and so there is no point in
         // synchronizing it.
         if self.root.modify_range(range, f, self.active())? && self.active() {
-            wait_for_tlb_maintenance();
+            R::complete_invalidation();
         }
         Ok(())
     }

@@ -8,6 +8,9 @@
   TLB entries that combine stage 1 and stage 2 translations, so a guest could keep using an old
   translation after its mapping changed. Stage 1 is now invalidated with `TLBI VMALLE1IS` once the
   invalidations by IPA have completed.
+- Fixed `MemoryRegion::new` panicking in debug builds if the end of the region is 0, e.g., for a
+  region that ends before it starts, rather than returning a region that `map_range` and
+  `modify_range` reject with `MapError::RegionBackwards`.
 
 ## 0.12.3
 

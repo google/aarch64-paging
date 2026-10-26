@@ -1507,7 +1507,7 @@ const fn align_down(value: usize, alignment: usize) -> usize {
 }
 
 const fn align_up(value: usize, alignment: usize) -> usize {
-    ((value - 1) | (alignment - 1)) + 1
+    (value.wrapping_sub(1) | (alignment - 1)).wrapping_add(1)
 }
 
 pub(crate) const fn is_aligned(value: usize, alignment: usize) -> bool {
@@ -1526,6 +1526,14 @@ mod tests {
     use crate::target::TargetAllocator;
     #[cfg(feature = "alloc")]
     use alloc::{format, string::ToString, vec, vec::Vec};
+
+    #[test]
+    fn memory_region_ending_at_zero() {
+        // Aligning the end of the region to the page size must not overflow.
+        assert!(MemoryRegion::new(0, 0).is_empty());
+        let backwards = MemoryRegion::new(PAGE_SIZE, 0);
+        assert!(backwards.end() < backwards.start());
+    }
 
     #[cfg(feature = "alloc")]
     #[test]

@@ -15,6 +15,8 @@
   unmapped if the physical address passed to it, which is ignored when unmapping, isn't aligned to
   the block size, or if `Constraints::NO_BLOCK_MAPPINGS` is given. This split live block mappings
   without break-before-make.
+- Fixed `modify_range` not performing TLB maintenance for the live descriptors that it updated
+  before the updater function returned an error, which could leave stale translations in the TLB.
 
 ## 0.12.3
 

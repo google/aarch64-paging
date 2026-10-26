@@ -753,6 +753,51 @@ mod tests {
         r.unwrap();
     }
 
+    #[test]
+    fn modify_live_mapping_failing_halfway() {
+        let range = MemoryRegion::new(0, 2 * PAGE_SIZE);
+        let mut idmap = IdMap::with_asid(1, 1, El1And0);
+        idmap
+            .map_range(
+                &range,
+                NORMAL_CACHEABLE | El1Attributes::VALID | El1Attributes::ACCESSED,
+            )
+            .unwrap();
+        // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
+        // active for the sake of BBM rules and the TLB emulation.
+        let ttbr = unsafe { idmap.activate() };
+
+        // modify_range() calls the updater for both pages to check for break-before-make
+        // violations first, so this one only fails after making the first page read-only.
+        let calls = core::cell::Cell::new(0);
+        let result = idmap.modify_range(&range, &|_, d| {
+            calls.set(calls.get() + 1);
+            if calls.get() > 3 {
+                return Err(());
+            }
+            d.modify_flags(El1Attributes::READ_ONLY, El1Attributes::empty())
+        });
+        assert!(
+            matches!(result, Err(MapError::PteUpdateFault(_))),
+            "{result:?}"
+        );
+        let mut read_only = alloc::vec::Vec::new();
+        idmap
+            .walk_range(&range, &mut |_, d, _| {
+                read_only.push(d.flags().contains(El1Attributes::READ_ONLY));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(read_only, [true, false]);
+        // The TLB must not hold a stale translation for the first page, which modify_range() checks
+        // in test builds.
+        idmap.modify_range(&range, &|_, _| Ok(())).unwrap();
+
+        // SAFETY: This doesn't actually deactivate the page table in tests, it just treats it as
+        // inactive for the sake of BBM rules and the TLB emulation.
+        unsafe { idmap.deactivate(ttbr) };
+    }
+
     fn make_map() -> (IdMap<El1And0>, usize) {
         let mut idmap = IdMap::with_asid(1, 1, El1And0);
         idmap

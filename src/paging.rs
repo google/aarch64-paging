@@ -1302,6 +1302,7 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
     {
         let mut modified = false;
         let mut need_barrier = false;
+        let mut result = Ok(());
         let level = self.level;
         let mut updated = EntryBitmap::default();
         for chunk in range.split(level) {
@@ -1316,22 +1317,36 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
                     None
                 }
             }) {
-                if subtable.modify_range::<F, R>(translation, &chunk, f, live)? {
-                    modified = true;
-                    need_barrier = false;
+                match subtable.modify_range::<F, R>(translation, &chunk, f, live) {
+                    Ok(true) => {
+                        modified = true;
+                        need_barrier = false;
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        result = Err(e);
+                        break;
+                    }
                 }
             } else {
                 let bits = entry.bits();
                 let mut desc = UpdatableDescriptor::new(entry, level, live);
-                f(&chunk, &mut desc).map_err(|_| MapError::PteUpdateFault(bits))?;
+                let updater_result = f(&chunk, &mut desc);
 
                 if live && desc.updated() {
-                    // Live descriptor was updated so TLB maintenance is needed
+                    // Live descriptor was updated so TLB maintenance is needed, even if the updater
+                    // function returned an error after updating it.
                     updated.set(index);
                     need_barrier = true;
                 }
+                if updater_result.is_err() {
+                    result = Err(MapError::PteUpdateFault(bits));
+                    break;
+                }
             }
         }
+        // If an error occurred halfway, the live descriptors that were updated before still need
+        // TLB maintenance, as the TLB might otherwise keep stale translations for them.
         if !updated.is_empty() {
             if need_barrier {
                 // Ensure all entry updates in this table have completed before invalidating the TLB.
@@ -1344,7 +1359,7 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
             }
             modified = true;
         }
-        Ok(modified)
+        result.map(|()| modified)
     }
 
     /// Walks a range of page table entries and passes each one to a caller provided function.

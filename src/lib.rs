@@ -385,15 +385,14 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
             self.check_range_bbm(range, f)?;
         }
 
-        // modify_range() might fail halfway, in which case its Err() result will be returned
-        // directly, and no barrier will be issued. The purpose of the barrier is to ensure that
-        // the new state is visible to all observers before proceeding, but in case of a failure,
-        // what that new state entails is uncertain anyway, and so there is no point in
-        // synchronizing it.
-        if self.root.modify_range(range, f, self.active())? && self.active() {
+        let result = self.root.modify_range(range, f, self.active());
+        // modify_range() might fail halfway if the updater function returns an error. Complete the
+        // TLB maintenance for the live descriptors that it updated before that as well, as the TLB
+        // might otherwise keep stale translations for them indefinitely.
+        if matches!(result, Ok(true) | Err(MapError::PteUpdateFault(_))) && self.active() {
             R::complete_tlb_maintenance();
         }
-        Ok(())
+        result.map(|_| ())
     }
 
     /// Applies the provided function to a number of PTEs corresponding to a given memory range.

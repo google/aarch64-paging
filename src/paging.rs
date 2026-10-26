@@ -418,6 +418,12 @@ impl TranslationRegime for El3 {
 }
 
 /// Non-secure Stage 2 translation regime.
+///
+/// TLB maintenance for this regime applies to the VMID in `VTTBR_EL2`, which must therefore be the
+/// VMID that the page table is used with. It also uses `TLBI VMALLE1IS` to invalidate TLB entries
+/// that combine stage 1 and stage 2 translations. As that applies to the EL2&0 translation regime
+/// rather than to the EL1&0 translation regime of the guest while `HCR_EL2.{E2H, TGE}` is `{1, 1}`,
+/// TLB maintenance for this regime must not be performed in that case.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Stage2;
 

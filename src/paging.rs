@@ -1101,9 +1101,10 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
                 // with the desired `flags`. So do nothing in this case.
             } else if chunk.is_block(level)
                 && !entry.is_table_or_page()
-                && is_aligned(pa.0, granularity)
-                && !constraints.contains(Constraints::NO_BLOCK_MAPPINGS)
-                && level > 0
+                && (!flags.contains(A::VALID)
+                    || is_aligned(pa.0, granularity)
+                        && !constraints.contains(Constraints::NO_BLOCK_MAPPINGS)
+                        && level > 0)
             {
                 // Rather than leak the entire subhierarchy, only put down
                 // a block mapping if the region is not already covered by

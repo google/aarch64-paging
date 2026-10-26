@@ -682,6 +682,40 @@ mod tests {
     }
 
     #[test]
+    fn unmap_live_block_mapping_with_no_block_mappings() {
+        const BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
+        let block = MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE);
+        let mut idmap = IdMap::with_asid(1, 1, El1And0);
+        idmap
+            .map_range(
+                &block,
+                NORMAL_CACHEABLE | El1Attributes::VALID | El1Attributes::ACCESSED,
+            )
+            .unwrap();
+        // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
+        // active for the sake of BBM rules and the TLB emulation.
+        let ttbr = unsafe { idmap.activate() };
+        // Unmapping the entire block mapping must not split it first, which would violate
+        // break-before-make, even though the constraints don't permit block mappings.
+        idmap
+            .map_range_with_constraints(
+                &block,
+                El1Attributes::empty(),
+                Constraints::NO_BLOCK_MAPPINGS,
+            )
+            .unwrap();
+        // SAFETY: This doesn't actually deactivate the page table in tests, it just treats it as
+        // inactive for the sake of BBM rules and the TLB emulation.
+        unsafe { idmap.deactivate(ttbr) };
+        idmap
+            .walk_range(&block, &mut |_, descriptor, level| {
+                assert_eq!((level, descriptor.bits()), (2, 0));
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
     #[should_panic]
     fn split_live_block_mapping() -> () {
         let mut idmap = IdMap::with_asid(1, 1, El1And0);

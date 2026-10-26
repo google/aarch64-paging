@@ -11,6 +11,10 @@
 - Fixed `MemoryRegion::new` panicking in debug builds if the end of the region is 0, e.g., for a
   region that ends before it starts, rather than returning a region that `map_range` and
   `modify_range` reject with `MapError::RegionBackwards`.
+- Fixed `map_range` splitting block mappings that are entirely covered by a range that is being
+  unmapped if the physical address passed to it, which is ignored when unmapping, isn't aligned to
+  the block size, or if `Constraints::NO_BLOCK_MAPPINGS` is given. This split live block mappings
+  without break-before-make.
 
 ## 0.12.3
 

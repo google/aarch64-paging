@@ -61,6 +61,7 @@ pub mod target;
 #[cfg(any(test, feature = "alloc"))]
 extern crate alloc;
 
+use bitflags::Flags;
 #[cfg(target_arch = "aarch64")]
 use core::arch::asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -328,17 +329,41 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
         flags: R::Attributes,
         constraints: Constraints,
     ) -> Result<(), MapError> {
+        // Round down `pa` like `RootTable` does, so that the check for break-before-make violations
+        // below agrees with it.
+        let pa = PhysicalAddress(paging::align_down(pa.0, paging::PAGE_SIZE));
         let live = self.active();
         if live {
             let c = |mr: &MemoryRegion, d: &mut UpdatableDescriptor<R::Attributes>| {
-                let mask = !(paging::granularity_at_level(d.level()) - 1);
-                let pa = (mr.start() - range.start() + pa.0) & mask;
-                let flags = if d.level() == 3 {
+                let level = d.level();
+                let valid = d.flags().contains(R::Attributes::VALID);
+                // The output address that the start of the block or page that maps `mr` would
+                // have if the update were applied to all of it, rather than just to `mr`.
+                let offset = mr.start().0 % paging::granularity_at_level(level);
+                let Some(pa) = (mr.start() - range.start() + pa.0).checked_sub(offset) else {
+                    // The update can only be applied by splitting the block mapping, which is
+                    // not permitted while it is valid. If it is invalid, none of the remaining
+                    // checks are required, and we can return success right away.
+                    return if valid { Err(()) } else { Ok(()) };
+                };
+                let flags = if level == 3 {
                     flags | R::Attributes::TABLE_OR_PAGE
                 } else {
                     flags
                 };
-                d.set(PhysicalAddress(pa), flags)
+                d.set(PhysicalAddress(pa), flags)?;
+                // map_range() also splits a valid block mapping that it modifies if block mappings
+                // are not permitted, as well as one that it maps to an output address that isn't
+                // suitably aligned for a block mapping.
+                if valid
+                    && level < 3
+                    && flags.contains(R::Attributes::VALID)
+                    && (d.updated() && constraints.contains(Constraints::NO_BLOCK_MAPPINGS)
+                        || !paging::is_aligned(pa, paging::granularity_at_level(level)))
+                {
+                    return Err(());
+                }
+                Ok(())
             };
             // map_range() only splits a block mapping if its output address or attributes change.
             self.check_range_bbm(range, &c)?;
@@ -541,6 +566,41 @@ mod tests {
         result
     }
 
+    /// Maps a block at `BLOCK_SIZE`, makes it live, and then calls `map_range` with the given
+    /// arguments, which must fail rather than split the live block mapping.
+    fn remap_live_block(
+        range: MemoryRegion,
+        pa: usize,
+        flags: El1Attributes,
+        constraints: Constraints,
+    ) {
+        let result = try_remap_live_block(range, pa, flags, constraints);
+        assert!(
+            matches!(result, Err(MapError::BreakBeforeMakeViolation(_))),
+            "map_range returned {result:?}"
+        );
+    }
+
+    #[test]
+    fn split_live_block_without_block_mappings() {
+        remap_live_block(
+            MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE),
+            BLOCK_SIZE,
+            NORMAL | El1Attributes::READ_ONLY,
+            Constraints::NO_BLOCK_MAPPINGS,
+        );
+    }
+
+    #[test]
+    fn split_live_block_for_unaligned_pa() {
+        remap_live_block(
+            MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE),
+            BLOCK_SIZE + PAGE_SIZE,
+            NORMAL,
+            Constraints::empty(),
+        );
+    }
+
     /// A physical address that isn't page aligned is rounded down, so this leaves the live block
     /// mapping unchanged.
     #[test]
@@ -602,5 +662,25 @@ mod tests {
         // SAFETY: As above.
         unsafe { mapping.deactivate(ttbr) };
         assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn split_live_block_for_different_pa() {
+        remap_live_block(
+            MemoryRegion::new(BLOCK_SIZE + PAGE_SIZE, BLOCK_SIZE + 2 * PAGE_SIZE),
+            BLOCK_SIZE,
+            NORMAL,
+            Constraints::empty(),
+        );
+    }
+
+    #[test]
+    fn split_live_block_for_pa_below_offset() {
+        remap_live_block(
+            MemoryRegion::new(BLOCK_SIZE + PAGE_SIZE, BLOCK_SIZE + 2 * PAGE_SIZE),
+            0,
+            NORMAL,
+            Constraints::empty(),
+        );
     }
 }

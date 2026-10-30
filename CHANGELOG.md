@@ -39,6 +39,11 @@
   that already mapped it, even live ones without break-before-make, and `UpdatableDescriptor::set`
   refused to set it for live descriptors that already mapped it. The physical address is now
   rounded down to a multiple of the page size in both cases.
+- Fixed `Mapping::map_range` splitting live block mappings without break-before-make, rather than
+  failing with `MapError::BreakBeforeMakeViolation`, if `Constraints::NO_BLOCK_MAPPINGS` is given,
+  or if the physical address passed to it would map the start of a block that the range covers to
+  an address that isn't aligned to the block size, e.g., because the range only covers part of the
+  block and is moved by less than the block size.
 
 ## 0.12.3
 

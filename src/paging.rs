@@ -946,8 +946,6 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
     fn new(translation: &mut T, level: usize) -> (Self, PhysicalAddress) {
         assert!(level <= LEAF_LEVEL);
         let (table, pa) = translation.allocate_table();
-        #[cfg(test)]
-        crate::tlb::table_allocated(table.as_ptr() as usize, pa, level);
         (
             // Safe because the pointer has been allocated with the appropriate layout, and the
             // memory is zeroed which is valid initialisation for a PageTable.
@@ -1247,8 +1245,6 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
         // SAFETY: Our caller promised that the table was created by `PageTableWithLevel::new` with
         // `translation`, which then allocated it by calling `allocate_table` on `translation`.
         unsafe {
-            #[cfg(test)]
-            crate::tlb::table_freed(self.table.as_ptr() as usize);
             // Actually free the memory used by the `PageTable`.
             translation.deallocate_table(self.table);
         }

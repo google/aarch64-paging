@@ -75,6 +75,23 @@ use descriptor::{
 };
 use paging::{Constraints, MemoryRegion, RootTable, Translation, TranslationRegime, VaRange};
 use thiserror::Error;
+#[cfg(test)]
+use tlb::Tracked;
+
+/// The translation that a [`Mapping`] uses for its page tables.
+///
+/// In test builds, it is wrapped in `tlb::Tracked`, which reports the page tables it allocates and
+/// frees to the TLB emulation.
+#[cfg(not(test))]
+type Tracked<T> = T;
+
+/// Wraps `translation`, which is about to be used to allocate a root table at `root_level`, as
+/// described for [`Tracked`].
+fn tracked<T>(translation: T, #[allow(unused)] root_level: usize) -> Tracked<T> {
+    #[cfg(test)]
+    let translation = Tracked::new(translation, root_level);
+    translation
+}
 
 /// An error attempting to map some range in the page table.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
@@ -109,7 +126,7 @@ pub enum MapError {
 /// changes.
 #[derive(Debug)]
 pub struct Mapping<T: Translation<R::Attributes>, R: TranslationRegime> {
-    root: RootTable<R, T>,
+    root: RootTable<R, Tracked<T>>,
     asid: R::Asid,
     active_count: AtomicUsize,
 }
@@ -168,7 +185,10 @@ fn wait_for_store_completion() {
 impl<T: Translation<R::Attributes>, R: TranslationRegime<Asid = (), VaRange = ()>> Mapping<T, R> {
     /// Creates a new page table with the given root level and translation mapping.
     pub fn new(translation: T, rootlevel: usize, regime: R) -> Self {
-        Self::new_impl(RootTable::new(translation, rootlevel, regime), ())
+        Self::new_impl(
+            RootTable::new(tracked(translation, rootlevel), rootlevel, regime),
+            (),
+        )
     }
 }
 
@@ -184,14 +204,14 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime<Asid = usize, VaRange =
         va_range: VaRange,
     ) -> Self {
         Self::new_impl(
-            RootTable::with_va_range(translation, rootlevel, regime, va_range),
+            RootTable::with_va_range(tracked(translation, rootlevel), rootlevel, regime, va_range),
             asid,
         )
     }
 }
 
 impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
-    fn new_impl(root: RootTable<R, T>, asid: R::Asid) -> Self {
+    fn new_impl(root: RootTable<R, Tracked<T>>, asid: R::Asid) -> Self {
         Self {
             root,
             asid,

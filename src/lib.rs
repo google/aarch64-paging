@@ -49,6 +49,8 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod descriptor;
+#[cfg(all(test, feature = "alloc"))]
+mod fuzz;
 #[cfg(feature = "alloc")]
 pub mod idmap;
 #[cfg(feature = "alloc")]

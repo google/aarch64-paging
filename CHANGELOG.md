@@ -55,6 +55,10 @@
 - For stage 2 page tables, the TLB emulation models TLB entries that combine a stage 1 translation
   with the stage 2 translation. These are not invalidated by `TLBI IPAS2E1IS`, but only by a
   `TLBI VMALLE1IS` that is issued after the `TLBI IPAS2E1IS` has been completed by a DSB.
+- Added randomized tests that apply long sequences of random updates to page tables via `Mapping`,
+  and check the resulting page tables against a model of the expected mappings, as well as the TLB
+  maintenance using the TLB emulation. The updates can also be chosen by a coverage-guided fuzzer,
+  using `cargo bolero test fuzz::fuzz_inputs`.
 
 ## 0.12.3
 

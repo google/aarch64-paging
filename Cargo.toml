@@ -16,9 +16,19 @@ categories = ["embedded", "no-std", "hardware-support"]
 bitflags = "2.13.0"
 thiserror = { version = "2.0.18", default-features = false }
 
+[dev-dependencies]
+bolero = "0.13"
+
 [features]
 default = ["alloc"]
 alloc = []
+
+# Used by `cargo bolero test`, which builds the tests with this profile for coverage-guided fuzzing.
+[profile.fuzz]
+inherits = "dev"
+opt-level = 3
+incremental = false
+codegen-units = 1
 
 [package.metadata.docs.rs]
 all-features = true

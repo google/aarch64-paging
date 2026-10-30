@@ -61,6 +61,7 @@ pub mod target;
 #[cfg(any(test, feature = "alloc"))]
 extern crate alloc;
 
+use bitflags::Flags;
 #[cfg(target_arch = "aarch64")]
 use core::arch::asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -326,14 +327,34 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
         let live = self.active();
         if live {
             let c = |mr: &MemoryRegion, d: &mut UpdatableDescriptor<R::Attributes>| {
-                let mask = !(paging::granularity_at_level(d.level()) - 1);
-                let pa = (mr.start() - range.start() + pa.0) & mask;
-                let flags = if d.level() == 3 {
+                let level = d.level();
+                let valid = d.flags().contains(R::Attributes::VALID);
+                // The output address that the start of the block or page that maps `mr` would
+                // have if the update were applied to all of it, rather than just to `mr`.
+                let offset = mr.start().0 % paging::granularity_at_level(level);
+                let Some(pa) = (mr.start() - range.start() + pa.0).checked_sub(offset) else {
+                    // The update can only be applied by splitting the block mapping, which is
+                    // not permitted while it is valid.
+                    return if valid { Err(()) } else { Ok(()) };
+                };
+                let flags = if level == 3 {
                     flags | R::Attributes::TABLE_OR_PAGE
                 } else {
                     flags
                 };
-                d.set(PhysicalAddress(pa), flags)
+                d.set(PhysicalAddress(pa & !(paging::PAGE_SIZE - 1)), flags)?;
+                // map_range() also splits a valid block mapping that it modifies if block mappings
+                // are not permitted, as well as one that it maps to an output address that isn't
+                // suitably aligned for a block mapping.
+                if valid
+                    && level < 3
+                    && flags.contains(R::Attributes::VALID)
+                    && (d.updated() && constraints.contains(Constraints::NO_BLOCK_MAPPINGS)
+                        || !paging::is_aligned(pa, paging::granularity_at_level(level)))
+                {
+                    return Err(());
+                }
+                Ok(())
             };
             // map_range() only splits a block mapping if its output address or attributes change.
             self.check_range_bbm(range, &c)?;
@@ -483,5 +504,109 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Drop for Mapping<T, R>
         if self.active() {
             panic!("Dropping active page table mapping!");
         }
+    }
+}
+
+#[cfg(all(test, feature = "alloc"))]
+mod tests {
+    use super::*;
+    use crate::descriptor::El1Attributes;
+    use crate::idmap::IdTranslation;
+    use crate::paging::{El1And0, PAGE_SIZE};
+    use alloc::vec::Vec;
+
+    const BLOCK_SIZE: usize = PAGE_SIZE << 9;
+    const NORMAL: El1Attributes = El1Attributes::VALID
+        .union(El1Attributes::ACCESSED)
+        .union(El1Attributes::ATTRIBUTE_INDEX_1)
+        .union(El1Attributes::INNER_SHAREABLE);
+
+    /// Maps a block at `BLOCK_SIZE`, makes it live, and then calls `map_range` with the given
+    /// arguments, which must fail rather than split the live block mapping.
+    fn remap_live_block(
+        range: MemoryRegion,
+        pa: usize,
+        flags: El1Attributes,
+        constraints: Constraints,
+    ) {
+        let mut mapping =
+            Mapping::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let block = MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE);
+        mapping
+            .map_range(
+                &block,
+                PhysicalAddress(BLOCK_SIZE),
+                NORMAL,
+                Constraints::empty(),
+            )
+            .unwrap();
+        // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
+        // active for the sake of BBM rules.
+        let ttbr = unsafe { mapping.activate() };
+        let result = mapping.map_range(&range, PhysicalAddress(pa), flags, constraints);
+        // SAFETY: As above.
+        unsafe { mapping.deactivate(ttbr) };
+        assert!(
+            matches!(result, Err(MapError::BreakBeforeMakeViolation(_))),
+            "map_range returned {result:?}"
+        );
+        let mut levels = Vec::new();
+        mapping
+            .walk_range(&block, &mut |_, _, level| {
+                levels.push(level);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(levels, [2], "The live block mapping was split");
+    }
+
+    #[test]
+    fn split_live_block_without_block_mappings() {
+        remap_live_block(
+            MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE),
+            BLOCK_SIZE,
+            NORMAL | El1Attributes::READ_ONLY,
+            Constraints::NO_BLOCK_MAPPINGS,
+        );
+    }
+
+    #[test]
+    fn split_live_block_for_unaligned_pa() {
+        remap_live_block(
+            MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE),
+            BLOCK_SIZE + PAGE_SIZE,
+            NORMAL,
+            Constraints::empty(),
+        );
+    }
+
+    #[test]
+    fn split_live_block_for_pa_with_offset() {
+        remap_live_block(
+            MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE),
+            BLOCK_SIZE + 0x123,
+            NORMAL,
+            Constraints::empty(),
+        );
+    }
+
+    #[test]
+    fn split_live_block_for_different_pa() {
+        remap_live_block(
+            MemoryRegion::new(BLOCK_SIZE + PAGE_SIZE, BLOCK_SIZE + 2 * PAGE_SIZE),
+            BLOCK_SIZE,
+            NORMAL,
+            Constraints::empty(),
+        );
+    }
+
+    #[test]
+    fn split_live_block_for_pa_below_offset() {
+        remap_live_block(
+            MemoryRegion::new(BLOCK_SIZE + PAGE_SIZE, BLOCK_SIZE + 2 * PAGE_SIZE),
+            0,
+            NORMAL,
+            Constraints::empty(),
+        );
     }
 }

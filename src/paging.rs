@@ -1104,7 +1104,7 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
                 }
             } else if !entry.is_table_or_page()
                 && entry.flags() == flags
-                && entry.output_address().0 == pa.0 - chunk.0.start.0 % granularity
+                && entry.output_address().0 + chunk.0.start.0 % granularity == pa.0
             {
                 // There is no need to split up a block mapping if it already maps the desired `pa`
                 // with the desired `flags`. So do nothing in this case.
@@ -1800,6 +1800,24 @@ mod tests {
 0  -511: 0
 }"
         );
+    }
+
+    /// Unmapping a range that doesn't start at a block boundary, passing a physical address that is
+    /// below the offset of the range within the block, which is fine as it is ignored when
+    /// unmapping.
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn unmap_unaligned_range_with_pa_zero() {
+        let mut table =
+            RootTable::with_va_range(TargetAllocator::new(0), 1, El1And0, VaRange::Lower);
+        table
+            .map_range(
+                &MemoryRegion::new(0x4000_1000, 0x4000_2000),
+                PhysicalAddress(0),
+                El1Attributes::empty(),
+                Constraints::empty(),
+            )
+            .unwrap();
     }
 
     #[cfg(feature = "alloc")]

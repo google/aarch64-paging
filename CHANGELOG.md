@@ -23,6 +23,10 @@
   part of the range that it covers, and the block mapping is only split if the updater function
   modifies the copy. If it returns an error for the copy, `modify_range` fails with
   `MapError::PteUpdateFault`.
+- Fixed `map_range` panicking with an arithmetic overflow in debug builds if the physical address
+  passed to it is below the offset of the range within a block that is already mapped, or unmapped,
+  with the same attributes, e.g., when unmapping a range that doesn't start at a block boundary
+  with physical address 0.
 
 ## 0.12.3
 

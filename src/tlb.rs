@@ -6,12 +6,13 @@
 //! updated in ways that cannot give rise to TLB conflicts or stale TLB entries.
 //!
 //! Tests opt in by building their page tables with [`mapping`] or [`mapping_with_asid`]. These wrap
+//! the translation in [`Tracked`], which reports the translation tables it allocates and frees, and
 //! the translation regime in [`Emulated`], which makes the emulation aware of the translation table
-//! hierarchies that are activated with it. The library itself only reports the translation tables
-//! it allocates and frees, the stores to their descriptors, and the barriers and TLB invalidation
-//! instructions it issues. While a hierarchy is live, the emulation keeps track of the translation
-//! tables that are part of it, along with their levels and the virtual addresses they translate, by
-//! following the stores to its table descriptors.
+//! hierarchies that are activated with it. Other than that, the library only reports the stores to
+//! descriptors, and the barriers and TLB invalidation instructions it issues. While a hierarchy is
+//! live, the emulation keeps track of the translation tables that are part of it, along with their
+//! levels and the virtual addresses they translate, by following the stores to its table
+//! descriptors.
 //!
 //! The model is pessimistic: it assumes that the page table walker may fetch and cache any valid
 //! descriptor of a live translation table at any time, and that a store to a descriptor is not
@@ -63,9 +64,9 @@
 //! Each thread has its own TLB, and TLB entries are tagged with the translation table hierarchy
 //! they were created from, so that unrelated tests or mappings do not interfere with each other.
 
+use crate::descriptor::{DescriptorBits, VirtualAddress};
 #[cfg(feature = "alloc")]
-use crate::descriptor::UpdatableDescriptor;
-use crate::descriptor::{DescriptorBits, PhysicalAddress, VirtualAddress};
+use crate::descriptor::{PagingAttributes, PhysicalAddress, UpdatableDescriptor};
 #[cfg(feature = "alloc")]
 use crate::idmap::IdTranslation;
 #[cfg(feature = "alloc")]
@@ -75,7 +76,7 @@ use crate::paging::{
     TranslationRegime, granularity_at_level,
 };
 #[cfg(feature = "alloc")]
-use crate::paging::{Constraints, FixedTranslation, Translation, VaRange};
+use crate::paging::{Constraints, FixedTranslation, PageTable, Translation, VaRange};
 #[cfg(feature = "alloc")]
 use crate::{MapError, Mapping};
 use core::any::{Any, TypeId, type_name};
@@ -84,6 +85,8 @@ use core::fmt::{self, Display, Formatter};
 use core::mem::size_of;
 #[cfg(feature = "alloc")]
 use core::ops::Deref;
+#[cfg(feature = "alloc")]
+use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::HashMap;
 use std::string::String;
@@ -395,15 +398,16 @@ struct Table {
     base: usize,
 }
 
-/// A translation table allocated by the library.
+/// A translation table allocated by a [`Tracked`] translation.
 #[derive(Clone, Copy)]
 struct Allocation {
     /// The address of the table.
     table: usize,
-    /// The level of the table, which is only needed if it is activated as a root table, i.e., by
-    /// tests that use [`Emulated`].
+    /// The level of the table if it is a root table, which is only needed if it is activated, i.e.,
+    /// by tests that use [`Emulated`]. The levels of subtables follow from the table descriptors
+    /// that point to them.
     #[cfg_attr(not(feature = "alloc"), allow(dead_code))]
-    level: usize,
+    root_level: Option<usize>,
 }
 
 #[derive(Default)]
@@ -411,9 +415,11 @@ struct Tlb {
     entries: Vec<Entry>,
     /// The pending descriptors, by address.
     pending: HashMap<usize, Pending>,
-    /// The translation tables allocated by the library, by physical address.
+    /// The translation tables allocated by [`Tracked`] translations, by physical address.
     allocations: HashMap<usize, Allocation>,
-    /// The physical addresses of the translation tables allocated by the library, by address.
+    /// The physical addresses of the translation tables allocated by [`Tracked`] translations, by
+    /// address.
+    #[cfg(feature = "alloc")]
     physical: HashMap<usize, usize>,
     /// The live translation table hierarchies, by the address of their root tables.
     hierarchies: HashMap<usize, Context>,
@@ -529,7 +535,7 @@ impl Tlb {
     }
 
     /// Returns the address of the translation table that `bits` points to if it is a table
-    /// descriptor at `level`, provided that the table was allocated by the library.
+    /// descriptor at `level`, provided that the table was allocated by a [`Tracked`] translation.
     fn subtable(&self, bits: DescriptorBits, level: usize) -> Option<usize> {
         if level == LEAF_LEVEL || bits & (VALID | TABLE_OR_PAGE) != VALID | TABLE_OR_PAGE {
             return None;
@@ -802,17 +808,20 @@ fn va_range_of<R: TranslationRegime>(va_range: R::VaRange) -> VaRange {
         .unwrap_or(VaRange::Lower)
 }
 
-/// Called after the library has allocated the translation table at address `table`, whose
-/// physical address is `pa`, to be used at `level`.
-pub(crate) fn table_allocated(table: usize, pa: PhysicalAddress, level: usize) {
+/// Called by [`Tracked`] after it has allocated the translation table at address `table`, whose
+/// physical address is `pa`, to be used as a root table at `root_level` or as a subtable.
+#[cfg(feature = "alloc")]
+fn table_allocated(table: usize, pa: PhysicalAddress, root_level: Option<usize>) {
     with_tlb(|tlb| {
-        tlb.allocations.insert(pa.0, Allocation { table, level });
+        tlb.allocations
+            .insert(pa.0, Allocation { table, root_level });
         tlb.physical.insert(table, pa.0);
     });
 }
 
-/// Called before the library deallocates the translation table at address `table`.
-pub(crate) fn table_freed(table: usize) {
+/// Called by [`Tracked`] before it deallocates the translation table at address `table`.
+#[cfg(feature = "alloc")]
+fn table_freed(table: usize) {
     report(with_tlb(|tlb| {
         let Some(pa) = tlb.physical.remove(&table) else {
             return Ok(());
@@ -820,6 +829,61 @@ pub(crate) fn table_freed(table: usize) {
         tlb.allocations.remove(&pa);
         tlb.freed(table, pa)
     }));
+}
+
+/// A translation that behaves like `T`, but that also reports the translation tables it allocates
+/// and frees to the TLB emulation. The emulation uses this to follow the table descriptors of the
+/// live translation table hierarchies built with it, and to check that none of their tables are
+/// freed while the walker may still fetch descriptors from them. Tests use it via [`mapping`] and
+/// [`mapping_with_asid`].
+#[cfg(feature = "alloc")]
+#[derive(Clone, Debug)]
+pub(crate) struct Tracked<T> {
+    translation: T,
+    /// The level of the root table, until it has been allocated. The root table is always the
+    /// first table that the translation of a page table allocates.
+    root_level: Option<usize>,
+}
+
+#[cfg(feature = "alloc")]
+impl<T> Tracked<T> {
+    /// Wraps `translation`, whose first allocation will be a root table at `root_level`.
+    fn new(translation: T, root_level: usize) -> Self {
+        Self {
+            translation,
+            root_level: Some(root_level),
+        }
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl<A: PagingAttributes, T: Translation<A>> Translation<A> for Tracked<T> {
+    fn allocate_table(&mut self) -> (NonNull<PageTable<A>>, PhysicalAddress) {
+        let (table, pa) = self.translation.allocate_table();
+        table_allocated(table.as_ptr() as usize, pa, self.root_level.take());
+        (table, pa)
+    }
+
+    unsafe fn deallocate_table(&mut self, page_table: NonNull<PageTable<A>>) {
+        table_freed(page_table.as_ptr() as usize);
+        // SAFETY: Our caller promised that the memory was allocated by `allocate_table` on this
+        // `Tracked`, which got it from `allocate_table` on the wrapped translation, and that it has
+        // not been deallocated yet.
+        unsafe { self.translation.deallocate_table(page_table) }
+    }
+
+    fn physical_to_virtual(&self, pa: PhysicalAddress) -> NonNull<PageTable<A>> {
+        self.translation.physical_to_virtual(pa)
+    }
+}
+
+/// Lets `Mapping::map_fixed_range` be used with page tables built with [`mapping`] or
+/// [`mapping_with_asid`].
+#[cfg(feature = "alloc")]
+impl<T: FixedTranslation> FixedTranslation for Tracked<T> {
+    fn virtual_to_physical(&self, va: VirtualAddress) -> Result<PhysicalAddress, MapError> {
+        self.translation.virtual_to_physical(va)
+    }
 }
 
 /// Models the store of `new` to the descriptor `desc`, which held `old`.
@@ -879,8 +943,9 @@ fn invalidate_asid<R: TranslationRegime>(asid: R::Asid) {
 
 /// A translation regime that behaves like `R`, but that also makes the TLB emulation aware of the
 /// translation table hierarchies that are activated with it, so that their descriptors are subject
-/// to its checks while they are live. Tests build such hierarchies with [`mapping`] or
-/// [`mapping_with_asid`], and all such tests depend on the `alloc` feature.
+/// to its checks while they are live. The tables of such hierarchies must have been allocated by a
+/// [`Tracked`] translation, so tests build them with [`mapping`] or [`mapping_with_asid`], and all
+/// such tests depend on the `alloc` feature.
 #[cfg(feature = "alloc")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Emulated<R>(R);
@@ -904,8 +969,16 @@ impl<R: TranslationRegime> TranslationRegime for Emulated<R> {
         let previous_ttbr = unsafe { R::activate(root_pa, asid, va_range) };
         let va_range = va_range_of::<R>(va_range);
         report(with_tlb(|tlb| {
-            let Some(&Allocation { table, level }) = tlb.allocations.get(&root_pa.0) else {
-                return Ok(());
+            let Some(&Allocation {
+                table,
+                root_level: Some(level),
+            }) = tlb.allocations.get(&root_pa.0)
+            else {
+                // Without this, the hierarchy would silently not be subject to any checks.
+                return Err(format!(
+                    "Translation table hierarchy with root table at {root_pa} activated with \
+                     `Emulated`, but its tables were not allocated by a `Tracked` translation"
+                ));
             };
             tlb.active.push((table, TypeId::of::<R>(), va_range));
             if tlb.hierarchies.contains_key(&table) {
@@ -967,7 +1040,7 @@ impl<R: TranslationRegime> TranslationRegime for Emulated<R> {
 /// is active would panic again, which would abort the entire test run.
 #[cfg(feature = "alloc")]
 pub(crate) struct EmulatedMapping<T: Translation<R::Attributes>, R: TranslationRegime>(
-    Option<Mapping<T, Emulated<R>>>,
+    Option<Mapping<Tracked<T>, Emulated<R>>>,
 );
 
 #[cfg(feature = "alloc")]
@@ -1007,7 +1080,7 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> EmulatedMapping<T, R> 
     fn checked(
         &mut self,
         range: &MemoryRegion,
-        update: impl FnOnce(&mut Mapping<T, Emulated<R>>) -> Result<(), MapError>,
+        update: impl FnOnce(&mut Mapping<Tracked<T>, Emulated<R>>) -> Result<(), MapError>,
     ) -> Result<(), MapError> {
         let mapping = self.0.as_mut().unwrap();
         let result = update(mapping);
@@ -1033,7 +1106,7 @@ impl<T: Translation<R::Attributes> + FixedTranslation, R: TranslationRegime> Emu
 
 #[cfg(feature = "alloc")]
 impl<T: Translation<R::Attributes>, R: TranslationRegime> Deref for EmulatedMapping<T, R> {
-    type Target = Mapping<T, Emulated<R>>;
+    type Target = Mapping<Tracked<T>, Emulated<R>>;
 
     fn deref(&self) -> &Self::Target {
         self.0.as_ref().unwrap()
@@ -1064,8 +1137,9 @@ pub(crate) type EmulatedLinearMap<R> =
     EmulatedMapping<LinearTranslation<<R as TranslationRegime>::Attributes>, R>;
 
 /// Builds a page table for `regime`, a translation regime without ASIDs, like [`Mapping::new`], but
-/// to which the TLB emulation applies: `regime` is wrapped in [`Emulated`], so that the emulation
-/// models the TLB while the page table is live.
+/// to which the TLB emulation applies: `translation` is wrapped in [`Tracked`], so that the
+/// emulation knows the translation tables of the page table, and `regime` is wrapped in
+/// [`Emulated`], so that the emulation models the TLB while the page table is live.
 #[cfg(feature = "alloc")]
 pub(crate) fn mapping<T, R>(translation: T, root_level: usize, regime: R) -> EmulatedMapping<T, R>
 where
@@ -1073,7 +1147,7 @@ where
     R: TranslationRegime<Asid = (), VaRange = ()>,
 {
     EmulatedMapping(Some(Mapping::new(
-        translation,
+        Tracked::new(translation, root_level),
         root_level,
         Emulated(regime),
     )))
@@ -1095,7 +1169,7 @@ where
     R: TranslationRegime<Asid = usize, VaRange = VaRange>,
 {
     EmulatedMapping(Some(Mapping::with_asid_and_va_range(
-        translation,
+        Tracked::new(translation, root_level),
         asid,
         root_level,
         Emulated(regime),

@@ -114,6 +114,42 @@ mod private {
     }
 }
 
+/// Issues the TLB invalidation instruction `TLBI <op>{, <Xt>}`, with `$operand` in register `<Xt>`
+/// if the instruction takes a register operand.
+///
+/// In test builds, the instruction is passed to the TLB emulation instead, along with the
+/// translation regime it applies to, which is taken to be `Self`. This means that the macro must
+/// only be used in implementations of [`TranslationRegime`].
+macro_rules! tlbi {
+    ($op:ident) => {{
+        #[cfg(all(not(test), target_arch = "aarch64"))]
+        // SAFETY: TLBI maintenance has no side effects that are observeable by the program
+        unsafe {
+            core::arch::asm!(
+                concat!("tlbi ", stringify!($op)),
+                options(preserves_flags, nostack),
+            );
+        }
+        #[cfg(test)]
+        crate::tlb::tlbi::<Self>(stringify!($op), None);
+    }};
+    ($op:ident, $operand:expr) => {{
+        #[allow(unused)]
+        let operand: usize = $operand;
+        #[cfg(all(not(test), target_arch = "aarch64"))]
+        // SAFETY: TLBI maintenance has no side effects that are observeable by the program
+        unsafe {
+            core::arch::asm!(
+                concat!("tlbi ", stringify!($op), ", {operand}"),
+                operand = in(reg) operand,
+                options(preserves_flags, nostack),
+            );
+        }
+        #[cfg(test)]
+        crate::tlb::tlbi::<Self>(stringify!($op), Some(operand));
+    }};
+}
+
 /// Non-secure EL1&0, stage 1 translation regime.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct El1And0;
@@ -125,18 +161,7 @@ impl TranslationRegime for El1And0 {
     type VaRange = VaRange;
 
     fn invalidate_va(va: VirtualAddress) {
-        #[allow(unused)]
-        let va = tlbi_address(va);
-        #[cfg(all(not(test), target_arch = "aarch64"))]
-        // SAFETY: TLBI maintenance has no side effects that are observeable by the
-        // program
-        unsafe {
-            asm!(
-                "tlbi vaae1is, {va}",
-                va = in(reg) va,
-                options(preserves_flags, nostack),
-            );
-        }
+        tlbi!(vaae1is, tlbi_address(va));
     }
 
     #[allow(
@@ -224,18 +249,7 @@ impl TranslationRegime for El2And0 {
     type VaRange = VaRange;
 
     fn invalidate_va(va: VirtualAddress) {
-        #[allow(unused)]
-        let va = tlbi_address(va);
-        #[cfg(all(not(test), target_arch = "aarch64"))]
-        // SAFETY: TLBI maintenance has no side effects that are observeable by the
-        // program
-        unsafe {
-            asm!(
-                "tlbi vaae1is, {va}",
-                va = in(reg) va,
-                options(preserves_flags, nostack),
-            );
-        }
+        tlbi!(vaae1is, tlbi_address(va));
     }
 
     #[allow(
@@ -320,18 +334,7 @@ impl TranslationRegime for El2 {
     type VaRange = ();
 
     fn invalidate_va(va: VirtualAddress) {
-        #[allow(unused)]
-        let va = tlbi_address(va);
-        #[cfg(all(not(test), target_arch = "aarch64"))]
-        // SAFETY: TLBI maintenance has no side effects that are observeable by the
-        // program
-        unsafe {
-            asm!(
-                "tlbi vae2is, {va}",
-                va = in(reg) va,
-                options(preserves_flags, nostack),
-            );
-        }
+        tlbi!(vae2is, tlbi_address(va));
     }
 
     #[allow(
@@ -374,18 +377,7 @@ impl TranslationRegime for El3 {
     type VaRange = ();
 
     fn invalidate_va(va: VirtualAddress) {
-        #[allow(unused)]
-        let va = tlbi_address(va);
-        #[cfg(all(not(test), target_arch = "aarch64"))]
-        // SAFETY: TLBI maintenance has no side effects that are observeable by the
-        // program
-        unsafe {
-            asm!(
-                "tlbi vae3is, {va}",
-                va = in(reg) va,
-                options(preserves_flags, nostack),
-            );
-        }
+        tlbi!(vae3is, tlbi_address(va));
     }
 
     #[allow(
@@ -434,33 +426,14 @@ impl TranslationRegime for Stage2 {
     type VaRange = ();
 
     fn invalidate_va(va: VirtualAddress) {
-        #[allow(unused)]
-        let va = tlbi_address(va);
-        #[cfg(all(not(test), target_arch = "aarch64"))]
-        // SAFETY: TLBI maintenance has no side effects that are observeable by the
-        // program
-        unsafe {
-            asm!(
-                "tlbi ipas2e1is, {va}",
-                va = in(reg) va,
-                options(preserves_flags, nostack),
-            );
-        }
+        tlbi!(ipas2e1is, tlbi_address(va));
     }
 
     /// A stage 2 only invalidation is not required to invalidate entries which combine stage 1 and
     /// stage 2 translations, so stage 1 is invalidated once those have completed.
     fn complete_tlb_maintenance() {
-        #[cfg(all(not(test), target_arch = "aarch64"))]
-        // SAFETY: TLBI maintenance and barriers have no side effects that are observeable by the
-        // program
-        unsafe {
-            asm!(
-                "dsb  ish",
-                "tlbi vmalle1is",
-                options(preserves_flags, nostack),
-            );
-        }
+        crate::dsb_ish();
+        tlbi!(vmalle1is);
         crate::wait_for_tlb_maintenance();
     }
 
@@ -620,7 +593,7 @@ bitflags! {
 }
 
 /// A complete hierarchy of page tables including all levels.
-pub struct RootTable<R: TranslationRegime, T: Translation<R::Attributes>> {
+pub(crate) struct RootTable<R: TranslationRegime, T: Translation<R::Attributes>> {
     table: PageTableWithLevel<T, R::Attributes>,
     translation: T,
     pa: PhysicalAddress,
@@ -634,7 +607,7 @@ impl<R: TranslationRegime<VaRange = ()>, T: Translation<R::Attributes>> RootTabl
     /// The level must be between 0 and 3; level -1 (for 52-bit addresses with LPA2) is not
     /// currently supported by this library. The value of `TCR_EL1.T0SZ` must be set appropriately
     /// to match.
-    pub fn new(translation: T, level: usize, regime: R) -> Self {
+    pub(crate) fn new(translation: T, level: usize, regime: R) -> Self {
         Self::new_impl(translation, level, regime, ())
     }
 }
@@ -645,15 +618,13 @@ impl<R: TranslationRegime<VaRange = VaRange>, T: Translation<R::Attributes>> Roo
     /// The level must be between 0 and 3; level -1 (for 52-bit addresses with LPA2) is not
     /// currently supported by this library. The value of `TCR_EL1.T0SZ` must be set appropriately
     /// to match.
-    pub fn with_va_range(translation: T, level: usize, regime: R, va_range: VaRange) -> Self {
+    pub(crate) fn with_va_range(
+        translation: T,
+        level: usize,
+        regime: R,
+        va_range: VaRange,
+    ) -> Self {
         Self::new_impl(translation, level, regime, va_range)
-    }
-
-    /// Returns the virtual address range for which this table is intended.
-    ///
-    /// This affects which TTBR register is used.
-    pub fn va_range(&self) -> VaRange {
-        self.va_range
     }
 }
 
@@ -676,7 +647,7 @@ impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
     /// table.
     ///
     /// This is a function of the chosen root level.
-    pub fn size(&self) -> usize {
+    pub(crate) fn size(&self) -> usize {
         granularity_at_level(self.table.level) << BITS_PER_LEVEL
     }
 
@@ -687,24 +658,12 @@ impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
     /// To unmap a range, pass `flags` which don't contain the [`PagingAttributes::VALID`] bit. In this case
     /// the `pa` is ignored.
     ///
-    /// This performs no TLB maintenance, so it is only suitable for page tables which are not
-    /// live. Use [`Mapping`](crate::Mapping) for page tables which may be in use.
+    /// If `live` is true, the TLB maintenance required before freeing any subtable which is removed
+    /// is performed as well.
     ///
     /// Returns an error if the virtual address range is out of the range covered by the pagetable,
     /// or if the `flags` argument has unsupported attributes set.
-    pub fn map_range(
-        &mut self,
-        range: &MemoryRegion,
-        pa: PhysicalAddress,
-        flags: R::Attributes,
-        constraints: Constraints,
-    ) -> Result<(), MapError> {
-        self.map_range_impl(range, pa, flags, constraints, false)
-    }
-
-    /// Maps a range as [`map_range`](Self::map_range), additionally performing the TLB maintenance
-    /// required before freeing any subtable which is removed if `live` is true.
-    pub(crate) fn map_range_impl(
+    pub(crate) fn map_range(
         &mut self,
         range: &MemoryRegion,
         pa: PhysicalAddress,
@@ -722,12 +681,12 @@ impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
     }
 
     /// Returns the physical address of the root table in memory.
-    pub fn to_physical(&self) -> PhysicalAddress {
+    pub(crate) fn to_physical(&self) -> PhysicalAddress {
         self.pa
     }
 
     /// Returns a reference to the translation used for this page table.
-    pub fn translation(&self) -> &T {
+    pub(crate) fn translation(&self) -> &T {
         &self.translation
     }
 
@@ -819,7 +778,7 @@ impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
     ///
     /// Returns [`MapError::AddressRange`] if the largest address in the `range` is greater than the
     /// largest virtual address covered by the page table given its root level.
-    pub fn walk_range<F>(&self, range: &MemoryRegion, f: &mut F) -> Result<(), MapError>
+    pub(crate) fn walk_range<F>(&self, range: &MemoryRegion, f: &mut F) -> Result<(), MapError>
     where
         F: FnMut(&MemoryRegion, &Descriptor<R::Attributes>, usize) -> Result<(), ()>,
     {
@@ -835,15 +794,9 @@ impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
     /// every time a region is unmapped. You could instead call it when the system is under memory
     /// pressure.
     ///
-    /// This performs no TLB maintenance, so it is only suitable for page tables which are not
-    /// live. Use [`Mapping`](crate::Mapping) for page tables which may be in use.
-    pub fn compact_subtables(&mut self) {
-        self.compact_subtables_impl(false);
-    }
-
-    /// Compacts subtables as [`compact_subtables`](Self::compact_subtables), additionally
-    /// performing the TLB maintenance required before freeing each subtable if `live` is true.
-    pub(crate) fn compact_subtables_impl(&mut self, live: bool) {
+    /// If `live` is true, the TLB maintenance required before freeing each subtable is performed as
+    /// well.
+    pub(crate) fn compact_subtables(&mut self, live: bool) {
         let base = self.base_va();
         self.table
             .compact_subtables::<R>(&mut self.translation, base, live);
@@ -1104,7 +1057,7 @@ impl<T: Translation<A>, A: PagingAttributes> PageTableWithLevel<T, A> {
                 }
             } else if !entry.is_table_or_page()
                 && entry.flags() == flags
-                && entry.output_address().0 == pa.0 - chunk.0.start.0 % granularity
+                && entry.output_address().0 + chunk.0.start.0 % granularity == pa.0
             {
                 // There is no need to split up a block mapping if it already maps the desired `pa`
                 // with the desired `flags`. So do nothing in this case.
@@ -1802,6 +1755,25 @@ mod tests {
         );
     }
 
+    /// Unmapping a range that doesn't start at a block boundary, passing a physical address that is
+    /// below the offset of the range within the block, which is fine as it is ignored when
+    /// unmapping.
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn unmap_unaligned_range_with_pa_zero() {
+        let mut table =
+            RootTable::with_va_range(TargetAllocator::new(0), 1, El1And0, VaRange::Lower);
+        table
+            .map_range(
+                &MemoryRegion::new(0x4000_1000, 0x4000_2000),
+                PhysicalAddress(0),
+                El1Attributes::empty(),
+                Constraints::empty(),
+                false,
+            )
+            .unwrap();
+    }
+
     #[cfg(feature = "alloc")]
     #[test]
     fn debug_roottable_contiguous() {
@@ -1813,6 +1785,7 @@ mod tests {
                 PhysicalAddress(PAGE_SIZE * 3),
                 El1Attributes::VALID | El1Attributes::NON_GLOBAL,
                 Constraints::empty(),
+                false,
             )
             .unwrap();
         table
@@ -1821,6 +1794,7 @@ mod tests {
                 PhysicalAddress(PAGE_SIZE * 6),
                 El1Attributes::VALID | El1Attributes::READ_ONLY,
                 Constraints::empty(),
+                false,
             )
             .unwrap();
         table
@@ -1829,6 +1803,7 @@ mod tests {
                 PhysicalAddress(PAGE_SIZE * 8),
                 El1Attributes::VALID | El1Attributes::READ_ONLY,
                 Constraints::empty(),
+                false,
             )
             .unwrap();
         assert_eq!(
@@ -1859,6 +1834,7 @@ mod tests {
                 PhysicalAddress(BLOCK_SIZE * 3),
                 El1Attributes::VALID | El1Attributes::NON_GLOBAL,
                 Constraints::empty(),
+                false,
             )
             .unwrap();
         table
@@ -1867,6 +1843,7 @@ mod tests {
                 PhysicalAddress(BLOCK_SIZE * 6),
                 El1Attributes::VALID | El1Attributes::READ_ONLY,
                 Constraints::empty(),
+                false,
             )
             .unwrap();
         table
@@ -1875,6 +1852,7 @@ mod tests {
                 PhysicalAddress(BLOCK_SIZE * 8),
                 El1Attributes::VALID | El1Attributes::READ_ONLY,
                 Constraints::empty(),
+                false,
             )
             .unwrap();
         assert_eq!(

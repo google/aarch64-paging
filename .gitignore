@@ -1,2 +1,4 @@
 /target
 /.vscode
+# Inputs saved by `cargo bolero test`.
+/src/__fuzz__

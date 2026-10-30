@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- `RootTable` is no longer public. It has no way of knowing whether the page table it manages is
+  live, and so it cannot perform the TLB maintenance that updating a live page table requires. Use
+  `Mapping` instead, which only performs TLB maintenance while the page table is active, e.g.,
+  together with `TargetAllocator` to build a page table for a separate target device.
+
 ### Bugfixes
 
 - Fixed TLB invalidation for live stage 2 mappings. `TLBI IPAS2E1IS` alone doesn't have to remove
@@ -23,6 +30,35 @@
   part of the range that it covers, and the block mapping is only split if the updater function
   modifies the copy. If it returns an error for the copy, `modify_range` fails with
   `MapError::PteUpdateFault`.
+- Fixed `map_range` panicking with an arithmetic overflow in debug builds if the physical address
+  passed to it is below the offset of the range within a block that is already mapped, or unmapped,
+  with the same attributes, e.g., when unmapping a range that doesn't start at a block boundary
+  with physical address 0.
+- Fixed `Mapping::map_range` splitting live block mappings without break-before-make, rather than
+  failing with `MapError::BreakBeforeMakeViolation`, if `Constraints::NO_BLOCK_MAPPINGS` is given,
+  or if the physical address passed to it would map the start of a block that the range covers to
+  an address that isn't aligned to the block size, e.g., because the range only covers part of the
+  block and is moved by less than the block size.
+
+### Other changes
+
+- Added a TLB emulation for testing, which panics when the TLB maintenance performed for live page
+  tables is insufficient to prevent TLB conflicts, e.g., because a live mapping is changed without
+  break-before-make, or because the required barriers or TLB invalidation instructions are missing
+  or issued in the wrong order.
+- The TLB emulation also checks that `map_range` and `modify_range` leave no stale TLB entries
+  behind for the range they update on a live page table, so that missing TLB maintenance is detected
+  even for changes that cannot cause TLB conflicts, such as permission changes.
+- The TLB emulation also detects translation tables being freed while they are still part of a live
+  page table, or while the TLB may still hold a table descriptor that points to them, either of
+  which would allow the page table walker to fetch descriptors from memory that has been reused.
+- For stage 2 page tables, the TLB emulation models TLB entries that combine a stage 1 translation
+  with the stage 2 translation. These are not invalidated by `TLBI IPAS2E1IS`, but only by a
+  `TLBI VMALLE1IS` that is issued after the `TLBI IPAS2E1IS` has been completed by a DSB.
+- Added randomized tests that apply long sequences of random updates to page tables via `Mapping`,
+  and check the resulting page tables against a model of the expected mappings, as well as the TLB
+  maintenance using the TLB emulation. The updates can also be chosen by a coverage-guided fuzzer,
+  using `cargo bolero test fuzz::fuzz_inputs`.
 
 ## 0.12.3
 

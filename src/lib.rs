@@ -49,6 +49,8 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod descriptor;
+#[cfg(all(test, feature = "alloc"))]
+mod fuzz;
 #[cfg(feature = "alloc")]
 pub mod idmap;
 #[cfg(feature = "alloc")]
@@ -57,10 +59,15 @@ pub mod mair;
 pub mod paging;
 #[cfg(feature = "alloc")]
 pub mod target;
+#[cfg(test)]
+mod tlb;
 
 #[cfg(any(test, feature = "alloc"))]
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
+use bitflags::Flags;
 #[cfg(target_arch = "aarch64")]
 use core::arch::asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -70,6 +77,23 @@ use descriptor::{
 };
 use paging::{Constraints, MemoryRegion, RootTable, Translation, TranslationRegime, VaRange};
 use thiserror::Error;
+#[cfg(test)]
+use tlb::Tracked;
+
+/// The translation that a [`Mapping`] uses for its page tables.
+///
+/// In test builds, it is wrapped in `tlb::Tracked`, which reports the page tables it allocates and
+/// frees to the TLB emulation.
+#[cfg(not(test))]
+type Tracked<T> = T;
+
+/// Wraps `translation`, which is about to be used to allocate a root table at `root_level`, as
+/// described for [`Tracked`].
+fn tracked<T>(translation: T, #[allow(unused)] root_level: usize) -> Tracked<T> {
+    #[cfg(test)]
+    let translation = Tracked::new(translation, root_level);
+    translation
+}
 
 /// An error attempting to map some range in the page table.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
@@ -104,37 +128,69 @@ pub enum MapError {
 /// changes.
 #[derive(Debug)]
 pub struct Mapping<T: Translation<R::Attributes>, R: TranslationRegime> {
-    root: RootTable<R, T>,
+    root: RootTable<R, Tracked<T>>,
     asid: R::Asid,
     active_count: AtomicUsize,
+}
+
+/// Issues an inner-shareable data synchronization barrier (DSB), which waits for all memory
+/// accesses and maintenance instructions, including TLB maintenance, that precede it in program
+/// order to complete.
+fn dsb_ish() {
+    // SAFETY: Barriers have no side effects that are observeable by the program
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        asm!("dsb ish", options(preserves_flags, nostack));
+    }
+    #[cfg(test)]
+    tlb::dsb(tlb::Dsb::Full);
+}
+
+/// Issues an inner-shareable data synchronization barrier (DSB) with store scope, which waits for
+/// all stores that precede it in program order to complete, but not for TLB maintenance.
+fn dsb_ishst() {
+    // SAFETY: Barriers have no side effects that are observeable by the program
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        asm!("dsb ishst", options(preserves_flags, nostack));
+    }
+    #[cfg(test)]
+    tlb::dsb(tlb::Dsb::Store);
+}
+
+/// Issues an instruction synchronization barrier (ISB), so that the effects of preceding context
+/// synchronization events, such as completed TLB maintenance, are visible to subsequent
+/// instructions.
+fn isb() {
+    // SAFETY: Barriers have no side effects that are observeable by the program
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        asm!("isb", options(preserves_flags, nostack));
+    }
 }
 
 /// Issues an inner-shareable data synchronization barrier (DSB) followed by an instruction
 /// synchronization barrier (ISB) so that execution does not proceed until all TLB maintenance is
 /// completed.
 fn wait_for_tlb_maintenance() {
-    // SAFETY: Barriers have no side effects that are observeable by the program
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        asm!("dsb ish", "isb", options(preserves_flags, nostack));
-    }
+    dsb_ish();
+    isb();
 }
 
 /// Issues an inner-shareable data synchronization barrier (DSB) with store scope so that subsequent
 /// TLB invalidation is guaranteed to purge all TLB entries that were derived from the old values of
 /// descriptors that were recently modified. No ISB is needed in this case.
 fn wait_for_store_completion() {
-    // SAFETY: Barriers have no side effects that are observeable by the program
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        asm!("dsb ishst", options(preserves_flags, nostack));
-    }
+    dsb_ishst();
 }
 
 impl<T: Translation<R::Attributes>, R: TranslationRegime<Asid = (), VaRange = ()>> Mapping<T, R> {
     /// Creates a new page table with the given root level and translation mapping.
     pub fn new(translation: T, rootlevel: usize, regime: R) -> Self {
-        Self::new_impl(RootTable::new(translation, rootlevel, regime), ())
+        Self::new_impl(
+            RootTable::new(tracked(translation, rootlevel), rootlevel, regime),
+            (),
+        )
     }
 }
 
@@ -150,14 +206,14 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime<Asid = usize, VaRange =
         va_range: VaRange,
     ) -> Self {
         Self::new_impl(
-            RootTable::with_va_range(translation, rootlevel, regime, va_range),
+            RootTable::with_va_range(tracked(translation, rootlevel), rootlevel, regime, va_range),
             asid,
         )
     }
 }
 
 impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
-    fn new_impl(root: RootTable<R, T>, asid: R::Asid) -> Self {
+    fn new_impl(root: RootTable<R, Tracked<T>>, asid: R::Asid) -> Self {
         Self {
             root,
             asid,
@@ -203,13 +259,14 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
         // are not active yet, while they have already been loaded into the TTBR of another CPU.
         self.mark_active();
 
-        #[cfg(all(not(test), target_arch = "aarch64"))]
+        // Ensure that all page table updates, as well as the increment of the active counter,
+        // are visible to all observers before proceeding
+        dsb_ishst();
+        isb();
+
         // SAFETY: We trust that self.root_address() returns a valid physical address of a page
         // table, and the `Drop` implementation will reset `TTBRn_ELx` before it becomes invalid.
         unsafe {
-            // Ensure that all page table updates, as well as the increment of the active counter,
-            // are visible to all observers before proceeding
-            asm!("dsb ishst", "isb", options(preserves_flags, nostack),);
             previous_ttbr =
                 R::activate(self.root_address(), self.asid, self.root.va_range_or_unit());
         }
@@ -220,8 +277,6 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
     /// the TLB for this page table's configured ASID. The provided TTBR value should be the value
     /// returned by the preceding [`activate`](Self::activate) call.
     ///
-    /// In test builds or builds that do not target aarch64, the `TTBRn_ELx` access is omitted.
-    ///
     /// # Safety
     ///
     /// The caller must ensure that the previous page table which this is switching back to doesn't
@@ -229,7 +284,6 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
     pub unsafe fn deactivate(&self, #[allow(unused)] previous_ttbr: usize) {
         assert!(self.active());
 
-        #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: This just restores the previously saved value of `TTBRn_ELx`, which must have
         // been valid.
         unsafe {
@@ -326,21 +380,42 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
         let live = self.active();
         if live {
             let c = |mr: &MemoryRegion, d: &mut UpdatableDescriptor<R::Attributes>| {
-                let mask = !(paging::granularity_at_level(d.level()) - 1);
-                let pa = (mr.start() - range.start() + pa.0) & mask;
-                let flags = if d.level() == 3 {
+                let level = d.level();
+                let valid = d.flags().contains(R::Attributes::VALID);
+                // The output address that the start of the block or page that maps `mr` would
+                // have if the update were applied to all of it, rather than just to `mr`.
+                let offset = mr.start().0 % paging::granularity_at_level(level);
+                let Some(pa) = (mr.start() - range.start() + pa.0).checked_sub(offset) else {
+                    // The update can only be applied by splitting the block mapping, which is
+                    // not permitted while it is valid.
+                    return if valid { Err(()) } else { Ok(()) };
+                };
+                let flags = if level == 3 {
                     flags | R::Attributes::TABLE_OR_PAGE
                 } else {
                     flags
                 };
-                d.set(PhysicalAddress(pa), flags)
+                d.set(PhysicalAddress(pa & !(paging::PAGE_SIZE - 1)), flags)?;
+                // map_range() also splits a valid block mapping that it modifies if block mappings
+                // are not permitted, as well as one that it maps to an output address that isn't
+                // suitably aligned for a block mapping.
+                if valid
+                    && level < 3
+                    && flags.contains(R::Attributes::VALID)
+                    && (d.updated() && constraints.contains(Constraints::NO_BLOCK_MAPPINGS)
+                        || !paging::is_aligned(pa, paging::granularity_at_level(level)))
+                {
+                    return Err(());
+                }
+                Ok(())
             };
             // map_range() only splits a block mapping if its output address or attributes change.
             self.check_range_bbm(range, &c)?;
         }
-        self.root
-            .map_range_impl(range, pa, flags, constraints, live)?;
+        self.root.map_range(range, pa, flags, constraints, live)?;
         self.invalidate_range(range);
+        #[cfg(test)]
+        tlb::check_coherency(self.root_address(), range);
         Ok(())
     }
 
@@ -404,6 +479,8 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
         if matches!(result, Ok(true) | Err(MapError::PteUpdateFault(_))) && self.active() {
             R::complete_tlb_maintenance();
         }
+        #[cfg(test)]
+        tlb::check_coherency(self.root_address(), range);
         result.map(|_| ())
     }
 
@@ -434,7 +511,7 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
     /// every time a region is unmapped. You could instead call it when the system is under memory
     /// pressure.
     pub fn compact_subtables(&mut self) {
-        self.root.compact_subtables_impl(self.active());
+        self.root.compact_subtables(self.active());
     }
 
     /// Returns the physical address of the root table.
@@ -480,8 +557,118 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
 
 impl<T: Translation<R::Attributes>, R: TranslationRegime> Drop for Mapping<T, R> {
     fn drop(&mut self) {
+        // Panicking while unwinding aborts the process, so avoid turning a failing test into an
+        // abort of the entire test run if it unwinds while the mapping is active.
+        #[cfg(test)]
+        if std::thread::panicking() {
+            return;
+        }
         if self.active() {
             panic!("Dropping active page table mapping!");
         }
+    }
+}
+
+#[cfg(all(test, feature = "alloc"))]
+mod tests {
+    use super::*;
+    use crate::descriptor::El1Attributes;
+    use crate::idmap::IdTranslation;
+    use crate::paging::{El1And0, PAGE_SIZE};
+    use alloc::vec::Vec;
+
+    const BLOCK_SIZE: usize = PAGE_SIZE << 9;
+    const NORMAL: El1Attributes = El1Attributes::VALID
+        .union(El1Attributes::ACCESSED)
+        .union(El1Attributes::ATTRIBUTE_INDEX_1)
+        .union(El1Attributes::INNER_SHAREABLE);
+
+    /// Maps a block at `BLOCK_SIZE`, makes it live, and then calls `map_range` with the given
+    /// arguments, which must fail rather than split the live block mapping.
+    fn remap_live_block(
+        range: MemoryRegion,
+        pa: usize,
+        flags: El1Attributes,
+        constraints: Constraints,
+    ) {
+        let mut mapping =
+            Mapping::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let block = MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE);
+        mapping
+            .map_range(
+                &block,
+                PhysicalAddress(BLOCK_SIZE),
+                NORMAL,
+                Constraints::empty(),
+            )
+            .unwrap();
+        // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
+        // active for the sake of BBM rules.
+        let ttbr = unsafe { mapping.activate() };
+        let result = mapping.map_range(&range, PhysicalAddress(pa), flags, constraints);
+        // SAFETY: As above.
+        unsafe { mapping.deactivate(ttbr) };
+        assert!(
+            matches!(result, Err(MapError::BreakBeforeMakeViolation(_))),
+            "map_range returned {result:?}"
+        );
+        let mut levels = Vec::new();
+        mapping
+            .walk_range(&block, &mut |_, _, level| {
+                levels.push(level);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(levels, [2], "The live block mapping was split");
+    }
+
+    #[test]
+    fn split_live_block_without_block_mappings() {
+        remap_live_block(
+            MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE),
+            BLOCK_SIZE,
+            NORMAL | El1Attributes::READ_ONLY,
+            Constraints::NO_BLOCK_MAPPINGS,
+        );
+    }
+
+    #[test]
+    fn split_live_block_for_unaligned_pa() {
+        remap_live_block(
+            MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE),
+            BLOCK_SIZE + PAGE_SIZE,
+            NORMAL,
+            Constraints::empty(),
+        );
+    }
+
+    #[test]
+    fn split_live_block_for_pa_with_offset() {
+        remap_live_block(
+            MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE),
+            BLOCK_SIZE + 0x123,
+            NORMAL,
+            Constraints::empty(),
+        );
+    }
+
+    #[test]
+    fn split_live_block_for_different_pa() {
+        remap_live_block(
+            MemoryRegion::new(BLOCK_SIZE + PAGE_SIZE, BLOCK_SIZE + 2 * PAGE_SIZE),
+            BLOCK_SIZE,
+            NORMAL,
+            Constraints::empty(),
+        );
+    }
+
+    #[test]
+    fn split_live_block_for_pa_below_offset() {
+        remap_live_block(
+            MemoryRegion::new(BLOCK_SIZE + PAGE_SIZE, BLOCK_SIZE + 2 * PAGE_SIZE),
+            0,
+            NORMAL,
+            Constraints::empty(),
+        );
     }
 }

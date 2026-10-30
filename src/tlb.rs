@@ -1096,10 +1096,16 @@ pub(crate) struct EmulatedMapping<T: Translation<R::Attributes>, R: TranslationR
 
 #[cfg(feature = "alloc")]
 impl<T: Translation<R::Attributes>, R: TranslationRegime> EmulatedMapping<T, R> {
+    /// Returns the underlying page table, e.g., for tests that check the TLB emulation themselves.
+    pub(crate) fn into_inner(mut self) -> Mapping<Tracked<T>, Emulated<R>> {
+        self.0.take().unwrap()
+    }
+
     /// Like [`Mapping::map_range`], followed by the check described for [`EmulatedMapping`].
     #[allow(
         dead_code,
-        reason = "for completeness: the tests only map the physical addresses of the translation"
+        reason = "for completeness: the randomized tests, which map other physical addresses, use \
+                  the underlying page table"
     )]
     pub(crate) fn map_range(
         &mut self,

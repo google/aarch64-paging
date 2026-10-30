@@ -27,6 +27,11 @@
   passed to it is below the offset of the range within a block that is already mapped, or unmapped,
   with the same attributes, e.g., when unmapping a range that doesn't start at a block boundary
   with physical address 0.
+- Fixed `Mapping::map_range` splitting live block mappings without break-before-make, rather than
+  failing with `MapError::BreakBeforeMakeViolation`, if `Constraints::NO_BLOCK_MAPPINGS` is given,
+  or if the physical address passed to it would map the start of a block that the range covers to
+  an address that isn't aligned to the block size, e.g., because the range only covers part of the
+  block and is moved by less than the block size.
 
 ## 0.12.3
 

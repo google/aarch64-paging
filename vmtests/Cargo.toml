@@ -1,0 +1,26 @@
+[package]
+name = "aarch64-paging-vmtests"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Randomized tests of aarch64-paging with live page tables in a virtual machine."
+publish = false
+
+[dependencies]
+aarch64-paging = { path = ".." }
+bitflags = "2.13.0"
+buddy_system_allocator = "0.13.0"
+spin = { version = "0.10.0", default-features = false, features = ["spin_mutex"] }
+
+[profile.dev]
+opt-level = 1
+panic = "abort"
+
+[profile.release]
+debug = true
+debug-assertions = true
+overflow-checks = true
+panic = "abort"
+
+# Not part of a workspace with the crate under test.
+[workspace]

@@ -88,6 +88,9 @@
   and check the resulting page tables against a model of the expected mappings, as well as the TLB
   maintenance using the TLB emulation. The updates can also be chosen by a coverage-guided fuzzer,
   using `cargo bolero test fuzz::fuzz_inputs`.
+- Added a program in `vmtests/` that runs the randomized tests in a virtual machine, at EL1 or at
+  EL2 with VHE, with page tables that are actually live, and that checks the effect of each update
+  on memory accesses.
 
 ## 0.12.3
 

@@ -32,8 +32,9 @@
 //! fail are saved in `src/__fuzz__/fuzz__inputs/crashes`, from where `cargo test` replays them. Set
 //! `AARCH64_PAGING_FUZZ_VERBOSE` to print the updates that an input describes.
 //!
-//! The generation of the updates and the checks against the model are in [`engine`], so that
-//! randomized tests that run elsewhere, such as in a virtual machine, can share them.
+//! The generation of the updates and the checks against the model are in [`engine`], which is
+//! shared with the tests in `vmtests/` that apply the updates to page tables that are actually
+//! live in a virtual machine, and check the effect of each update on memory accesses.
 
 mod engine;
 

@@ -6,9 +6,9 @@
 //! random updates, the model of the expected mappings, and the checks of the page tables against
 //! the model.
 //!
-//! So that randomized tests that run elsewhere, such as in a virtual machine, can share this, it
-//! only uses the public API of the crate, through `crate::` paths that can resolve to the modules
-//! of the crate there as well, and `alloc` rather than `std`.
+//! This is shared with the randomized tests in `vmtests/`, which run in a virtual machine. So it
+//! only uses the public API of the crate, through `crate::` paths that resolve to the modules of
+//! the crate there as well, and `alloc` rather than `std`.
 
 use crate::descriptor::{
     El1Attributes, PagingAttributes, PhysicalAddress, UpdatableDescriptor, VirtualAddress,
@@ -744,13 +744,14 @@ fn apply<R: TranslationRegime>(
         }
         Op::Compact => mapping.compact_subtables(),
         Op::Activate => {
-            // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
-            // active for the sake of BBM rules and the TLB emulation.
+            // SAFETY: In the host tests, this doesn't actually activate the page table, it just
+            // treats it as active for the sake of BBM rules and the TLB emulation. The tests in a
+            // virtual machine make sure that the page table maps the memory that they use in the
+            // same way as the page table that it replaces.
             *ttbr = Some(unsafe { mapping.activate() });
         }
         Op::Deactivate => {
-            // SAFETY: This doesn't actually deactivate the page table in tests, it just treats it
-            // as inactive for the sake of BBM rules and the TLB emulation.
+            // SAFETY: As above, and this switches back to the page table that it replaced.
             unsafe { mapping.deactivate(ttbr.take().unwrap()) };
         }
     }

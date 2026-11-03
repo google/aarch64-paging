@@ -685,8 +685,9 @@ impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
     }
 
     /// Recursively maps a range into the pagetable hierarchy starting at the root level, mapping
-    /// the pages to the corresponding physical address range starting at `pa`. Block and page
-    /// entries will be written to, but will only be mapped if `flags` contains [`PagingAttributes::VALID`].
+    /// the pages to the corresponding physical address range starting at `pa`, rounded down to a
+    /// multiple of [`PAGE_SIZE`] like the range. Block and page entries will be written to, but
+    /// will only be mapped if `flags` contains [`PagingAttributes::VALID`].
     ///
     /// To unmap a range, pass `flags` which don't contain the [`PagingAttributes::VALID`] bit. In this case
     /// the `pa` is ignored.
@@ -720,6 +721,9 @@ impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
             return Err(MapError::InvalidFlags(flags.bits()));
         }
         self.verify_region(range)?;
+        // Only the page that `pa` points into ends up in the descriptors, so ignore the offset into
+        // the page throughout, e.g., when deciding whether block mappings can be used.
+        let pa = PhysicalAddress(align_down(pa.0, PAGE_SIZE));
         self.table
             .map_range::<R>(&mut self.translation, range, pa, flags, constraints, live);
         Ok(())
@@ -1551,7 +1555,7 @@ pub(crate) unsafe fn deallocate<T>(ptr: NonNull<T>) {
     }
 }
 
-const fn align_down(value: usize, alignment: usize) -> usize {
+pub(crate) const fn align_down(value: usize, alignment: usize) -> usize {
     value & !(alignment - 1)
 }
 

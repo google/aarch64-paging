@@ -29,6 +29,10 @@
 //!   are allocated for all of them. Similarly, when a table descriptor is written, TLB entries are
 //!   allocated for the valid descriptors of the subtable it points to and of its subtables, which
 //!   the walker may now fetch.
+//! - When a translation table hierarchy is deactivated, the walker may have cached any of its valid
+//!   descriptors, so TLB entries are allocated for all of them. As updating the hierarchy while it
+//!   is inactive requires no TLB maintenance, the TLB maintenance that deactivating it performs
+//!   must remove all of these, including global entries.
 //! - TLB invalidation (TLBI) marks the TLB entries it applies to for removal, and the removal takes
 //!   effect once the TLBI is completed by a subsequent DSB that is not limited to stores. However, a
 //!   TLBI does not affect TLB entries for which a descriptor at the same level or above on the walk
@@ -226,6 +230,9 @@ enum Origin {
     Overwritten,
     /// The descriptor is part of a subtable that was disconnected from the hierarchy.
     Disconnected,
+    /// The descriptor held this value when the hierarchy was deactivated.
+    #[cfg(feature = "alloc")]
+    Cached,
 }
 
 /// A TLB entry, i.e., a cached copy of a valid descriptor.
@@ -254,6 +261,53 @@ struct Entry {
 }
 
 impl Entry {
+    /// Returns the TLB entries that the walker may create from the value `bits` of the descriptor at
+    /// address `desc`, which maps `va` at `level` in the live translation table hierarchy `ctx`.
+    fn for_descriptor(
+        ctx: &Context,
+        bits: DescriptorBits,
+        va: usize,
+        level: usize,
+        desc: usize,
+        origin: Origin,
+    ) -> impl Iterator<Item = Self> {
+        let entry = is_valid(bits, level).then(|| {
+            let size = granularity_at_level(level);
+            let span =
+                if bits & CONTIGUOUS != 0 && !(level < LEAF_LEVEL && bits & TABLE_OR_PAGE != 0) {
+                    size * CONTIGUOUS_COUNT
+                } else {
+                    size
+                };
+            let first = va & !(span - 1);
+            Self {
+                ctx: ctx.id,
+                regime: ctx.regime,
+                regime_name: ctx.regime_name,
+                asid: ctx.asid,
+                combined: false,
+                va: va & !(size - 1),
+                first,
+                last: first + (span - 1),
+                level,
+                bits,
+                desc,
+                origin,
+                purge: false,
+            }
+        });
+        // The TLB may also cache a stage 2 translation combined with any stage 1 translation of the
+        // guest that maps a VA to its IPA range.
+        let combined = entry
+            .as_ref()
+            .filter(|entry| ctx.regime == TypeId::of::<Stage2>() && !entry.is_table())
+            .map(|entry| Self {
+                combined: true,
+                ..entry.clone()
+            });
+        entry.into_iter().chain(combined)
+    }
+
     fn is_table(&self) -> bool {
         self.level < LEAF_LEVEL && self.bits & TABLE_OR_PAGE != 0
     }
@@ -598,6 +652,31 @@ impl Tlb {
         Ok(())
     }
 
+    /// Allocates TLB entries for all valid descriptors of the live translation table hierarchy
+    /// `ctx`, which the walker may have cached at any time while the hierarchy was live.
+    ///
+    /// Unlike [`allocate`](Self::allocate), this doesn't check for conflicts with existing entries,
+    /// which would take too long for large hierarchies. The new entries reflect the current values
+    /// of the descriptors, so they could only conflict with stale entries, which the checks after
+    /// each update of a live hierarchy report.
+    #[cfg(feature = "alloc")]
+    fn cache_all(&mut self, ctx: &Context) {
+        let mut tables = self
+            .tables
+            .iter()
+            .filter(|(_, table)| table.ctx == ctx.id)
+            .map(|(&address, &table)| (address, table))
+            .collect::<Vec<_>>();
+        tables.sort_unstable_by_key(|&(address, _)| address);
+        for (address, table) in tables {
+            for (desc, bits, va) in descriptors(address, table.base, table.level) {
+                let entries =
+                    Entry::for_descriptor(ctx, bits, va, table.level, desc, Origin::Cached);
+                self.entries.extend(entries);
+            }
+        }
+    }
+
     fn allocate(
         &mut self,
         ctx: &Context,
@@ -607,39 +686,8 @@ impl Tlb {
         desc: usize,
         origin: Origin,
     ) -> Result<(), String> {
-        if !is_valid(bits, level) {
-            return Ok(());
-        }
-        let size = granularity_at_level(level);
-        let span = if bits & CONTIGUOUS != 0 && !(level < LEAF_LEVEL && bits & TABLE_OR_PAGE != 0) {
-            size * CONTIGUOUS_COUNT
-        } else {
-            size
-        };
-        let first = va & !(span - 1);
-        let entry = Entry {
-            ctx: ctx.id,
-            regime: ctx.regime,
-            regime_name: ctx.regime_name,
-            asid: ctx.asid,
-            combined: false,
-            va: va & !(size - 1),
-            first,
-            last: first + (span - 1),
-            level,
-            bits,
-            desc,
-            origin,
-            purge: false,
-        };
-        self.insert(entry.clone())?;
-        if ctx.regime == TypeId::of::<Stage2>() && !entry.is_table() {
-            // The TLB may also cache the stage 2 translation combined with any stage 1 translation
-            // of the guest that maps a VA to this IPA range.
-            self.insert(Entry {
-                combined: true,
-                ..entry
-            })?;
+        for entry in Entry::for_descriptor(ctx, bits, va, level, desc, origin) {
+            self.insert(entry)?;
         }
         Ok(())
     }
@@ -992,10 +1040,24 @@ impl<R: TranslationRegime> TranslationRegime for Emulated<R> {
     }
 
     unsafe fn deactivate(previous_ttbr: usize, asid: R::Asid, va_range: R::VaRange) {
+        let key = (TypeId::of::<R>(), va_range_of::<R>(va_range));
+        // The walker may have cached any valid descriptor of the hierarchy while it was live, and
+        // the TLB maintenance that deactivating it performs must remove all such TLB entries.
+        with_tlb(|tlb| {
+            let Some(&(root, ..)) = tlb
+                .active
+                .iter()
+                .rev()
+                .find(|&&(_, regime, va_range)| (regime, va_range) == key)
+            else {
+                return;
+            };
+            let ctx = tlb.hierarchies[&root];
+            tlb.cache_all(&ctx);
+        });
         // SAFETY: Our caller promised to uphold the safety requirements of `deactivate`. In test
         // builds, this only performs the TLB maintenance, which is passed to the TLB emulation.
         unsafe { R::deactivate(previous_ttbr, asid, va_range) };
-        let key = (TypeId::of::<R>(), va_range_of::<R>(va_range));
         with_tlb(|tlb| {
             let Some(index) = tlb
                 .active
@@ -1946,6 +2008,33 @@ mod tests {
                 Constraints::empty(),
             )
             .unwrap();
+        // SAFETY: As above.
+        unsafe { idmap.deactivate(ttbr) };
+    }
+
+    /// Changing global mappings while the mapping is inactive leaves no stale TLB entries behind
+    /// once it is activated again, even if the TLB holds entries for them that the walker cached
+    /// while it was live, which the updates that created them did not give rise to.
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn global_mapping_changed_while_inactive() {
+        let mut idmap = mapping_with_asid(IdTranslation::new(), ASID, 1, El1And0, VaRange::Lower);
+        let pages = MemoryRegion::new(0, 8 * PAGE_SIZE);
+        idmap
+            .map_fixed_range(&pages, NORMAL, Constraints::empty())
+            .unwrap();
+        // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
+        // active for the sake of BBM rules and the TLB emulation.
+        let ttbr = unsafe { idmap.activate() };
+        // SAFETY: This doesn't actually deactivate the page table in tests, it just treats it as
+        // inactive for the sake of BBM rules and the TLB emulation.
+        unsafe { idmap.deactivate(ttbr) };
+        idmap
+            .map_fixed_range(&pages, DEVICE, Constraints::empty())
+            .unwrap();
+        // SAFETY: As above.
+        let ttbr = unsafe { idmap.activate() };
+        check_coherency(idmap.root_address(), &pages);
         // SAFETY: As above.
         unsafe { idmap.deactivate(ttbr) };
     }

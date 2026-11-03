@@ -179,7 +179,11 @@ impl TranslationRegime for El1And0 {
         unused_variables,
         reason = "used only on aarch64"
     )]
-    unsafe fn deactivate(previous_ttbr: usize, asid: usize, va_range: VaRange) {
+    unsafe fn deactivate(previous_ttbr: usize, _asid: usize, va_range: VaRange) {
+        // Invalidate all TLB entries of the translation regime rather than just those for the ASID
+        // of the page table, as TLBI by ASID doesn't affect the entries for its global mappings.
+        // Those would otherwise remain in use for mappings that are changed while the page table
+        // is inactive, which requires no TLB maintenance.
         #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: This just restores the previously saved value of `TTBRn_ELx`, which must have
         // been valid.
@@ -188,20 +192,18 @@ impl TranslationRegime for El1And0 {
                 VaRange::Lower => asm!(
                     "msr   ttbr0_el1, {ttbrval}",
                     "isb",
-                    "tlbi  aside1, {asid}",
+                    "tlbi  vmalle1",
                     "dsb   nsh",
                     "isb",
-                    asid = in(reg) asid << 48,
                     ttbrval = in(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
                 VaRange::Upper => asm!(
                     "msr   ttbr1_el1, {ttbrval}",
                     "isb",
-                    "tlbi  aside1, {asid}",
+                    "tlbi  vmalle1",
                     "dsb   nsh",
                     "isb",
-                    asid = in(reg) asid << 48,
                     ttbrval = in(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
@@ -278,7 +280,11 @@ impl TranslationRegime for El2And0 {
         unused_variables,
         reason = "used only on aarch64"
     )]
-    unsafe fn deactivate(previous_ttbr: usize, asid: usize, va_range: VaRange) {
+    unsafe fn deactivate(previous_ttbr: usize, _asid: usize, va_range: VaRange) {
+        // Invalidate all TLB entries of the translation regime rather than just those for the ASID
+        // of the page table, as TLBI by ASID doesn't affect the entries for its global mappings.
+        // Those would otherwise remain in use for mappings that are changed while the page table
+        // is inactive, which requires no TLB maintenance.
         #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: This just restores the previously saved value of `TTBRn_ELx`, which must have
         // been valid.
@@ -287,20 +293,18 @@ impl TranslationRegime for El2And0 {
                 VaRange::Lower => asm!(
                     "msr   ttbr0_el2, {ttbrval}",
                     "isb",
-                    "tlbi  aside1, {asid}",
+                    "tlbi  vmalle1",
                     "dsb   nsh",
                     "isb",
-                    asid = in(reg) asid << 48,
                     ttbrval = in(reg) previous_ttbr,
                     options(preserves_flags),
                 ),
                 VaRange::Upper => asm!(
                     "msr   s3_4_c2_c0_1, {ttbrval}", // ttbr1_el2
                     "isb",
-                    "tlbi  aside1, {asid}",
+                    "tlbi  vmalle1",
                     "dsb   nsh",
                     "isb",
-                    asid = in(reg) asid << 48,
                     ttbrval = in(reg) previous_ttbr,
                     options(preserves_flags),
                 ),

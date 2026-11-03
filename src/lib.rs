@@ -19,9 +19,10 @@
 //! ```no_run
 //! # #[cfg(feature = "alloc")] {
 //! use aarch64_paging::{
-//!     idmap::IdMap,
+//!     Mapping,
 //!     descriptor::El1Attributes,
-//!     paging::{MemoryRegion, El1And0},
+//!     idmap::IdTranslation,
+//!     paging::{Constraints, El1And0, MemoryRegion, VaRange},
 //! };
 //!
 //! const ASID: usize = 1;
@@ -29,11 +30,12 @@
 //! const NORMAL_CACHEABLE: El1Attributes = El1Attributes::ATTRIBUTE_INDEX_1.union(El1Attributes::INNER_SHAREABLE);
 //!
 //! // Create a new EL1 page table with identity mapping.
-//! let mut idmap = IdMap::with_asid(ASID, ROOT_LEVEL, El1And0);
+//! let mut idmap = Mapping::with_asid_and_va_range(IdTranslation::new(), ASID, ROOT_LEVEL, El1And0, VaRange::Lower);
 //! // Map a 2 MiB region of memory as read-write.
-//! idmap.map_range(
+//! idmap.map_fixed_range(
 //!     &MemoryRegion::new(0x80200000, 0x80400000),
 //!     NORMAL_CACHEABLE | El1Attributes::NON_GLOBAL | El1Attributes::VALID | El1Attributes::ACCESSED,
+//!     Constraints::empty(),
 //! ).unwrap();
 //! // SAFETY: Everything the program uses is within the 2 MiB region mapped above.
 //! unsafe {

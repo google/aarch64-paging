@@ -64,6 +64,33 @@
     `Mapping::with_asid_and_va_range(LinearTranslation::new(OFFSET), ASID, ROOT_LEVEL, REGIME, VA_RANGE)`.
   - Replace calls to `map_range` and `map_range_with_constraints` on `IdMap` and `LinearMap` with
     `map_fixed_range`.
+- `RootTable` is no longer public. It has no way of knowing whether the page table it manages is
+  live, and so it cannot perform the TLB maintenance that updating a live page table requires. Use
+  `Mapping` instead, which only performs TLB maintenance while the page table is active, e.g.,
+  together with `TargetAllocator` to build a page table for a separate target device.
+
+### Other changes
+
+- Added a TLB emulation for testing, which panics when the TLB maintenance performed for live page
+  tables is insufficient to prevent TLB conflicts, e.g., because a live mapping is changed without
+  break-before-make, or because the required barriers or TLB invalidation instructions are missing
+  or issued in the wrong order.
+- The TLB emulation also checks that `map_range` and `modify_range` leave no stale TLB entries
+  behind for the range they update on a live page table, so that missing TLB maintenance is detected
+  even for changes that cannot cause TLB conflicts, such as permission changes.
+- The TLB emulation also detects translation tables being freed while they are still part of a live
+  page table, or while the TLB may still hold a table descriptor that points to them, either of
+  which would allow the page table walker to fetch descriptors from memory that has been reused.
+- For stage 2 page tables, the TLB emulation models TLB entries that combine a stage 1 translation
+  with the stage 2 translation. These are not invalidated by `TLBI IPAS2E1IS`, but only by a
+  `TLBI VMALLE1IS` that is issued after the `TLBI IPAS2E1IS` has been completed by a DSB.
+- Added randomized tests that apply long sequences of random updates to page tables via `Mapping`,
+  and check the resulting page tables against a model of the expected mappings, as well as the TLB
+  maintenance using the TLB emulation. The updates can also be chosen by a coverage-guided fuzzer,
+  using `cargo bolero test fuzz::fuzz_inputs`.
+- Added a program in `vmtests/` that runs the randomized tests in a virtual machine, at EL1 or at
+  EL2 with VHE, with page tables that are actually live, and that checks the effect of each update
+  on memory accesses.
 
 ## 0.12.3
 

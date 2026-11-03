@@ -51,6 +51,8 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod descriptor;
+#[cfg(all(test, feature = "alloc"))]
+mod fuzz;
 #[cfg(feature = "alloc")]
 pub mod idmap;
 #[cfg(feature = "alloc")]
@@ -59,9 +61,13 @@ pub mod mair;
 pub mod paging;
 #[cfg(feature = "alloc")]
 pub mod target;
+#[cfg(test)]
+mod tlb;
 
 #[cfg(any(test, feature = "alloc"))]
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 use bitflags::Flags;
 #[cfg(target_arch = "aarch64")]
@@ -115,26 +121,76 @@ pub struct Mapping<T: Translation<R::Attributes>, R: TranslationRegime> {
     active_count: AtomicUsize,
 }
 
+/// Issues an inner-shareable data synchronization barrier (DSB), which waits for all memory
+/// accesses and maintenance instructions, including TLB maintenance, that precede it in program
+/// order to complete.
+fn dsb_ish() {
+    // SAFETY: Barriers have no side effects that are observeable by the program
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        asm!("dsb ish", options(preserves_flags, nostack));
+    }
+    #[cfg(test)]
+    tlb::dsb(tlb::Dsb::Full);
+}
+
+/// Issues an inner-shareable data synchronization barrier (DSB) with store scope, which waits for
+/// all stores that precede it in program order to complete, but not for TLB maintenance.
+fn dsb_ishst() {
+    // SAFETY: Barriers have no side effects that are observeable by the program
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        asm!("dsb ishst", options(preserves_flags, nostack));
+    }
+    #[cfg(test)]
+    tlb::dsb(tlb::Dsb::Store);
+}
+
+/// Issues a non-shareable data synchronization barrier (DSB), which waits for all memory accesses
+/// and maintenance instructions that precede it in program order to complete, as far as they apply
+/// to the current CPU, such as non-shareable TLB maintenance.
+fn dsb_nsh() {
+    // SAFETY: Barriers have no side effects that are observeable by the program
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        asm!("dsb nsh", options(preserves_flags, nostack));
+    }
+    #[cfg(test)]
+    tlb::dsb(tlb::Dsb::Full);
+}
+
+/// Issues an instruction synchronization barrier (ISB), so that the effects of preceding context
+/// synchronization events, such as completed TLB maintenance, are visible to subsequent
+/// instructions.
+fn isb() {
+    // SAFETY: Barriers have no side effects that are observeable by the program
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        asm!("isb", options(preserves_flags, nostack));
+    }
+}
+
 /// Issues an inner-shareable data synchronization barrier (DSB) followed by an instruction
 /// synchronization barrier (ISB) so that execution does not proceed until all TLB maintenance is
 /// completed.
 fn wait_for_tlb_maintenance() {
-    // SAFETY: Barriers have no side effects that are observeable by the program
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        asm!("dsb ish", "isb", options(preserves_flags, nostack));
-    }
+    dsb_ish();
+    isb();
+}
+
+/// Issues a non-shareable data synchronization barrier (DSB) followed by an instruction
+/// synchronization barrier (ISB) so that execution does not proceed until all TLB maintenance that
+/// only applies to the current CPU is completed.
+fn wait_for_local_tlb_maintenance() {
+    dsb_nsh();
+    isb();
 }
 
 /// Issues an inner-shareable data synchronization barrier (DSB) with store scope so that subsequent
 /// TLB invalidation is guaranteed to purge all TLB entries that were derived from the old values of
 /// descriptors that were recently modified. No ISB is needed in this case.
 fn wait_for_store_completion() {
-    // SAFETY: Barriers have no side effects that are observeable by the program
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        asm!("dsb ishst", options(preserves_flags, nostack));
-    }
+    dsb_ishst();
 }
 
 impl<T: Translation<R::Attributes>, R: TranslationRegime<Asid = (), VaRange = ()>> Mapping<T, R> {
@@ -209,13 +265,14 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
         // are not active yet, while they have already been loaded into the TTBR of another CPU.
         self.mark_active();
 
-        #[cfg(all(not(test), target_arch = "aarch64"))]
+        // Ensure that all page table updates, as well as the increment of the active counter,
+        // are visible to all observers before proceeding
+        dsb_ishst();
+        isb();
+
         // SAFETY: We trust that self.root_address() returns a valid physical address of a page
         // table, and the `Drop` implementation will reset `TTBRn_ELx` before it becomes invalid.
         unsafe {
-            // Ensure that all page table updates, as well as the increment of the active counter,
-            // are visible to all observers before proceeding
-            asm!("dsb ishst", "isb", options(preserves_flags, nostack),);
             previous_ttbr =
                 R::activate(self.root_address(), self.asid, self.root.va_range_or_unit());
         }
@@ -229,8 +286,6 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
     /// are not tagged with an ASID. The provided TTBR value should be the value returned by the
     /// preceding [`activate`](Self::activate) call.
     ///
-    /// In test builds or builds that do not target aarch64, the `TTBRn_ELx` access is omitted.
-    ///
     /// # Safety
     ///
     /// The caller must ensure that the previous page table which this is switching back to doesn't
@@ -238,7 +293,6 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
     pub unsafe fn deactivate(&self, #[allow(unused)] previous_ttbr: usize) {
         assert!(self.active());
 
-        #[cfg(all(not(test), target_arch = "aarch64"))]
         // SAFETY: This just restores the previously saved value of `TTBRn_ELx`, which must have
         // been valid.
         unsafe {
@@ -373,8 +427,7 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
             // map_range() only splits a block mapping if its output address or attributes change.
             self.check_range_bbm(range, &c)?;
         }
-        self.root
-            .map_range_impl(range, pa, flags, constraints, live)?;
+        self.root.map_range(range, pa, flags, constraints, live)?;
         self.invalidate_range(range);
         Ok(())
     }
@@ -469,7 +522,7 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
     /// every time a region is unmapped. You could instead call it when the system is under memory
     /// pressure.
     pub fn compact_subtables(&mut self) {
-        self.root.compact_subtables_impl(self.active());
+        self.root.compact_subtables(self.active());
     }
 
     /// Returns the physical address of the root table.

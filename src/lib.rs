@@ -69,7 +69,9 @@ use descriptor::{
     Descriptor, DescriptorBits, PagingAttributes, PhysicalAddress, UpdatableDescriptor,
     VirtualAddress,
 };
-use paging::{Constraints, MemoryRegion, RootTable, Translation, TranslationRegime, VaRange};
+use paging::{
+    Constraints, MemoryRegion, PAGE_SIZE, RootTable, Translation, TranslationRegime, VaRange,
+};
 use thiserror::Error;
 
 /// An error attempting to map some range in the page table.
@@ -331,7 +333,7 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
     ) -> Result<(), MapError> {
         // Round down `pa` like `RootTable` does, so that the check for break-before-make violations
         // below agrees with it.
-        let pa = PhysicalAddress(paging::align_down(pa.0, paging::PAGE_SIZE));
+        let pa = pa.align_down(PAGE_SIZE);
         let live = self.active();
         if live {
             let c = |mr: &MemoryRegion, d: &mut UpdatableDescriptor<R::Attributes>| {

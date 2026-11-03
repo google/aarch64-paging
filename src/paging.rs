@@ -723,7 +723,7 @@ impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
         self.verify_region(range)?;
         // Only the page that `pa` points into ends up in the descriptors, so ignore the offset into
         // the page throughout, e.g., when deciding whether block mappings can be used.
-        let pa = PhysicalAddress(align_down(pa.0, PAGE_SIZE));
+        let pa = pa.align_down(PAGE_SIZE);
         self.table
             .map_range::<R>(&mut self.translation, range, pa, flags, constraints, live);
         Ok(())

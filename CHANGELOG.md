@@ -45,6 +45,10 @@
   an address that isn't aligned to the block size, e.g., because the range only covers part of the
   block and is moved by less than the block size.
 
+### Improvements
+
+- Added `align_down` method to `PhysicalAddress`.
+
 ## 0.12.3
 
 ### Bugfixes

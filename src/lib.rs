@@ -144,6 +144,19 @@ fn dsb_ishst() {
     tlb::dsb(tlb::Dsb::Store);
 }
 
+/// Issues a non-shareable data synchronization barrier (DSB), which waits for all memory accesses
+/// and maintenance instructions that precede it in program order to complete, as far as they apply
+/// to the current CPU, such as non-shareable TLB maintenance.
+fn dsb_nsh() {
+    // SAFETY: Barriers have no side effects that are observeable by the program
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        asm!("dsb nsh", options(preserves_flags, nostack));
+    }
+    #[cfg(test)]
+    tlb::dsb(tlb::Dsb::Full);
+}
+
 /// Issues an instruction synchronization barrier (ISB), so that the effects of preceding context
 /// synchronization events, such as completed TLB maintenance, are visible to subsequent
 /// instructions.
@@ -160,6 +173,14 @@ fn isb() {
 /// completed.
 fn wait_for_tlb_maintenance() {
     dsb_ish();
+    isb();
+}
+
+/// Issues a non-shareable data synchronization barrier (DSB) followed by an instruction
+/// synchronization barrier (ISB) so that execution does not proceed until all TLB maintenance that
+/// only applies to the current CPU is completed.
+fn wait_for_local_tlb_maintenance() {
+    dsb_nsh();
     isb();
 }
 

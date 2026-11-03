@@ -133,10 +133,11 @@ enum Tlbi {
     Ipas2e1is(usize),
     /// `TLBI ASIDE1`: invalidates the non-global entries for the ASID in the operand.
     Aside1(usize),
-    /// `TLBI VMALLE1IS`: invalidates all stage 1 entries of the EL1&0 translation regime (or of the
-    /// EL2&0 translation regime if `HCR_EL2.{E2H, TGE}` is `{1, 1}`), including entries that
-    /// combine stage 1 and stage 2 translations, but not stage 2 entries.
-    Vmalle1is,
+    /// `TLBI VMALLE1IS` or `TLBI VMALLE1`, which need not be distinguished as each thread has its
+    /// own TLB: invalidates all stage 1 entries of the EL1&0 translation regime (or of the EL2&0
+    /// translation regime if `HCR_EL2.{E2H, TGE}` is `{1, 1}`), including entries that combine
+    /// stage 1 and stage 2 translations, but not stage 2 entries.
+    Vmalle1,
     /// `TLBI VMALLS12E1`: invalidates all stage 1 and stage 2 entries.
     Vmalls12e1,
 }
@@ -149,7 +150,7 @@ impl Tlbi {
             Self::Vaae1is(xt) | Self::Vae(xt) => Some((((xt << 20) as isize) >> 8) as usize),
             // IPA[51:12] in bits [39:0].
             Self::Ipas2e1is(xt) => Some((xt & ((1 << 40) - 1)) << 12),
-            Self::Aside1(_) | Self::Vmalle1is | Self::Vmalls12e1 => None,
+            Self::Aside1(_) | Self::Vmalle1 | Self::Vmalls12e1 => None,
         }
     }
 
@@ -165,7 +166,7 @@ impl Tlbi {
                     && (entry.asid.is_none() || entry.is_global() || entry.asid == Some(xt >> 48))
             }
             Self::Aside1(xt) => !entry.is_global() && entry.asid == Some(xt >> 48),
-            Self::Vmalle1is => {
+            Self::Vmalle1 => {
                 entry.combined
                     || entry.regime == TypeId::of::<El1And0>()
                     || entry.regime == TypeId::of::<El2And0>()
@@ -689,7 +690,7 @@ impl Tlb {
             })
         };
         match op {
-            Tlbi::Vmalle1is => {
+            Tlbi::Vmalle1 => {
                 // The walker may also form a combined entry again from the stage 2 entry it was
                 // formed from, until the invalidation of the latter has been completed by a DSB.
                 let stage2 = Entry {
@@ -905,7 +906,7 @@ pub(crate) fn tlbi<R: TranslationRegime>(op: &str, xt: Option<usize>) {
         ("vae2is" | "vae3is", Some(xt)) => Tlbi::Vae(xt),
         ("ipas2e1is", Some(xt)) => Tlbi::Ipas2e1is(xt),
         ("aside1", Some(xt)) => Tlbi::Aside1(xt),
-        ("vmalle1is", None) => Tlbi::Vmalle1is,
+        ("vmalle1" | "vmalle1is", None) => Tlbi::Vmalle1,
         ("vmalls12e1", None) => Tlbi::Vmalls12e1,
         _ => panic!("TLBI {op} is not supported by the TLB emulation"),
     };
@@ -927,18 +928,6 @@ pub(crate) fn check_coherency(root: PhysicalAddress, range: &MemoryRegion) {
         };
         tlb.check_coherency(ctx.id, range, |va, level| tlb.lookup(ctx, va, level))
     }));
-}
-
-/// Models the TLB maintenance performed by [`TranslationRegime::deactivate`] for translation regime
-/// `R`, after the translation table hierarchy that used `asid` has been deactivated.
-fn invalidate_asid<R: TranslationRegime>(asid: R::Asid) {
-    if let Some(asid) = asid_of::<R>(asid) {
-        tlbi::<R>("aside1", Some(asid << 48));
-    } else if TypeId::of::<R>() == TypeId::of::<Stage2>() {
-        tlbi::<R>("vmalls12e1", None);
-    }
-    // EL2 and EL3 translation tables cannot be deactivated, so they are never invalidated.
-    dsb(Dsb::Full);
 }
 
 /// A translation regime that behaves like `R`, but that also makes the TLB emulation aware of the
@@ -1003,9 +992,9 @@ impl<R: TranslationRegime> TranslationRegime for Emulated<R> {
     }
 
     unsafe fn deactivate(previous_ttbr: usize, asid: R::Asid, va_range: R::VaRange) {
-        // SAFETY: Our caller promised to uphold the safety requirements of `deactivate`.
+        // SAFETY: Our caller promised to uphold the safety requirements of `deactivate`. In test
+        // builds, this only performs the TLB maintenance, which is passed to the TLB emulation.
         unsafe { R::deactivate(previous_ttbr, asid, va_range) };
-        invalidate_asid::<R>(asid);
         let key = (TypeId::of::<R>(), va_range_of::<R>(va_range));
         with_tlb(|tlb| {
             let Some(index) = tlb
@@ -1183,6 +1172,7 @@ mod tests {
     use crate::descriptor::{Descriptor, El1Attributes, PagingAttributes, Stage2Attributes};
     #[cfg(feature = "alloc")]
     use crate::paging::Constraints;
+    use crate::paging::VaRange;
     use crate::{wait_for_store_completion, wait_for_tlb_maintenance};
     use core::cell::Cell;
 
@@ -1716,18 +1706,34 @@ mod tests {
         assert_eq!(entry_count(), 0);
     }
 
-    #[test]
-    fn deactivate_spares_global_entries() {
-        let _ctx = enter(true);
-        let mut global = Desc::EMPTY;
-        let mut non_global = Desc::EMPTY;
-        set(&mut global, VA, 3, PA, PAGE);
+    /// Maps a page with `global` and the next one with `non_global`, which gives rise to a global
+    /// and a non-global TLB entry.
+    fn map_global_and_non_global(global: &mut Desc, non_global: &mut Desc) {
+        set(global, VA, 3, PA, PAGE);
         let flags = PAGE | El1Attributes::NON_GLOBAL;
-        set(&mut non_global, VA + PAGE_SIZE, 3, PA + PAGE_SIZE, flags);
+        set(non_global, VA + PAGE_SIZE, 3, PA + PAGE_SIZE, flags);
         wait_for_tlb_maintenance();
         assert_eq!(entry_count(), 2);
-        invalidate_asid::<El1And0>(ASID);
+    }
+
+    #[test]
+    fn tlbi_aside1_spares_global_entries() {
+        let _ctx = enter(true);
+        let (mut global, mut non_global) = (Desc::EMPTY, Desc::EMPTY);
+        map_global_and_non_global(&mut global, &mut non_global);
+        tlbi::<El1And0>("aside1", Some(ASID << 48));
+        wait_for_tlb_maintenance();
         assert_eq!(entry_count(), 1);
+    }
+
+    #[test]
+    fn deactivate_purges_global_entries() {
+        let _ctx = enter(true);
+        let (mut global, mut non_global) = (Desc::EMPTY, Desc::EMPTY);
+        map_global_and_non_global(&mut global, &mut non_global);
+        // SAFETY: In test builds, this only performs the TLB maintenance.
+        unsafe { El1And0::deactivate(0, ASID, VaRange::Lower) };
+        assert_eq!(entry_count(), 0);
     }
 
     /// Starts accessing the test translation table hierarchy, as a live stage 2 translation table.
@@ -1753,7 +1759,8 @@ mod tests {
         wait_for_tlb_maintenance();
         // The stage 2 entry is accompanied by an entry that combines it with a stage 1 translation.
         assert_eq!(entry_count(), 2);
-        invalidate_asid::<Stage2>(());
+        // SAFETY: In test builds, this only performs the TLB maintenance.
+        unsafe { Stage2::deactivate(0, (), ()) };
         assert_eq!(entry_count(), 0);
     }
 

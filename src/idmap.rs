@@ -12,7 +12,8 @@ use crate::{
         Descriptor, PagingAttributes, PhysicalAddress, UpdatableDescriptor, VirtualAddress,
     },
     paging::{
-        Constraints, MemoryRegion, PageTable, Translation, TranslationRegime, VaRange, deallocate,
+        Constraints, FixedTranslation, MemoryRegion, PageTable, Translation, TranslationRegime,
+        VaRange, deallocate,
     },
 };
 use core::marker::PhantomData;
@@ -36,10 +37,6 @@ impl<A: PagingAttributes> IdTranslation<A> {
             _phantom: PhantomData,
         }
     }
-
-    fn virtual_to_physical(va: VirtualAddress) -> PhysicalAddress {
-        PhysicalAddress(va.0)
-    }
 }
 
 impl<A: PagingAttributes> Translation<A> for IdTranslation<A> {
@@ -62,6 +59,12 @@ impl<A: PagingAttributes> Translation<A> for IdTranslation<A> {
 
     fn physical_to_virtual(&self, pa: PhysicalAddress) -> NonNull<PageTable<A>> {
         NonNull::new(pa.0 as *mut PageTable<A>).expect("Got physical address 0 for pagetable")
+    }
+}
+
+impl<A: PagingAttributes> FixedTranslation for IdTranslation<A> {
+    fn virtual_to_physical(&self, va: VirtualAddress) -> Result<PhysicalAddress, MapError> {
+        Ok(PhysicalAddress(va.0))
     }
 }
 
@@ -248,7 +251,10 @@ impl<R: TranslationRegime> IdMap<R> {
         flags: R::Attributes,
         constraints: Constraints,
     ) -> Result<(), MapError> {
-        let pa = IdTranslation::<R::Attributes>::virtual_to_physical(range.start());
+        let pa = self
+            .mapping
+            .translation()
+            .virtual_to_physical(range.start())?;
         self.mapping.map_range(range, pa, flags, constraints)
     }
 

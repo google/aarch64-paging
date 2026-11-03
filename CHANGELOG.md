@@ -48,6 +48,8 @@
 ### Improvements
 
 - Added `align_down` method to `PhysicalAddress`.
+- Added a new `FixedTranslation` trait implemented by `IdTranslation` and `LinearTranslation`, and
+  a new method `Mapping::map_fixed_range` for translations implementing this trait.
 
 ## 0.12.3
 

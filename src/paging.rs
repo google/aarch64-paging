@@ -548,6 +548,14 @@ pub trait Translation<A: PagingAttributes> {
     fn physical_to_virtual(&self, pa: PhysicalAddress) -> NonNull<PageTable<A>>;
 }
 
+/// A translation which always maps a particular virtual address to the same physical address.
+pub trait FixedTranslation {
+    /// Given a virtual address, returns the physical address to which it should be mapped.
+    ///
+    /// Returns `MapError::InvalidVirtualAddress` if there is no appropriate physical address.
+    fn virtual_to_physical(&self, va: VirtualAddress) -> Result<PhysicalAddress, MapError>;
+}
+
 impl MemoryRegion {
     /// Constructs a new `MemoryRegion` for the given range of virtual addresses.
     ///

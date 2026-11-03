@@ -12,8 +12,8 @@ use crate::{
         Descriptor, PagingAttributes, PhysicalAddress, UpdatableDescriptor, VirtualAddress,
     },
     paging::{
-        Constraints, MemoryRegion, PAGE_SIZE, PageTable, Translation, TranslationRegime, VaRange,
-        deallocate, is_aligned,
+        Constraints, FixedTranslation, MemoryRegion, PAGE_SIZE, PageTable, Translation,
+        TranslationRegime, VaRange, deallocate, is_aligned,
     },
 };
 use core::marker::PhantomData;
@@ -43,14 +43,6 @@ impl<A: PagingAttributes> LinearTranslation<A> {
         Self {
             offset,
             _phantom: PhantomData,
-        }
-    }
-
-    fn virtual_to_physical(&self, va: VirtualAddress) -> Result<PhysicalAddress, MapError> {
-        if let Some(pa) = checked_add_to_unsigned(va.0 as isize, self.offset) {
-            Ok(PhysicalAddress(pa))
-        } else {
-            Err(MapError::InvalidVirtualAddress(va))
         }
     }
 }
@@ -92,6 +84,16 @@ impl<A: PagingAttributes> Translation<A> for LinearTranslation<A> {
             }
         } else {
             panic!("Invalid physical address {} for pagetable", pa);
+        }
+    }
+}
+
+impl<A: PagingAttributes> FixedTranslation for LinearTranslation<A> {
+    fn virtual_to_physical(&self, va: VirtualAddress) -> Result<PhysicalAddress, MapError> {
+        if let Some(pa) = checked_add_to_unsigned(va.0 as isize, self.offset) {
+            Ok(PhysicalAddress(pa))
+        } else {
+            Err(MapError::InvalidVirtualAddress(va))
         }
     }
 }

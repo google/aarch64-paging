@@ -64,6 +64,15 @@ impl Sub<usize> for VirtualAddress {
 #[repr(transparent)]
 pub struct PhysicalAddress(pub usize);
 
+impl PhysicalAddress {
+    /// Returns a new physical address created by aligning this one down to the given alignment.
+    ///
+    /// The alignment must be a power of 2, or else an unexpected value will be returned.
+    pub const fn align_down(self, alignment: usize) -> Self {
+        Self(align_down(self.0, alignment))
+    }
+}
+
 impl Display for PhysicalAddress {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
         write!(f, "{:#018x}", self.0)
@@ -519,7 +528,7 @@ impl<'a, A: PagingAttributes> UpdatableDescriptor<'a, A> {
     pub fn set(&mut self, pa: PhysicalAddress, flags: A) -> Result<(), ()> {
         // Only the page that `pa` points into ends up in the descriptor, so ignore the offset into
         // the page when checking for BBM violations as well.
-        let pa = PhysicalAddress(align_down(pa.0, PAGE_SIZE));
+        let pa = pa.align_down(PAGE_SIZE);
         if !self.bbm_permits_update(pa, flags) {
             return Err(());
         }

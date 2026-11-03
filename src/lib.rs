@@ -217,8 +217,11 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
     }
 
     /// Deactivates the page table, by setting `TTBRn_ELx` to the provided value, and invalidating
-    /// the TLB for this page table's configured ASID. The provided TTBR value should be the value
-    /// returned by the preceding [`activate`](Self::activate) call.
+    /// the TLB entries that the page table may have given rise to on the current CPU. For the EL1&0
+    /// and EL2&0 translation regimes, this invalidates all TLB entries of the translation regime
+    /// rather than just those for this page table's configured ASID, as those for global mappings
+    /// are not tagged with an ASID. The provided TTBR value should be the value returned by the
+    /// preceding [`activate`](Self::activate) call.
     ///
     /// In test builds or builds that do not target aarch64, the `TTBRn_ELx` access is omitted.
     ///

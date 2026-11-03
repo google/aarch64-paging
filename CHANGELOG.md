@@ -27,6 +27,12 @@
   passed to it is below the offset of the range within a block that is already mapped, or unmapped,
   with the same attributes, e.g., when unmapping a range that doesn't start at a block boundary
   with physical address 0.
+- Fixed `Mapping::deactivate` not invalidating the TLB entries for global mappings of page tables
+  for the EL1&0 and EL2&0 translation regimes, as it used `TLBI ASIDE1`, which only affects
+  non-global entries. As updating a page table while it is inactive requires no TLB maintenance,
+  such entries could remain in use for mappings that were changed while the page table was
+  inactive, once it was activated again. It now uses `TLBI VMALLE1` to invalidate all TLB entries
+  of the translation regime on the current CPU.
 
 ## 0.12.3
 

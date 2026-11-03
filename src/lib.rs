@@ -297,7 +297,9 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
     }
 
     /// Maps the given range of virtual addresses to the corresponding range of physical addresses
-    /// starting at `pa`, with the given flags, taking the given constraints into account.
+    /// starting at `pa`, with the given flags, taking the given constraints into account. Like the
+    /// range, `pa` is rounded down to a multiple of [`PAGE_SIZE`](paging::PAGE_SIZE), so the start
+    /// of the range is mapped to the start of the page that contains `pa`.
     ///
     /// To unmap a range, pass `flags` which don't contain the [`PagingAttributes::VALID`] bit.
     /// In this case the `pa` is ignored.
@@ -486,5 +488,119 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Drop for Mapping<T, R>
         if self.active() {
             panic!("Dropping active page table mapping!");
         }
+    }
+}
+
+#[cfg(all(test, feature = "alloc"))]
+mod tests {
+    use super::*;
+    use crate::descriptor::El1Attributes;
+    use crate::idmap::IdTranslation;
+    use crate::paging::{El1And0, PAGE_SIZE};
+    use alloc::vec::Vec;
+
+    const BLOCK_SIZE: usize = PAGE_SIZE << 9;
+    const NORMAL: El1Attributes = El1Attributes::VALID
+        .union(El1Attributes::ACCESSED)
+        .union(El1Attributes::ATTRIBUTE_INDEX_1)
+        .union(El1Attributes::INNER_SHAREABLE);
+
+    /// Maps a block at `BLOCK_SIZE`, makes it live, and then calls `map_range` with the given
+    /// arguments, which must not split the live block mapping, and returns its result.
+    fn try_remap_live_block(
+        range: MemoryRegion,
+        pa: usize,
+        flags: El1Attributes,
+        constraints: Constraints,
+    ) -> Result<(), MapError> {
+        let mut mapping =
+            Mapping::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let block = MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE);
+        mapping
+            .map_range(
+                &block,
+                PhysicalAddress(BLOCK_SIZE),
+                NORMAL,
+                Constraints::empty(),
+            )
+            .unwrap();
+        // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
+        // active for the sake of BBM rules.
+        let ttbr = unsafe { mapping.activate() };
+        let result = mapping.map_range(&range, PhysicalAddress(pa), flags, constraints);
+        // SAFETY: As above.
+        unsafe { mapping.deactivate(ttbr) };
+        let mut levels = Vec::new();
+        mapping
+            .walk_range(&block, &mut |_, _, level| {
+                levels.push(level);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(levels, [2], "The live block mapping was split");
+        result
+    }
+
+    /// A physical address that isn't page aligned is rounded down, so this leaves the live block
+    /// mapping unchanged.
+    #[test]
+    fn remap_live_block_for_pa_with_offset() {
+        let result = try_remap_live_block(
+            MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE),
+            BLOCK_SIZE + 0x123,
+            NORMAL,
+            Constraints::empty(),
+        );
+        assert_eq!(result, Ok(()));
+    }
+
+    /// A physical address that isn't page aligned is rounded down, so it doesn't prevent block
+    /// mappings if the address it is rounded down to is suitably aligned, nor does it make
+    /// `map_range` split a block mapping that already maps that address.
+    #[test]
+    fn map_block_for_pa_with_offset() {
+        let mut mapping =
+            Mapping::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let block = MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE);
+        for pa in [BLOCK_SIZE + 0x123, BLOCK_SIZE + 0x456] {
+            mapping
+                .map_range(&block, PhysicalAddress(pa), NORMAL, Constraints::empty())
+                .unwrap();
+            let mut descriptors = Vec::new();
+            mapping
+                .walk_range(&block, &mut |_, d, level| {
+                    descriptors.push((level, d.output_address()));
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(descriptors, [(2, PhysicalAddress(BLOCK_SIZE))]);
+        }
+    }
+
+    /// `UpdatableDescriptor::set` rounds down a physical address that isn't page aligned as well,
+    /// so setting a live descriptor to such an address within the page it maps is permitted.
+    #[test]
+    fn set_live_descriptor_to_pa_with_offset() {
+        let mut mapping =
+            Mapping::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let block = MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE);
+        mapping
+            .map_range(
+                &block,
+                PhysicalAddress(BLOCK_SIZE),
+                NORMAL,
+                Constraints::empty(),
+            )
+            .unwrap();
+        // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
+        // active for the sake of BBM rules.
+        let ttbr = unsafe { mapping.activate() };
+        let result = mapping.modify_range(&block, &|_, d| {
+            let flags = d.flags();
+            d.set(d.output_address() + 0x123, flags)
+        });
+        // SAFETY: As above.
+        unsafe { mapping.deactivate(ttbr) };
+        assert_eq!(result, Ok(()));
     }
 }

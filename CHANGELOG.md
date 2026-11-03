@@ -33,6 +33,12 @@
   such entries could remain in use for mappings that were changed while the page table was
   inactive, once it was activated again. It now uses `TLBI VMALLE1` to invalidate all TLB entries
   of the translation regime on the current CPU.
+- Fixed `map_range` and `UpdatableDescriptor::set` treating a physical address that isn't page
+  aligned differently from the page aligned address below it, which is what ends up in the
+  descriptors. Such an address prevented block mappings, and made `map_range` split block mappings
+  that already mapped it, even live ones without break-before-make, and `UpdatableDescriptor::set`
+  refused to set it for live descriptors that already mapped it. The physical address is now
+  rounded down to a multiple of the page size in both cases.
 
 ## 0.12.3
 

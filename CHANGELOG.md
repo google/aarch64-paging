@@ -48,6 +48,22 @@
 ### Improvements
 
 - Added `align_down` method to `PhysicalAddress`.
+- Added a new `FixedTranslation` trait implemented by `IdTranslation` and `LinearTranslation`, and
+  a new method `Mapping::map_fixed_range` for translations implementing this trait.
+
+### Breaking changes
+
+- Changed `IdMap` and `LinearMap` into aliases rather than newtypes. To migrate existing users:
+  - Replace `IdMap::new(ROOT_LEVEL, REGIME)` with
+    `Mapping::new(IdTranslation::new(), ROOT_LEVEL, REGIME)`.
+  - Replace `IdMap::with_asid(ASID, ROOT_LEVEL, REGIME)` with
+    `Mapping::with_asid_and_va_range(IdTranslation::new(), ASID, ROOT_LEVEL, REGIME, VaRange::Lower)`.
+  - Replace `LinearMap::new(ROOT_LEVEL, OFFSET, REGIME)` with
+    `Mapping::new(LinearTranslation::new(OFFSET), ROOT_LEVEL, REGIME)`.
+  - Replace `LinearMap::with_asid(ASID, ROOT_LEVEL, OFFSET, REGIME, VA_RANGE)` with
+    `Mapping::with_asid_and_va_range(LinearTranslation::new(OFFSET), ASID, ROOT_LEVEL, REGIME, VA_RANGE)`.
+  - Replace calls to `map_range` and `map_range_with_constraints` on `IdMap` and `LinearMap` with
+    `map_fixed_range`.
 
 ## 0.12.3
 

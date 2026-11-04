@@ -79,6 +79,11 @@
     `LinearTranslation::new` and `TargetAllocator::new` now take the VA range as an argument.
     `Mapping::new` panics if the translation selects the upper VA range for a translation regime
     which only has the lower one.
+  - `LinearTranslation::new` panics if the offset and the VA range are inconsistent, i.e., if the
+    offset maps no address in the VA range to a physical address. As bit 55 of a virtual address
+    selects the VA range, and physical addresses occupy at most 52 bits, the offset must be between
+    -2^55 and 2^52 for the lower VA range, and between 0 and 2^55 + 2^52 for the upper VA range
+    (exclusive).
   - Replace `Mapping::with_asid_and_va_range(TRANSLATION, ASID, ROOT_LEVEL, REGIME, VA_RANGE)` with
     `Mapping::new(TRANSLATION, ROOT_LEVEL, REGIME::with_asid(ASID))`, where `TRANSLATION` selects
     `VA_RANGE`, e.g., `LinearTranslation::new(OFFSET, VA_RANGE)`.

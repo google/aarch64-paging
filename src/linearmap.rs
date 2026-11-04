@@ -17,6 +17,13 @@ use crate::{
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 
+/// The maximum number of bits that an (intermediate) physical address can occupy.
+const PA_BITS: u32 = 52;
+
+/// The bit of a virtual address which selects the VA range, i.e. its 'sign' bit: it is clear for
+/// addresses in the lower VA range, and set for addresses in the upper VA range.
+const VA_RANGE_SELECT_BIT: u32 = 55;
+
 /// Linear mapping, where every virtual address is either unmapped or mapped to an IPA with a fixed
 /// offset.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -36,6 +43,12 @@ impl<A: PagingAttributes> LinearTranslation<A> {
     /// [`El2And0`](crate::paging::El2And0), support the upper VA range.
     ///
     /// The `offset` must be a multiple of [`PAGE_SIZE`]; if not this will panic.
+    ///
+    /// The `offset` must also be consistent with the `va_range`, i.e. it must map some addresses in
+    /// the VA range to physical addresses, which occupy at most 52 bits. As bit 55 of a virtual
+    /// address selects the VA range, this means that the `offset` must be greater than -2^55 and
+    /// less than 2^52 for the lower VA range, and greater than 0 and less than 2^55 + 2^52 for the
+    /// upper VA range; if not this will panic.
     pub fn new(offset: isize, va_range: VaRange) -> Self {
         if !is_aligned(offset.unsigned_abs(), PAGE_SIZE) {
             panic!(
@@ -43,6 +56,18 @@ impl<A: PagingAttributes> LinearTranslation<A> {
                 offset, PAGE_SIZE,
             );
         }
+        // The lower VA range consists of the addresses in [0, 2^55), and the upper VA range of
+        // those in [-2^55, 0). The addresses that `offset` maps to physical addresses are those in
+        // [-offset, 2^52 - offset), which must overlap the VA range.
+        let consistent = match va_range {
+            VaRange::Lower => -(1 << VA_RANGE_SELECT_BIT) < offset && offset < (1 << PA_BITS),
+            VaRange::Upper => 0 < offset && offset < (1 << VA_RANGE_SELECT_BIT) + (1 << PA_BITS),
+        };
+        assert!(
+            consistent,
+            "Invalid offset {offset}: it maps no address in the {va_range:?} VA range to a physical \
+             address."
+        );
         Self {
             offset,
             va_range,
@@ -457,6 +482,53 @@ mod tests {
             translation.virtual_to_physical(va),
             Err(MapError::InvalidVirtualAddress(va))
         )
+    }
+
+    /// The addresses in the upper VA range have bit 55 set, so they are negative as `isize`, and
+    /// only a positive offset can map them to physical addresses.
+    #[test]
+    #[should_panic(
+        expected = "Invalid offset 0: it maps no address in the Upper VA range to a physical address."
+    )]
+    fn upper_va_range_with_zero_offset() {
+        LinearTranslation::<El1Attributes>::new(0, VaRange::Upper);
+    }
+
+    /// Physical addresses occupy at most 52 bits, so an offset of 2^55 + 2^52 maps even the lowest
+    /// address in the upper VA range, -2^55, beyond them.
+    #[test]
+    #[should_panic(expected = "maps no address in the Upper VA range to a physical address.")]
+    fn upper_va_range_with_too_large_offset() {
+        LinearTranslation::<El1Attributes>::new((1 << 55) + (1 << 52), VaRange::Upper);
+    }
+
+    /// Physical addresses occupy at most 52 bits, so an offset of 2^52 maps every address in the
+    /// lower VA range beyond them.
+    #[test]
+    #[should_panic(expected = "maps no address in the Lower VA range to a physical address.")]
+    fn lower_va_range_with_too_large_offset() {
+        LinearTranslation::<El1Attributes>::new(1 << 52, VaRange::Lower);
+    }
+
+    /// The addresses in the lower VA range have bit 55 clear, so they are below 2^55, and an offset
+    /// of -2^55 maps all of them to negative physical addresses.
+    #[test]
+    #[should_panic(expected = "maps no address in the Lower VA range to a physical address.")]
+    fn lower_va_range_with_too_small_offset() {
+        LinearTranslation::<El1Attributes>::new(-(1 << 55), VaRange::Lower);
+    }
+
+    /// Offsets up to the bounds are consistent with each VA range.
+    #[test]
+    fn consistent_offsets() {
+        for offset in [-(1 << 55) + 4096, -4096, 0, 4096, (1 << 52) - 4096] {
+            let translation = LinearTranslation::<El1Attributes>::new(offset, VaRange::Lower);
+            assert_eq!(translation.va_range(), VaRange::Lower);
+        }
+        for offset in [4096, GIB_512_S, (1 << 55) + (1 << 52) - 4096] {
+            let translation = LinearTranslation::<El1Attributes>::new(offset, VaRange::Upper);
+            assert_eq!(translation.va_range(), VaRange::Upper);
+        }
     }
 
     #[test]

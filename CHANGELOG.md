@@ -57,17 +57,31 @@
   - Replace `IdMap::new(ROOT_LEVEL, REGIME)` with
     `Mapping::new(IdTranslation::new(), ROOT_LEVEL, REGIME)`.
   - Replace `IdMap::with_asid(ASID, ROOT_LEVEL, REGIME)` with
-    `Mapping::with_asid_and_va_range(IdTranslation::new(), ASID, ROOT_LEVEL, REGIME, VaRange::Lower)`.
+    `Mapping::new(IdTranslation::new(), ROOT_LEVEL, REGIME::with_asid(ASID))`.
   - Replace `LinearMap::new(ROOT_LEVEL, OFFSET, REGIME)` with
-    `Mapping::new(LinearTranslation::new(OFFSET), ROOT_LEVEL, REGIME)`.
+    `Mapping::new(LinearTranslation::new(OFFSET, VaRange::Lower), ROOT_LEVEL, REGIME)`.
   - Replace `LinearMap::with_asid(ASID, ROOT_LEVEL, OFFSET, REGIME, VA_RANGE)` with
-    `Mapping::with_asid_and_va_range(LinearTranslation::new(OFFSET), ASID, ROOT_LEVEL, REGIME, VA_RANGE)`.
+    `Mapping::new(LinearTranslation::new(OFFSET, VA_RANGE), ROOT_LEVEL, REGIME::with_asid(ASID))`.
   - Replace calls to `map_range` and `map_range_with_constraints` on `IdMap` and `LinearMap` with
     `map_fixed_range`.
 - `RootTable` is no longer public. It has no way of knowing whether the page table it manages is
   live, and so it cannot perform the TLB maintenance that updating a live page table requires. Use
   `Mapping` instead, which only performs TLB maintenance while the page table is active, e.g.,
   together with `TargetAllocator` to build a page table for a separate target device.
+- Replaced `Mapping::with_asid_and_va_range` with `Mapping::new`, which now works for all
+  translation regimes. The ASID and the VA range are no longer separate arguments, but are only
+  given where they make sense:
+  - The ASID is part of the translation regime, for the regimes that support ASIDs:
+    `El1And0` and `El2And0` are no longer unit structs, and are created with `El1And0::with_asid`
+    and `El2And0::with_asid`. `TranslationRegime` has a new `asid` method.
+  - The VA range is taken from the translation, via the new `Translation::va_range` method, which
+    defaults to `VaRange::Lower`. `IdTranslation` always covers the lower VA range, while
+    `LinearTranslation::new` and `TargetAllocator::new` now take the VA range as an argument.
+    `Mapping::new` panics if the translation selects the upper VA range for a translation regime
+    which only has the lower one.
+  - Replace `Mapping::with_asid_and_va_range(TRANSLATION, ASID, ROOT_LEVEL, REGIME, VA_RANGE)` with
+    `Mapping::new(TRANSLATION, ROOT_LEVEL, REGIME::with_asid(ASID))`, where `TRANSLATION` selects
+    `VA_RANGE`, e.g., `LinearTranslation::new(OFFSET, VA_RANGE)`.
 
 ## 0.12.3
 

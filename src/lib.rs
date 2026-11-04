@@ -751,7 +751,7 @@ mod tests {
     #[should_panic(expected = "Translation regime El2 doesn't support the Upper VA range.")]
     fn upper_va_range_needs_two_va_ranges() {
         Mapping::new(
-            LinearTranslation::<El23Attributes>::new(0, VaRange::Upper),
+            LinearTranslation::<El23Attributes>::new(1 << 39, VaRange::Upper),
             1,
             El2,
         );

@@ -15,6 +15,9 @@ use core::marker::PhantomData;
 use core::ptr::NonNull;
 
 /// Identity mapping, where every virtual address is either unmapped or mapped to the identical IPA.
+///
+/// Page tables using this translation always cover the lower VA range, so there is no way to
+/// select the VA range.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct IdTranslation<A: PagingAttributes> {
     _phantom: PhantomData<A>,
@@ -82,15 +85,15 @@ impl<A: PagingAttributes> FixedTranslation for IdTranslation<A> {
 ///     Mapping,
 ///     descriptor::El1Attributes,
 ///     idmap::IdTranslation,
-///     paging::{Constraints, El1And0, MemoryRegion, VaRange},
+///     paging::{Constraints, El1And0, MemoryRegion},
 /// };
 ///
 /// const ASID: usize = 1;
 /// const ROOT_LEVEL: usize = 1;
 /// const NORMAL_CACHEABLE: El1Attributes = El1Attributes::ATTRIBUTE_INDEX_1.union(El1Attributes::INNER_SHAREABLE);
 ///
-/// // Create a new EL1 page table with identity mapping.
-/// let mut idmap = Mapping::with_asid_and_va_range(IdTranslation::new(), ASID, ROOT_LEVEL, El1And0, VaRange::Lower);
+/// // Create a new EL1 page table with identity mapping, which implies the lower VA range.
+/// let mut idmap = Mapping::new(IdTranslation::new(), ROOT_LEVEL, El1And0::with_asid(ASID));
 /// // Map a 2 MiB region of memory as read-write.
 /// idmap.map_fixed_range(
 ///     &MemoryRegion::new(0x80200000, 0x80400000),
@@ -131,7 +134,7 @@ mod tests {
     use crate::{
         MapError, VirtualAddress,
         descriptor::{El1Attributes, UpdatableDescriptor},
-        paging::{BITS_PER_LEVEL, Constraints, El1And0, MemoryRegion, PAGE_SIZE, VaRange},
+        paging::{BITS_PER_LEVEL, Constraints, El1And0, MemoryRegion, PAGE_SIZE},
     };
 
     const MAX_ADDRESS_FOR_ROOT_LEVEL_1: usize = 1 << 39;
@@ -142,8 +145,7 @@ mod tests {
     #[test]
     fn map_valid() {
         // A single byte at the start of the address space.
-        let mut idmap =
-            IdMap::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let mut idmap = IdMap::new(IdTranslation::new(), 1, El1And0::with_asid(1));
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
         let ttbr = unsafe { idmap.activate() };
@@ -161,8 +163,7 @@ mod tests {
         }
 
         // Two pages at the start of the address space.
-        let mut idmap =
-            IdMap::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let mut idmap = IdMap::new(IdTranslation::new(), 1, El1And0::with_asid(1));
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
         let ttbr = unsafe { idmap.activate() };
@@ -180,8 +181,7 @@ mod tests {
         }
 
         // A single byte at the end of the address space.
-        let mut idmap =
-            IdMap::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let mut idmap = IdMap::new(IdTranslation::new(), 1, El1And0::with_asid(1));
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
         let ttbr = unsafe { idmap.activate() };
@@ -202,8 +202,7 @@ mod tests {
         }
 
         // Two pages, on the boundary between two subtables.
-        let mut idmap =
-            IdMap::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let mut idmap = IdMap::new(IdTranslation::new(), 1, El1And0::with_asid(1));
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
         let ttbr = unsafe { idmap.activate() };
@@ -221,8 +220,7 @@ mod tests {
         }
 
         // The entire valid address space.
-        let mut idmap =
-            IdMap::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let mut idmap = IdMap::new(IdTranslation::new(), 1, El1And0::with_asid(1));
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
         let ttbr = unsafe { idmap.activate() };
@@ -243,8 +241,7 @@ mod tests {
     #[test]
     fn map_break_before_make() {
         const BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
-        let mut idmap =
-            IdMap::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let mut idmap = IdMap::new(IdTranslation::new(), 1, El1And0::with_asid(1));
         idmap
             .map_fixed_range(
                 &MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE),
@@ -269,8 +266,7 @@ mod tests {
             idmap.deactivate(ttbr);
         }
 
-        let mut idmap =
-            IdMap::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let mut idmap = IdMap::new(IdTranslation::new(), 1, El1And0::with_asid(1));
         idmap
             .map_fixed_range(
                 &MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE),
@@ -437,8 +433,7 @@ mod tests {
 
     #[test]
     fn map_out_of_range() {
-        let mut idmap =
-            IdMap::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let mut idmap = IdMap::new(IdTranslation::new(), 1, El1And0::with_asid(1));
 
         // One byte, just past the edge of the valid range.
         assert_eq!(
@@ -472,8 +467,7 @@ mod tests {
     fn unmap_live_block_mapping_with_no_block_mappings() {
         const BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
         let block = MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE);
-        let mut idmap =
-            IdMap::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let mut idmap = IdMap::new(IdTranslation::new(), 1, El1And0::with_asid(1));
         idmap
             .map_fixed_range(
                 &block,
@@ -507,8 +501,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn split_live_block_mapping() -> () {
-        let mut idmap =
-            IdMap::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let mut idmap = IdMap::new(IdTranslation::new(), 1, El1And0::with_asid(1));
         idmap
             .map_fixed_range(
                 &MemoryRegion::new(0, PAGE_SIZE << BITS_PER_LEVEL),
@@ -549,8 +542,7 @@ mod tests {
     #[test]
     fn modify_live_mapping_failing_halfway() {
         let range = MemoryRegion::new(0, 2 * PAGE_SIZE);
-        let mut idmap =
-            IdMap::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let mut idmap = IdMap::new(IdTranslation::new(), 1, El1And0::with_asid(1));
         idmap
             .map_fixed_range(
                 &range,
@@ -602,8 +594,7 @@ mod tests {
         // Partially covers both the block mapping and the unmapped block after it.
         let range = MemoryRegion::new(BLOCK_SIZE + PAGE_SIZE, 2 * BLOCK_SIZE + PAGE_SIZE);
         let flags = NORMAL_CACHEABLE | El1Attributes::VALID | El1Attributes::ACCESSED;
-        let mut idmap =
-            IdMap::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let mut idmap = IdMap::new(IdTranslation::new(), 1, El1And0::with_asid(1));
         idmap
             .map_fixed_range(&mapped, flags, Constraints::empty())
             .unwrap();
@@ -680,8 +671,7 @@ mod tests {
     }
 
     fn make_map() -> (IdMap<El1And0>, usize) {
-        let mut idmap =
-            IdMap::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let mut idmap = IdMap::new(IdTranslation::new(), 1, El1And0::with_asid(1));
         idmap
             .map_fixed_range(
                 &MemoryRegion::new(0, PAGE_SIZE * 2),
@@ -759,8 +749,7 @@ mod tests {
     #[test]
     fn breakup_invalid_block() {
         const BLOCK_RANGE: usize = 0x200000;
-        let mut idmap =
-            IdMap::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let mut idmap = IdMap::new(IdTranslation::new(), 1, El1And0::with_asid(1));
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
         let ttbr = unsafe { idmap.activate() };
@@ -799,8 +788,7 @@ mod tests {
 
     #[test]
     fn unmap_subtable() {
-        let mut idmap =
-            IdMap::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let mut idmap = IdMap::new(IdTranslation::new(), 1, El1And0::with_asid(1));
         assert_eq!(idmap.size(), PAGE_SIZE * 512 * 512 * 512);
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
@@ -842,8 +830,7 @@ mod tests {
 
     #[test]
     fn unmap_subtable_higher() {
-        let mut idmap =
-            IdMap::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let mut idmap = IdMap::new(IdTranslation::new(), 1, El1And0::with_asid(1));
         assert_eq!(idmap.size(), PAGE_SIZE * 512 * 512 * 512);
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
@@ -886,8 +873,7 @@ mod tests {
 
     #[test]
     fn compact() {
-        let mut idmap =
-            IdMap::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let mut idmap = IdMap::new(IdTranslation::new(), 1, El1And0::with_asid(1));
         assert_eq!(idmap.size(), PAGE_SIZE * 512 * 512 * 512);
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
@@ -931,8 +917,7 @@ mod tests {
 
     #[test]
     fn compact_blocks() {
-        let mut idmap =
-            IdMap::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let mut idmap = IdMap::new(IdTranslation::new(), 1, El1And0::with_asid(1));
         assert_eq!(idmap.size(), PAGE_SIZE * 512 * 512 * 512);
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
@@ -978,8 +963,7 @@ mod tests {
     /// When an unmapped entry is split into a table, all entries should be zero.
     #[test]
     fn split_table_zero() {
-        let mut idmap =
-            IdMap::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let mut idmap = IdMap::new(IdTranslation::new(), 1, El1And0::with_asid(1));
 
         idmap
             .map_fixed_range(
@@ -1004,8 +988,7 @@ mod tests {
 
     #[test]
     fn modify_unmap_compact() {
-        let mut idmap =
-            IdMap::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let mut idmap = IdMap::new(IdTranslation::new(), 1, El1And0::with_asid(1));
         assert_eq!(idmap.size(), PAGE_SIZE * 512 * 512 * 512);
         // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
         // active for the sake of BBM rules.
@@ -1049,47 +1032,19 @@ mod tests {
     #[test]
     fn table_sizes() {
         assert_eq!(
-            IdMap::<El1And0>::with_asid_and_va_range(
-                IdTranslation::new(),
-                1,
-                0,
-                El1And0,
-                VaRange::Lower
-            )
-            .size(),
+            IdMap::<El1And0>::new(IdTranslation::new(), 0, El1And0::with_asid(1)).size(),
             1 << 48
         );
         assert_eq!(
-            IdMap::<El1And0>::with_asid_and_va_range(
-                IdTranslation::new(),
-                1,
-                1,
-                El1And0,
-                VaRange::Lower
-            )
-            .size(),
+            IdMap::<El1And0>::new(IdTranslation::new(), 1, El1And0::with_asid(1)).size(),
             1 << 39
         );
         assert_eq!(
-            IdMap::<El1And0>::with_asid_and_va_range(
-                IdTranslation::new(),
-                1,
-                2,
-                El1And0,
-                VaRange::Lower
-            )
-            .size(),
+            IdMap::<El1And0>::new(IdTranslation::new(), 2, El1And0::with_asid(1)).size(),
             1 << 30
         );
         assert_eq!(
-            IdMap::<El1And0>::with_asid_and_va_range(
-                IdTranslation::new(),
-                1,
-                3,
-                El1And0,
-                VaRange::Lower
-            )
-            .size(),
+            IdMap::<El1And0>::new(IdTranslation::new(), 3, El1And0::with_asid(1)).size(),
             1 << 21
         );
     }
@@ -1097,8 +1052,7 @@ mod tests {
     #[test]
     fn dont_use_l0_block_mapping() {
         // We don't currently support FEAT_LPA2; test that the mappings do not attempt to use huge tables
-        let mut idmap =
-            IdMap::with_asid_and_va_range(IdTranslation::new(), 1, 0, El1And0, VaRange::Lower);
+        let mut idmap = IdMap::new(IdTranslation::new(), 0, El1And0::with_asid(1));
         let block_size = PAGE_SIZE * 512 * 512 * 512; // 512 GiB, corresponding to Level 0
         let range = MemoryRegion::new(0, block_size);
 

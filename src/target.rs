@@ -7,7 +7,7 @@
 //! See [`TargetAllocator`] for details on how to use it.
 
 use crate::descriptor::{PagingAttributes, PhysicalAddress};
-use crate::paging::{PageTable, Translation, deallocate};
+use crate::paging::{PageTable, Translation, VaRange, deallocate};
 use alloc::{vec, vec::Vec};
 use core::{mem::size_of, ptr::NonNull};
 
@@ -28,12 +28,10 @@ use core::{mem::size_of, ptr::NonNull};
 /// const ROOT_LEVEL: usize = 1;
 ///
 /// // As long as the mapping is not activated, it does not perform any TLB maintenance.
-/// let mut map = Mapping::with_asid_and_va_range(
-///     TargetAllocator::new(0x1_0000),
-///     ASID,
+/// let mut map = Mapping::new(
+///     TargetAllocator::new(0x1_0000, VaRange::Lower),
 ///     ROOT_LEVEL,
-///     El1And0,
-///     VaRange::Lower,
+///     El1And0::with_asid(ASID),
 /// );
 /// map.map_range(
 ///     &MemoryRegion::new(0x0, 0x1000),
@@ -52,15 +50,17 @@ use core::{mem::size_of, ptr::NonNull};
 #[derive(Debug)]
 pub struct TargetAllocator<A: PagingAttributes> {
     base_address: u64,
+    va_range: VaRange,
     allocations: Vec<Option<NonNull<PageTable<A>>>>,
 }
 
 impl<A: PagingAttributes> TargetAllocator<A> {
-    /// Creates a new `TargetAllocator` for a page table which will be loaded on the target in a
-    /// contiguous block of memory starting at the given address.
-    pub fn new(base_address: u64) -> Self {
+    /// Creates a new `TargetAllocator` for a page table covering the given VA range, which will be
+    /// loaded on the target in a contiguous block of memory starting at the given address.
+    pub fn new(base_address: u64, va_range: VaRange) -> Self {
         Self {
             base_address,
+            va_range,
             allocations: vec![],
         }
     }
@@ -136,11 +136,16 @@ impl<A: PagingAttributes> Translation<A> for TargetAllocator<A> {
             [(pa.0 - usize::try_from(self.base_address).unwrap()) / size_of::<PageTable<A>>()]
         .unwrap()
     }
+
+    fn va_range(&self) -> VaRange {
+        self.va_range
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MapError;
     use crate::Mapping;
     use crate::descriptor::El1Attributes;
     use crate::paging::{Constraints, El1And0, MemoryRegion, VaRange};
@@ -150,12 +155,10 @@ mod tests {
 
     #[test]
     fn map_one_page() {
-        let mut map = Mapping::with_asid_and_va_range(
-            TargetAllocator::new(0x1_0000),
-            ASID,
+        let mut map = Mapping::new(
+            TargetAllocator::new(0x1_0000, VaRange::Lower),
             ROOT_LEVEL,
-            El1And0,
-            VaRange::Lower,
+            El1And0::with_asid(ASID),
         );
         map.map_range(
             &MemoryRegion::new(0x0, 0x1000),
@@ -199,5 +202,31 @@ mod tests {
         {
             assert_eq!(*byte, 0);
         }
+    }
+
+    #[test]
+    fn map_one_page_in_upper_va_range() {
+        let mut map = Mapping::new(
+            TargetAllocator::new(0x1_0000, VaRange::Upper),
+            ROOT_LEVEL,
+            El1And0::with_asid(ASID),
+        );
+        map.map_range(
+            &MemoryRegion::new(0xffff_ffff_c000_0000, 0xffff_ffff_c000_1000),
+            PhysicalAddress(0x4_2000),
+            El1Attributes::VALID | El1Attributes::ATTRIBUTE_INDEX_0,
+            Constraints::empty(),
+        )
+        .unwrap();
+        // The same page can't be mapped in the lower VA range.
+        assert!(matches!(
+            map.map_range(
+                &MemoryRegion::new(0x0, 0x1000),
+                PhysicalAddress(0x4_2000),
+                El1Attributes::VALID | El1Attributes::ATTRIBUTE_INDEX_0,
+                Constraints::empty(),
+            ),
+            Err(MapError::AddressRange(_))
+        ));
     }
 }

@@ -48,6 +48,9 @@ pub enum VaRange {
 
 /// Which translation regime a page table is for.
 ///
+/// For translation regimes that support ASIDs, the value of the regime also carries the ASID that
+/// the page table is tagged with, e.g. [`El1And0::with_asid`].
+///
 /// Note that these methods are not intended to be called directly, but rather through [`crate::Mapping`].
 pub trait TranslationRegime: Copy + Clone + Debug + Eq + PartialEq + Send + Sync + 'static {
     type Attributes: PagingAttributes;
@@ -65,6 +68,10 @@ pub trait TranslationRegime: Copy + Clone + Debug + Eq + PartialEq + Send + Sync
         + Send
         + Sync
         + 'static;
+
+    /// Returns the ASID that page tables for this translation regime are tagged with, or `()` if
+    /// the translation regime does not support ASID.
+    fn asid(self) -> Self::Asid;
 
     /// Invalidates the translation for the given virtual address from the Translation Lookaside
     /// Buffer (TLB). Completed by [`complete_tlb_maintenance`](Self::complete_tlb_maintenance).
@@ -97,13 +104,21 @@ pub trait TranslationRegime: Copy + Clone + Debug + Eq + PartialEq + Send + Sync
 mod private {
     use crate::paging::VaRange;
 
-    pub trait IntoVaRange {
+    pub trait IntoVaRange: Sized {
         fn into_va_range(self) -> VaRange;
+
+        /// Converts the given VA range into this type, or returns `None` if it can't be
+        /// represented, i.e. if it is the upper VA range and this type is `()`.
+        fn from_va_range(va_range: VaRange) -> Option<Self>;
     }
 
     impl IntoVaRange for VaRange {
         fn into_va_range(self) -> VaRange {
             self
+        }
+
+        fn from_va_range(va_range: VaRange) -> Option<Self> {
+            Some(va_range)
         }
     }
 
@@ -111,18 +126,41 @@ mod private {
         fn into_va_range(self) -> VaRange {
             VaRange::Lower
         }
+
+        fn from_va_range(va_range: VaRange) -> Option<Self> {
+            match va_range {
+                VaRange::Lower => Some(()),
+                VaRange::Upper => None,
+            }
+        }
     }
 }
 
 /// Non-secure EL1&0, stage 1 translation regime.
+///
+/// Page tables for this translation regime are tagged with the ASID given to
+/// [`with_asid`](Self::with_asid).
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct El1And0;
+pub struct El1And0 {
+    asid: usize,
+}
+
+impl El1And0 {
+    /// Returns the EL1&0 translation regime, for a page table tagged with the given ASID.
+    pub const fn with_asid(asid: usize) -> Self {
+        Self { asid }
+    }
+}
 
 impl TranslationRegime for El1And0 {
     type Attributes = El1Attributes;
 
     type Asid = usize;
     type VaRange = VaRange;
+
+    fn asid(self) -> usize {
+        self.asid
+    }
 
     fn invalidate_va(va: VirtualAddress) {
         #[allow(unused)]
@@ -214,16 +252,32 @@ impl TranslationRegime for El1And0 {
 
 /// Non-secure EL2&0, with VHE translation regime.
 ///
+/// Page tables for this translation regime are tagged with the ASID given to
+/// [`with_asid`](Self::with_asid).
+///
 /// TLB maintenance for this regime uses the EL1 TLB invalidation instructions, so it may only be
 /// performed while `HCR_EL2.TGE` is set.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct El2And0;
+pub struct El2And0 {
+    asid: usize,
+}
+
+impl El2And0 {
+    /// Returns the EL2&0 translation regime, for a page table tagged with the given ASID.
+    pub const fn with_asid(asid: usize) -> Self {
+        Self { asid }
+    }
+}
 
 impl TranslationRegime for El2And0 {
     type Attributes = El1Attributes;
 
     type Asid = usize;
     type VaRange = VaRange;
+
+    fn asid(self) -> usize {
+        self.asid
+    }
 
     fn invalidate_va(va: VirtualAddress) {
         #[allow(unused)]
@@ -323,6 +377,8 @@ impl TranslationRegime for El2 {
     type Asid = ();
     type VaRange = ();
 
+    fn asid(self) {}
+
     fn invalidate_va(va: VirtualAddress) {
         #[allow(unused)]
         let va = tlbi_address(va);
@@ -376,6 +432,8 @@ impl TranslationRegime for El3 {
 
     type Asid = ();
     type VaRange = ();
+
+    fn asid(self) {}
 
     fn invalidate_va(va: VirtualAddress) {
         #[allow(unused)]
@@ -436,6 +494,8 @@ impl TranslationRegime for Stage2 {
 
     type Asid = ();
     type VaRange = ();
+
+    fn asid(self) {}
 
     fn invalidate_va(va: VirtualAddress) {
         #[allow(unused)]
@@ -546,6 +606,17 @@ pub trait Translation<A: PagingAttributes> {
 
     /// Given the physical address of a subtable, returns the virtual address at which it is mapped.
     fn physical_to_virtual(&self, pa: PhysicalAddress) -> NonNull<PageTable<A>>;
+
+    /// Returns which VA range page tables using this translation cover, i.e. which TTBR they are
+    /// used with.
+    ///
+    /// The default implementation returns [`VaRange::Lower`], which is the only VA range that
+    /// translation regimes with a single VA range support. Translations which may also be used
+    /// for the upper VA range of a translation regime with two VA ranges, such as
+    /// `LinearTranslation`, override this.
+    fn va_range(&self) -> VaRange {
+        VaRange::Lower
+    }
 }
 
 /// A translation which always maps a particular virtual address to the same physical address.
@@ -640,33 +711,31 @@ pub(crate) struct RootTable<R: TranslationRegime, T: Translation<R::Attributes>>
     _regime: PhantomData<R>,
 }
 
-impl<R: TranslationRegime<VaRange = ()>, T: Translation<R::Attributes>> RootTable<R, T> {
-    /// Creates a new page table starting at the given root level.
-    ///
-    /// The level must be between 0 and 3; level -1 (for 52-bit addresses with LPA2) is not
-    /// currently supported by this library. The value of `TCR_EL1.T0SZ` must be set appropriately
-    /// to match.
-    pub fn new(translation: T, level: usize, regime: R) -> Self {
-        Self::new_impl(translation, level, regime, ())
-    }
-}
-
-impl<R: TranslationRegime<VaRange = VaRange>, T: Translation<R::Attributes>> RootTable<R, T> {
-    /// Creates a new page table starting at the given root level.
-    ///
-    /// The level must be between 0 and 3; level -1 (for 52-bit addresses with LPA2) is not
-    /// currently supported by this library. The value of `TCR_EL1.T0SZ` must be set appropriately
-    /// to match.
-    pub fn with_va_range(translation: T, level: usize, regime: R, va_range: VaRange) -> Self {
-        Self::new_impl(translation, level, regime, va_range)
-    }
-}
-
 impl<R: TranslationRegime, T: Translation<R::Attributes>> RootTable<R, T> {
-    fn new_impl(mut translation: T, level: usize, _regime: R, va_range: R::VaRange) -> Self {
+    /// Creates a new page table starting at the given root level.
+    ///
+    /// The VA range that the page table covers is taken from `translation`, see
+    /// [`Translation::va_range`].
+    ///
+    /// The level must be between 0 and 3; level -1 (for 52-bit addresses with LPA2) is not
+    /// currently supported by this library. The value of `TCR_EL1.T0SZ` must be set appropriately
+    /// to match.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the level is out of range, or if `translation` selects the upper VA range but
+    /// `regime` only has the lower VA range.
+    pub fn new(mut translation: T, level: usize, regime: R) -> Self {
         if level > LEAF_LEVEL {
             panic!("Invalid root table level {}.", level);
         }
+        let Some(va_range) = R::VaRange::from_va_range(translation.va_range()) else {
+            panic!(
+                "Translation regime {:?} doesn't support the {:?} VA range.",
+                regime,
+                translation.va_range()
+            );
+        };
         let (table, pa) = PageTableWithLevel::new(&mut translation, level);
         RootTable {
             table,
@@ -1784,7 +1853,11 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn debug_roottable_empty() {
-        let table = RootTable::with_va_range(TargetAllocator::new(0), 1, El1And0, VaRange::Lower);
+        let table = RootTable::new(
+            TargetAllocator::new(0, VaRange::Lower),
+            1,
+            El1And0::with_asid(0),
+        );
         assert_eq!(
             format!("{table:?}"),
 "RootTable { pa: 0x0000000000000000, translation_regime: PhantomData<aarch64_paging::paging::El1And0>, va_range: Lower, level: 1, table:
@@ -1799,8 +1872,11 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn unmap_unaligned_range_with_pa_zero() {
-        let mut table =
-            RootTable::with_va_range(TargetAllocator::new(0), 1, El1And0, VaRange::Lower);
+        let mut table = RootTable::new(
+            TargetAllocator::new(0, VaRange::Lower),
+            1,
+            El1And0::with_asid(0),
+        );
         table
             .map_range(
                 &MemoryRegion::new(0x4000_1000, 0x4000_2000),
@@ -1815,8 +1891,11 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn debug_roottable_contiguous() {
-        let mut table =
-            RootTable::with_va_range(TargetAllocator::new(0), 1, El1And0, VaRange::Lower);
+        let mut table = RootTable::new(
+            TargetAllocator::new(0, VaRange::Lower),
+            1,
+            El1And0::with_asid(0),
+        );
         table
             .map_range(
                 &MemoryRegion::new(PAGE_SIZE * 3, PAGE_SIZE * 6),
@@ -1863,8 +1942,11 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn debug_roottable_contiguous_block() {
-        let mut table =
-            RootTable::with_va_range(TargetAllocator::new(0), 1, El1And0, VaRange::Lower);
+        let mut table = RootTable::new(
+            TargetAllocator::new(0, VaRange::Lower),
+            1,
+            El1And0::with_asid(0),
+        );
         const BLOCK_SIZE: usize = PAGE_SIZE * 512;
         table
             .map_range(

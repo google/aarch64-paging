@@ -22,15 +22,15 @@
 //!     Mapping,
 //!     descriptor::El1Attributes,
 //!     idmap::IdTranslation,
-//!     paging::{Constraints, El1And0, MemoryRegion, VaRange},
+//!     paging::{Constraints, El1And0, MemoryRegion},
 //! };
 //!
 //! const ASID: usize = 1;
 //! const ROOT_LEVEL: usize = 1;
 //! const NORMAL_CACHEABLE: El1Attributes = El1Attributes::ATTRIBUTE_INDEX_1.union(El1Attributes::INNER_SHAREABLE);
 //!
-//! // Create a new EL1 page table with identity mapping.
-//! let mut idmap = Mapping::with_asid_and_va_range(IdTranslation::new(), ASID, ROOT_LEVEL, El1And0, VaRange::Lower);
+//! // Create a new EL1 page table with identity mapping, which implies the lower VA range.
+//! let mut idmap = Mapping::new(IdTranslation::new(), ROOT_LEVEL, El1And0::with_asid(ASID));
 //! // Map a 2 MiB region of memory as read-write.
 //! idmap.map_fixed_range(
 //!     &MemoryRegion::new(0x80200000, 0x80400000),
@@ -73,7 +73,7 @@ use descriptor::{
 };
 use paging::{
     Constraints, FixedTranslation, MemoryRegion, PAGE_SIZE, RootTable, Translation,
-    TranslationRegime, VaRange,
+    TranslationRegime,
 };
 use thiserror::Error;
 
@@ -137,36 +137,22 @@ fn wait_for_store_completion() {
     }
 }
 
-impl<T: Translation<R::Attributes>, R: TranslationRegime<Asid = (), VaRange = ()>> Mapping<T, R> {
-    /// Creates a new page table with the given root level and translation mapping.
-    pub fn new(translation: T, rootlevel: usize, regime: R) -> Self {
-        Self::new_impl(RootTable::new(translation, rootlevel, regime), ())
-    }
-}
-
-impl<T: Translation<R::Attributes>, R: TranslationRegime<Asid = usize, VaRange = VaRange>>
-    Mapping<T, R>
-{
-    /// Creates a new page table with the given ASID, root level and translation mapping.
-    pub fn with_asid_and_va_range(
-        translation: T,
-        asid: usize,
-        rootlevel: usize,
-        regime: R,
-        va_range: VaRange,
-    ) -> Self {
-        Self::new_impl(
-            RootTable::with_va_range(translation, rootlevel, regime, va_range),
-            asid,
-        )
-    }
-}
-
 impl<T: Translation<R::Attributes>, R: TranslationRegime> Mapping<T, R> {
-    fn new_impl(root: RootTable<R, T>, asid: R::Asid) -> Self {
+    /// Creates a new page table with the given translation, root level and translation regime.
+    ///
+    /// For translation regimes that support ASIDs, the ASID that the page table is tagged with is
+    /// taken from `regime`, e.g. [`El1And0::with_asid`](paging::El1And0::with_asid). The VA range
+    /// that the page table covers, i.e. which TTBR it is used with, is taken from `translation`,
+    /// see [`Translation::va_range`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the root level is greater than 3, or if `translation` selects the upper VA range
+    /// but `regime` only has the lower VA range.
+    pub fn new(translation: T, rootlevel: usize, regime: R) -> Self {
         Self {
-            root,
-            asid,
+            asid: regime.asid(),
+            root: RootTable::new(translation, rootlevel, regime),
             active_count: AtomicUsize::new(0),
         }
     }
@@ -558,9 +544,10 @@ impl<T: Translation<R::Attributes>, R: TranslationRegime> Drop for Mapping<T, R>
 #[cfg(all(test, feature = "alloc"))]
 mod tests {
     use super::*;
-    use crate::descriptor::El1Attributes;
+    use crate::descriptor::{El1Attributes, El23Attributes};
     use crate::idmap::IdTranslation;
-    use crate::paging::{El1And0, PAGE_SIZE};
+    use crate::linearmap::LinearTranslation;
+    use crate::paging::{El1And0, El2, El2And0, PAGE_SIZE, VaRange};
     use alloc::vec::Vec;
 
     const BLOCK_SIZE: usize = PAGE_SIZE << 9;
@@ -577,8 +564,7 @@ mod tests {
         flags: El1Attributes,
         constraints: Constraints,
     ) -> Result<(), MapError> {
-        let mut mapping =
-            Mapping::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let mut mapping = Mapping::new(IdTranslation::new(), 1, El1And0::with_asid(1));
         let block = MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE);
         mapping
             .map_range(
@@ -658,8 +644,7 @@ mod tests {
     /// `map_range` split a block mapping that already maps that address.
     #[test]
     fn map_block_for_pa_with_offset() {
-        let mut mapping =
-            Mapping::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let mut mapping = Mapping::new(IdTranslation::new(), 1, El1And0::with_asid(1));
         let block = MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE);
         for pa in [BLOCK_SIZE + 0x123, BLOCK_SIZE + 0x456] {
             mapping
@@ -680,8 +665,7 @@ mod tests {
     /// so setting a live descriptor to such an address within the page it maps is permitted.
     #[test]
     fn set_live_descriptor_to_pa_with_offset() {
-        let mut mapping =
-            Mapping::with_asid_and_va_range(IdTranslation::new(), 1, 1, El1And0, VaRange::Lower);
+        let mut mapping = Mapping::new(IdTranslation::new(), 1, El1And0::with_asid(1));
         let block = MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE);
         mapping
             .map_range(
@@ -720,6 +704,56 @@ mod tests {
             0,
             NORMAL,
             Constraints::empty(),
+        );
+    }
+
+    /// The ASID is taken from the translation regime, for translation regimes that have one.
+    #[test]
+    fn asid_from_regime() {
+        let mapping = Mapping::new(IdTranslation::new(), 1, El1And0::with_asid(42));
+        assert_eq!(mapping.asid(), 42);
+        let mapping = Mapping::new(IdTranslation::new(), 1, El2And0::with_asid(7));
+        assert_eq!(mapping.asid(), 7);
+        // EL2 has no ASID, so there is nothing to pass.
+        let mapping = Mapping::new(IdTranslation::new(), 1, El2);
+        let () = mapping.asid();
+    }
+
+    /// The VA range is taken from the translation, and an identity translation always covers the
+    /// lower VA range.
+    #[test]
+    fn va_range_from_translation() {
+        const UPPER_VA: usize = 0xffff_ffff_8000_0000;
+        let region = MemoryRegion::new(UPPER_VA, UPPER_VA + PAGE_SIZE);
+
+        let mut idmap = Mapping::new(IdTranslation::new(), 0, El1And0::with_asid(1));
+        assert_eq!(idmap.root.va_range_or_unit(), VaRange::Lower);
+        assert_eq!(
+            idmap.map_fixed_range(&region, NORMAL, Constraints::empty()),
+            Err(MapError::AddressRange(region.start()))
+        );
+
+        let mut upper = Mapping::new(
+            LinearTranslation::new(1 << 39, VaRange::Upper),
+            0,
+            El1And0::with_asid(1),
+        );
+        assert_eq!(upper.root.va_range_or_unit(), VaRange::Upper);
+        assert_eq!(
+            upper.map_fixed_range(&region, NORMAL, Constraints::empty()),
+            Ok(())
+        );
+    }
+
+    /// A translation for the upper VA range can't be used with a translation regime which only
+    /// has the lower VA range.
+    #[test]
+    #[should_panic(expected = "Translation regime El2 doesn't support the Upper VA range.")]
+    fn upper_va_range_needs_two_va_ranges() {
+        Mapping::new(
+            LinearTranslation::<El23Attributes>::new(0, VaRange::Upper),
+            1,
+            El2,
         );
     }
 }

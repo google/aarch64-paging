@@ -44,6 +44,12 @@
   or if the physical address passed to it would map the start of a block that the range covers to
   an address that isn't aligned to the block size, e.g., because the range only covers part of the
   block and is moved by less than the block size.
+- Fixed bit 16 of block descriptors, which is the `NT` bit, being treated as part of the output
+  address, which it only is in table and page descriptors. `Descriptor::output_address` returned an
+  address 64 KiB above the block for a block mapping with `NT` set, splitting such a block mapping
+  mapped each of its pages 64 KiB too high, and `map_range` failed with
+  `MapError::BreakBeforeMakeViolation` when mapping such a live block mapping again unchanged.
+  `NT` is no longer written to page descriptors either, where it would change the output address.
 
 ### Improvements
 

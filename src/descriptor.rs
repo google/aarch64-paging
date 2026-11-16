@@ -372,6 +372,27 @@ impl<A: PagingAttributes> Descriptor<A> {
 
     const PHYSICAL_ADDRESS_BITMASK: usize = !(PAGE_SIZE - 1) & !(0xffff << 48);
 
+    /// Bit 16 of a block descriptor is the nT bit rather than part of the output address, which
+    /// only starts at the block size. It is part of the output address of table and page
+    /// descriptors.
+    const BLOCK_NT_BIT: usize = 1 << 16;
+
+    /// Returns the mask for the output address of a descriptor with the given bits, which depends
+    /// on whether it is a table or page descriptor, or a block descriptor.
+    fn output_address_mask(bits: DescriptorBits) -> usize {
+        if bits & A::TABLE_OR_PAGE.bits() != 0 {
+            Self::PHYSICAL_ADDRESS_BITMASK
+        } else {
+            Self::PHYSICAL_ADDRESS_BITMASK & !Self::BLOCK_NT_BIT
+        }
+    }
+
+    /// Returns the bits of a descriptor with the given output address and flags.
+    fn bits_from_parts(pa: PhysicalAddress, flags: A) -> DescriptorBits {
+        let mask = Self::output_address_mask(flags.bits());
+        (pa.0 & mask) | (flags.bits() & !mask)
+    }
+
     pub(crate) const fn new(value: usize) -> Self {
         Descriptor(AtomicUsize::new(value), PhantomData)
     }
@@ -391,11 +412,11 @@ impl<A: PagingAttributes> Descriptor<A> {
     }
 
     fn output_address_from_bits(bits: DescriptorBits) -> PhysicalAddress {
-        PhysicalAddress(bits & Self::PHYSICAL_ADDRESS_BITMASK)
+        PhysicalAddress(bits & Self::output_address_mask(bits))
     }
 
     fn flags_from_bits(bits: DescriptorBits) -> A {
-        A::from_bits_retain(bits & !Self::PHYSICAL_ADDRESS_BITMASK)
+        A::from_bits_retain(bits & !Self::output_address_mask(bits))
     }
 
     /// Returns the flags of this page table entry, or `None` if its state does not
@@ -415,10 +436,8 @@ impl<A: PagingAttributes> Descriptor<A> {
     }
 
     pub(crate) fn set(&mut self, pa: PhysicalAddress, flags: A) {
-        self.0.store(
-            (pa.0 & Self::PHYSICAL_ADDRESS_BITMASK) | flags.bits(),
-            Ordering::Release,
-        );
+        self.0
+            .store(Self::bits_from_parts(pa, flags), Ordering::Release);
     }
 
     pub(crate) fn subtable<T: Translation<A>>(
@@ -532,7 +551,7 @@ impl<'a, A: PagingAttributes> UpdatableDescriptor<'a, A> {
         if !self.bbm_permits_update(pa, flags) {
             return Err(());
         }
-        let val = (pa.0 & Descriptor::<A>::PHYSICAL_ADDRESS_BITMASK) | flags.bits();
+        let val = Descriptor::<A>::bits_from_parts(pa, flags);
         match &mut self.descriptor {
             DescriptorEnum::Active(d) | DescriptorEnum::Inactive(d) => {
                 self.updated |= val != d.0.swap(val, Ordering::Release)

@@ -499,6 +499,98 @@ mod tests {
     }
 
     #[test]
+    fn block_mapping_with_nt() {
+        const BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
+        let block = MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE);
+        let mut idmap = IdMap::new(IdTranslation::new(), 1, El1And0::with_asid(1));
+        idmap
+            .map_fixed_range(
+                &block,
+                NORMAL_CACHEABLE
+                    | El1Attributes::VALID
+                    | El1Attributes::ACCESSED
+                    | El1Attributes::NT,
+                Constraints::empty(),
+            )
+            .unwrap();
+        // Bit 16 of a block descriptor is nT, not part of the output address.
+        idmap
+            .walk_range(&block, &mut |_, descriptor, level| {
+                assert_eq!(level, 2);
+                assert_eq!(descriptor.output_address(), PhysicalAddress(BLOCK_SIZE));
+                assert!(descriptor.flags().contains(El1Attributes::NT));
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn split_block_mapping_with_nt() {
+        const BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
+        /// The bits of a page descriptor which hold the output address.
+        const PAGE_OUTPUT_ADDRESS_MASK: usize = 0x0000_ffff_ffff_f000;
+        let block = MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE);
+        let mut idmap = IdMap::new(IdTranslation::new(), 1, El1And0::with_asid(1));
+        idmap
+            .map_fixed_range(
+                &block,
+                NORMAL_CACHEABLE
+                    | El1Attributes::VALID
+                    | El1Attributes::ACCESSED
+                    | El1Attributes::NT,
+                Constraints::empty(),
+            )
+            .unwrap();
+        // Changing the attributes of the first page splits the block mapping into page mappings,
+        // which must map the same physical addresses as the block mapping did. Bit 16 of a page
+        // descriptor is part of the output address, so it must not be set for nT.
+        idmap
+            .map_fixed_range(
+                &MemoryRegion::new(BLOCK_SIZE, BLOCK_SIZE + PAGE_SIZE),
+                NORMAL_CACHEABLE
+                    | El1Attributes::VALID
+                    | El1Attributes::ACCESSED
+                    | El1Attributes::READ_ONLY,
+                Constraints::empty(),
+            )
+            .unwrap();
+        idmap
+            .walk_range(&block, &mut |region, descriptor, level| {
+                assert_eq!(level, 3);
+                assert_eq!(
+                    PhysicalAddress(descriptor.bits() & PAGE_OUTPUT_ADDRESS_MASK),
+                    PhysicalAddress(region.start().0),
+                    "{region:?} is mapped to the wrong physical address"
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn remap_live_block_mapping_with_nt() {
+        const BLOCK_SIZE: usize = PAGE_SIZE << BITS_PER_LEVEL;
+        const FLAGS: El1Attributes = NORMAL_CACHEABLE
+            .union(El1Attributes::VALID)
+            .union(El1Attributes::ACCESSED)
+            .union(El1Attributes::NT);
+        let block = MemoryRegion::new(BLOCK_SIZE, 2 * BLOCK_SIZE);
+        let mut idmap = IdMap::new(IdTranslation::new(), 1, El1And0::with_asid(1));
+        idmap
+            .map_fixed_range(&block, FLAGS, Constraints::empty())
+            .unwrap();
+        // SAFETY: This doesn't actually activate the page table in tests, it just treats it as
+        // active for the sake of BBM rules.
+        let ttbr = unsafe { idmap.activate() };
+        // Mapping the block again with the same physical address and attributes changes nothing,
+        // so it doesn't violate break-before-make.
+        let result = idmap.map_fixed_range(&block, FLAGS, Constraints::empty());
+        // SAFETY: As above.
+        unsafe { idmap.deactivate(ttbr) };
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
     #[should_panic]
     fn split_live_block_mapping() -> () {
         let mut idmap = IdMap::new(IdTranslation::new(), 1, El1And0::with_asid(1));
